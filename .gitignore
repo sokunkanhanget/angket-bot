@@ -1,0 +1,4 @@
+.env
+venv/
+scan_logs.db
+__pycache__/

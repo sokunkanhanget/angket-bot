@@ -1,4 +1,5 @@
 .env
+.venv/
 venv/
 scan_logs.db
 __pycache__/

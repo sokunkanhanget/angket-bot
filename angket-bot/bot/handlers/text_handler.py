@@ -13,6 +13,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.message.text is None:
+        return
     text = update.message.text or ""
     result = analyze_text(text)
     if result["suspicious"]:

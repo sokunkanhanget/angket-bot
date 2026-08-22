@@ -96,6 +96,14 @@ def registered_domain(host: str) -> str:
     return last_two
 
 
+LEET_MAP = str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"})
+
+
+def _deleet(s: str) -> str:
+    """Turn leetspeak back to letters so g00gle -> google before comparing."""
+    return s.translate(LEET_MAP)
+
+
 def extract_urls(text: str) -> list[str]:
     """Find every URL in a message, de-duplicated."""
     seen = set()
@@ -128,15 +136,30 @@ def _verdict_labels(score: int):
 # --- Checks ----------------------------------------------------------
 
 def _brand_check(host: str, reg: str):
+    reg_leet = _deleet(reg)
+    host_leet = _deleet(host)
     for brand_domain, label in PROTECTED_BRANDS.items():
+        brand_name = brand_domain.split(".")[0]
+
+        # Real, untouched domain match -> legitimate, stop.
         if reg == brand_domain:
             return None
-        dist = levenshtein(reg, brand_domain)
-        if 0 < dist <= 2 and abs(len(reg) - len(brand_domain)) <= 3:
-            return (45, f"Domain '{reg}' closely imitates {label} ({brand_domain}) — likely a fake.")
-        brand_name = brand_domain.split(".")[0]
-        if len(brand_name) >= 4 and brand_name in host and reg != brand_domain:
-            return (40, f"Mentions '{brand_name}' but the real domain is '{reg}', not {label}'s official site.")
+
+        # Matches the real brand ONLY after removing leetspeak (faceb00k -> facebook)
+        # -> that's a deliberate disguise, strongest signal.
+        if reg_leet == brand_domain:
+            return (50, f"Domain '{reg}' is a disguised copy of {label} ({brand_domain}).")
+
+        # Close-but-not-equal (typosquat), on raw or de-leeted domain.
+        for r in (reg, reg_leet):
+            dist = levenshtein(r, brand_domain)
+            if 0 < dist <= 2 and abs(len(r) - len(brand_domain)) <= 3:
+                return (45, f"Domain looks like a fake of {label} ({brand_domain}).")
+
+        # Brand name buried in the host, but the domain isn't the official one.
+        for h in (host, host_leet):
+            if len(brand_name) >= 4 and brand_name in h and reg != brand_domain:
+                return (45, f"Mentions '{brand_name}' but the real domain is '{reg}', not {label}'s official site.")
     return None
 
 

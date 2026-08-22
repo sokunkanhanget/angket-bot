@@ -4,6 +4,7 @@ from bot.analysis.utils import init_db
 from bot.config import TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
 from bot.handlers.file_handler import handle_file
 from bot.handlers.text_handler import handle_text, start
+from bot.handlers.router import route_text
 
 def main():
     if not TELEGRAM_BOT_TOKEN or not VIRUSTOTAL_API_KEY:
@@ -15,7 +16,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, route_text))
 
     print("🤖 Bot is running...")
     app.run_polling()

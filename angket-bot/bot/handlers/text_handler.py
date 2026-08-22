@@ -1,6 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
 
 
@@ -12,12 +13,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+_VERDICT_ICONS = {
+    "Scam": "🚨",
+    "Not a Scam": "🟢",
+    "Uncertain": "⚪",
+}
+
+_DISCLAIMER = (
+    "⚠️ Angket can make mistakes. Please double check important information "
+    "before taking any action. Stay safe."
+)
+
+
+def _format_list(items: list) -> str:
+    if not items:
+        return "- None provided"
+    return "\n".join(f"- {item}" for item in items)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
-    result = analyze_text(text)
-    if result["suspicious"]:
-        matches = ", ".join(result["matches"])
-        reply = f"⚠️ **SUSPICIOUS TEXT DETECTED**\n\nMatched: `{matches}`"
-    else:
-        reply = "🟢 **TEXT LOOKS CLEAN**\n\nNo suspicious patterns were detected."
-    await update.message.reply_text(reply, parse_mode="Markdown")
+    keyword_result = analyze_text(text)
+    llm_result = await analyze_text_with_llm(text)
+
+    lines = []
+    if keyword_result["suspicious"]:
+        matches = ", ".join(keyword_result["matches"])
+        lines.append(f"⚠️ **Keyword match:** `{matches}`")
+
+    verdict = llm_result["verdict"]
+    icon = _VERDICT_ICONS.get(verdict, "⚪")
+    risk_percentage = llm_result["risk_percentage"]
+    risk_suffix = f" ({risk_percentage}%)" if risk_percentage is not None else ""
+
+    lines.append(f" **Verdict:** {icon} {verdict}")
+    lines.append(f"📊 **Scam Risk Level:** {llm_result['risk_level']}{risk_suffix}")
+    lines.append(f"🔍 **Key Reasons:**\n{_format_list(llm_result['key_reasons'])}")
+    lines.append(f"🛡️ **What You Can Do:**\n{_format_list(llm_result['recommendations'])}")
+    lines.append(f"** {_DISCLAIMER}")
+
+    await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")

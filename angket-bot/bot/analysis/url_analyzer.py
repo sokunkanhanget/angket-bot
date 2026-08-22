@@ -16,8 +16,6 @@ from urllib.parse import urlsplit
 
 
 # --- Reference data --------------------------------------------------
-# Kept in this file for now to stay self-contained. If the team later
-# wants one central place for lists, these can move to bot/config.py.
 
 PROTECTED_BRANDS = {
     "ababank.com": "ABA Bank",
@@ -48,7 +46,7 @@ URL_SHORTENERS = {
     "shorte.st", "adf.ly", "bc.vc",
 }
 
-SUSPICIOUS_KEYWORDS = {
+SUSPICIOUS_URL_WORDS = {
     "login", "signin", "verify", "verification", "secure", "account",
     "update", "confirm", "wallet", "bonus", "free", "gift", "prize",
     "claim", "winner", "reward", "otp", "password", "unlock", "suspend",
@@ -65,12 +63,6 @@ URL_REGEX = re.compile(
     r"[a-z]{2,24}(?::\d{2,5})?(?:/[^\s<>()]*)?",
     re.IGNORECASE,
 )
-
-LEVEL_META = {
-    "safe": ("🟢", "Looks OK"),
-    "suspicious": ("🟠", "Suspicious"),
-    "dangerous": ("🔴", "Dangerous"),
-}
 
 
 # --- Helpers ---------------------------------------------------------
@@ -124,6 +116,15 @@ def _normalize(url: str):
     return normalized, host, parts
 
 
+def _verdict_labels(score: int):
+    """Turn a score into (level, emoji, label)."""
+    if score >= 60:
+        return "dangerous", "🔴", "Dangerous"
+    if score >= 25:
+        return "suspicious", "🟠", "Suspicious"
+    return "safe", "🟢", "Looks OK"
+
+
 # --- Checks ----------------------------------------------------------
 
 def _brand_check(host: str, reg: str):
@@ -139,14 +140,6 @@ def _brand_check(host: str, reg: str):
     return None
 
 
-def _classify(score: int) -> str:
-    if score >= 60:
-        return "dangerous"
-    if score >= 25:
-        return "suspicious"
-    return "safe"
-
-
 def check_url(raw_url: str) -> dict:
     """Score one URL and return a verdict dict."""
     normalized, host, parts = _normalize(raw_url)
@@ -154,10 +147,9 @@ def check_url(raw_url: str) -> dict:
     score = 0
 
     if not host:
-        emoji, label = LEVEL_META["safe"]
         return {"raw": raw_url, "host": "", "score": 0, "level": "safe",
                 "reasons": ["Could not parse this as a link."],
-                "emoji": emoji, "label": label}
+                "emoji": "🟢", "label": "Looks OK"}
 
     reg = registered_domain(host)
     path_query = (parts.path + "?" + parts.query).lower()
@@ -188,7 +180,7 @@ def check_url(raw_url: str) -> dict:
         score += brand[0]
         reasons.append(brand[1])
 
-    hits = sorted(w for w in SUSPICIOUS_KEYWORDS if w in host or w in path_query)
+    hits = sorted(w for w in SUSPICIOUS_URL_WORDS if w in host or w in path_query)
     if hits:
         score += min(len(hits) * 10, 30)
         reasons.append(f"Contains scam-typical words: {', '.join(hits[:4])}.")
@@ -212,11 +204,10 @@ def check_url(raw_url: str) -> dict:
         score += 5
         reasons.append("Not served over HTTPS (no padlock).")
 
-    level = _classify(score)
+    level, emoji, label = _verdict_labels(score)
     if level == "safe" and not reasons:
         reasons.append("No common scam signals detected. Still, stay alert.")
 
-    emoji, label = LEVEL_META[level]
     return {"raw": raw_url, "host": host, "score": score, "level": level,
             "reasons": reasons, "emoji": emoji, "label": label}
 

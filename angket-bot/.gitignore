@@ -4,3 +4,5 @@ venv/
 *.pyc
 scan_logs.db
 __pycache__/
+.pytest_cache
+*.doc

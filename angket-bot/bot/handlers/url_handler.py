@@ -51,8 +51,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from bot.analysis.url_analyzer import check_message, format_verdict
+from bot.analysis.link_checker import check_message_full, format_verdict_full
 from bot.analysis.utils import log_url_scan
+from bot.analysis.vector_store import seed as seed_vectors
 
 WELCOME_TEXT = (
     "🔗 **Link Scanner Bot**\n\n"
@@ -183,7 +184,7 @@ def _showcase_text(verdicts: list[dict]) -> str:
 
 
 def _full_breakdown_text(verdicts: list[dict]) -> str:
-    return "\n\n---\n\n".join(format_verdict(v) for v in verdicts)
+    return "\n\n---\n\n".join(format_verdict_full(v) for v in verdicts)
 
 
 def _sender_header(sender, sent_at) -> str:
@@ -269,8 +270,21 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if message is None or message.text is None:
         return
 
-    verdicts = check_message(message.text)
+    # Full pipeline: lexical + network trace + DNS/domain age + vector
+    # search + LSH. Brand/phish vectors are seeded once per process.
+    if not context.bot_data.get("_vectors_seeded"):
+        seed_vectors()
+        context.bot_data["_vectors_seeded"] = True
+
+    # Network tracing can take a few seconds — show progress first
+    # (normal chats only; business flow stays invisible).
+    is_business = bool(message.business_connection_id)
+    status = None if is_business else await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
+
+    verdicts = await check_message_full(message.text)
     if not verdicts:
+        if status is not None:
+            await status.delete()
         return  # this handler only speaks up when there's actually a link
 
     sender = update.effective_user
@@ -278,7 +292,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
 
     # --- Business chat: stay invisible to the customer, DM the owner. ---
-    if message.business_connection_id:
+    if is_business:
         owner_chat_id = await _owner_chat_id(context, message.business_connection_id)
         if owner_chat_id is None:
             return  # can't resolve the owner right now — nothing safe to do
@@ -300,8 +314,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     # --- Normal chat/group/DM: showcase in place, deep-link for details. ---
-    status = await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
-
     full = _full_breakdown_text(verdicts)
     ticket = _stash_ticket(context, full)
     risky = any(v["level"] != "safe" for v in verdicts)

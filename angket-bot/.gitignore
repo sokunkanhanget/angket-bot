@@ -6,3 +6,4 @@ scan_logs.db
 __pycache__/
 .pytest_cache
 *.doc
+*test.md

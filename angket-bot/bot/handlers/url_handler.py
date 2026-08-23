@@ -25,17 +25,21 @@ at all. Instead we DM the business OWNER privately (their own private
 chat with the bot — a totally separate chat the customer can't see),
 using `BusinessConnection.user_chat_id`. That field is exactly what
 Telegram provides for "tell the business owner something, off to the
-side, without the customer knowing." The showcase + deep-link button
-goes there instead.
+side, without the customer knowing."
+
+That private DM shows who sent the link (full name, id) and when, a
+compact verdict, and two buttons:
+  - "See full details" / "Show less detail" — toggles the SAME message
+    in place (edit_message_text) between the compact showcase and the
+    full breakdown. No /start round-trip needed since we're already in
+    the owner's DM.
+  - "Delete" — removes that notification message. It only ever existed
+    in the owner's own private chat with the bot, so deleting it is
+    only ever "for the user" — nobody else could see it to begin with.
 
 Key detail: we read `update.effective_message` instead of
 `update.message`, because business messages arrive on
 `update.business_message` — `update.message` is always None for those.
-For the normal-chat path, `effective_message.reply_text()` /
-`.edit_text()` still forward `business_connection_id` automatically if
-present (a PTB 22.x built-in) — but we intentionally avoid that path
-for business messages per the above, and message the owner directly
-instead.
 """
 
 from __future__ import annotations
@@ -57,21 +61,22 @@ WELCOME_TEXT = (
     "the full breakdown here in DM."
 )
 
-# How long a "See full details" ticket stays valid after being posted.
+# How long a ticket (deep-link OR business-DM toggle state) stays valid.
 TICKET_TTL_SECONDS = 60 * 60 * 24  # 24h
 
+
+# ---------------------------------------------------------------------------
+# Normal-chat flow: deep-link ticket store (bot_data, ticket -> full text).
+# ---------------------------------------------------------------------------
 
 def _tickets(context: ContextTypes.DEFAULT_TYPE) -> dict:
     """Shared (bot-wide) ticket store, NOT per-user.
 
     Why bot_data and not user_data: the person who taps "See full
     details" is not guaranteed to be the same Telegram user who
-    triggered the check. In a business chat a customer might send the
-    sus link, but it's the business owner who opens the bot's DM to
-    review it — those are two different user_ids, so per-user storage
-    (context.user_data) would fail to find the ticket. bot_data is
-    shared across every chat/user the bot talks to, so any deep link
-    the bot itself generated can always be resolved.
+    triggered the check. bot_data is shared across every chat/user the
+    bot talks to, so any deep link the bot itself generated can always
+    be resolved.
     """
     return context.bot_data.setdefault("url_tickets", {})
 
@@ -98,6 +103,76 @@ def resolve_ticket(context: ContextTypes.DEFAULT_TYPE, ticket: str) -> str | Non
     return entry["text"] if entry else None
 
 
+# ---------------------------------------------------------------------------
+# Business-DM flow: toggle ticket store (bot_data, ticket -> {short, full}).
+# ---------------------------------------------------------------------------
+
+def _business_tickets(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    return context.bot_data.setdefault("business_url_tickets", {})
+
+
+def _stash_business_ticket(context: ContextTypes.DEFAULT_TYPE, short_text: str, full_text: str) -> str:
+    tickets = _business_tickets(context)
+    _prune_expired(tickets)
+    ticket = secrets.token_hex(4)
+    tickets[ticket] = {"short": short_text, "full": full_text, "ts": time.time()}
+    return ticket
+
+
+def _business_keyboard(ticket: str, showing_full: bool) -> InlineKeyboardMarkup:
+    if showing_full:
+        detail_button = InlineKeyboardButton("🔼 Show less detail", callback_data=f"u:l:{ticket}")
+    else:
+        detail_button = InlineKeyboardButton("🔍 See full details", callback_data=f"u:d:{ticket}")
+    delete_button = InlineKeyboardButton("🗑️ Delete", callback_data=f"u:x:{ticket}")
+    return InlineKeyboardMarkup([[detail_button, delete_button]])
+
+
+async def handle_business_url_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles taps on the business-DM notification: detail toggle + delete."""
+    query = update.callback_query
+    if query is None or not query.data:
+        return
+
+    parts = query.data.split(":", 2)
+    if len(parts) != 3 or parts[0] != "u":
+        return
+    action, ticket = parts[1], parts[2]
+
+    entry = _business_tickets(context).get(ticket)
+    if entry is None:
+        await query.answer("This notification has expired.", show_alert=True)
+        return
+
+    if action == "x":
+        await query.answer()
+        try:
+            await query.message.delete()
+        except TelegramError:
+            pass
+        _business_tickets(context).pop(ticket, None)
+        return
+
+    if action == "d":
+        text, keyboard = entry["full"], _business_keyboard(ticket, showing_full=True)
+    elif action == "l":
+        text, keyboard = entry["short"], _business_keyboard(ticket, showing_full=False)
+    else:
+        return
+
+    await query.answer()
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
+        reply_markup=keyboard,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shared formatting helpers.
+# ---------------------------------------------------------------------------
+
 def _showcase_text(verdicts: list[dict]) -> str:
     """Short, one-glance summary — the 'small showcase', not the full report."""
     if len(verdicts) == 1:
@@ -107,14 +182,16 @@ def _showcase_text(verdicts: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_ticket_and_keyboard(context: ContextTypes.DEFAULT_TYPE, verdicts: list[dict]):
-    full = "\n\n---\n\n".join(format_verdict(v) for v in verdicts)
-    ticket = _stash_ticket(context, full)
-    risky = any(v["level"] != "safe" for v in verdicts)
-    label = "⚠️ Why is this sus?" if risky else "🔍 See full details"
-    deep_link = f"https://t.me/{context.bot.username}?start={ticket}"
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(label, url=deep_link)]])
-    return keyboard
+def _full_breakdown_text(verdicts: list[dict]) -> str:
+    return "\n\n---\n\n".join(format_verdict(v) for v in verdicts)
+
+
+def _sender_header(sender, sent_at) -> str:
+    """Full name, id, and timestamp of whoever sent the link."""
+    name = sender.full_name if sender else "Unknown sender"
+    uid = sender.id if sender else "—"
+    when = sent_at.strftime("%Y-%m-%d %H:%M UTC") if sent_at else "—"
+    return f"👤 *{name}*  (`{uid}`)\n🕒 {when}"
 
 
 async def _owner_chat_id(context: ContextTypes.DEFAULT_TYPE, business_connection_id: str) -> int | None:
@@ -156,12 +233,11 @@ async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/start — doubles as the deep-link landing page.
+    """/start — doubles as the deep-link landing page for the NORMAL-chat
+    flow only (business-chat DMs toggle in place and never need /start).
 
-    When someone taps "See full details" on a showcase, Telegram opens
-    a DM with the bot and sends `/start <ticket>` automatically.
-    context.args will contain that ticket — if present, show the full
-    breakdown instead of the plain welcome message.
+    context.args carries the ticket when someone taps "See full details"
+    on a showcase posted in a group or non-business DM.
 
     NOTE: this owns the /start command for the links feature only.
     If a teammate's branch (file/text scanning) also wants to say
@@ -207,21 +283,32 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if owner_chat_id is None:
             return  # can't resolve the owner right now — nothing safe to do
 
-        keyboard = _build_ticket_and_keyboard(context, verdicts)
-        who = sender.first_name if sender else "Someone"
-        text = f"👀 *{who}* sent a link in your business chat:\n\n{_showcase_text(verdicts)}"
+        header = f"👀 *New link detected in your business chat*\n\n{_sender_header(sender, message.date)}\n\n"
+        short_text = header + _showcase_text(verdicts)
+        full_text = header + _full_breakdown_text(verdicts)
+
+        ticket = _stash_business_ticket(context, short_text, full_text)
+        keyboard = _business_keyboard(ticket, showing_full=False)
+
         await context.bot.send_message(
             chat_id=owner_chat_id,
-            text=text,
+            text=short_text,
             parse_mode="Markdown",
             disable_web_page_preview=True,
             reply_markup=keyboard,
         )
         return
 
-    # --- Normal chat/group/DM: showcase in place, as before. ---
+    # --- Normal chat/group/DM: showcase in place, deep-link for details. ---
     status = await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
-    keyboard = _build_ticket_and_keyboard(context, verdicts)
+
+    full = _full_breakdown_text(verdicts)
+    ticket = _stash_ticket(context, full)
+    risky = any(v["level"] != "safe" for v in verdicts)
+    label = "⚠️ Why is this sus?" if risky else "🔍 See full details"
+    deep_link = f"https://t.me/{context.bot.username}?start={ticket}"
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(label, url=deep_link)]])
+
     await status.edit_text(
         _showcase_text(verdicts),
         parse_mode="Markdown",

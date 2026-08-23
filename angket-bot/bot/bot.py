@@ -1,9 +1,17 @@
 from telegram import Update
-from telegram.ext import Application, BusinessConnectionHandler, CommandHandler, MessageHandler, filters, TypeHandler
+from telegram.ext import (
+    Application,
+    BusinessConnectionHandler,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    TypeHandler,
+)
 
 from bot.analysis.utils import init_url_db
 from bot.config import TELEGRAM_BOT_TOKEN
-from bot.handlers.url_handler import handle_url, on_business_connection, start
+from bot.handlers.url_handler import handle_business_url_callback, handle_url, on_business_connection, start
 
 # NOTE: file scanning (bot.handlers.file_handler) and free-text keyword
 # scanning (bot.handlers.text_handler) are owned by a teammate on a
@@ -38,6 +46,10 @@ def main():
     # Keeps the business-connection -> owner-chat-id cache warm (see
     # url_handler.on_business_connection for why this matters).
     app.add_handler(BusinessConnectionHandler(on_business_connection))
+
+    # "See full details" / "Show less detail" / "Delete" taps on the
+    # owner's private business-link notifications.
+    app.add_handler(CallbackQueryHandler(handle_business_url_callback, pattern=r"^u:"))
 
     # One handler covers normal chat text AND Telegram Business messages.
     # (Business messages arrive on update.business_message, not

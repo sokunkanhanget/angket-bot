@@ -46,7 +46,7 @@ def init_url_db() -> None:
                 host text,
                 score integer,
                 level text,
-                checked_at text,
+                checked_at text
             )
             """
         )

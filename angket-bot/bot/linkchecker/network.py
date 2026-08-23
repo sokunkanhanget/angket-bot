@@ -1,7 +1,7 @@
-"""
-bot/analysis/network_checks.py
+﻿"""
+bot/linkchecker/network.py
 ==============================
-Asynchronous network verification for links — the "Async I/O" and
+Asynchronous network verification for links â€” the "Async I/O" and
 "Network & HTTPS / Redirect Chains / Header Verification / DOM
 Parsing" rows of the research notes.
 
@@ -10,7 +10,7 @@ python-telegram-bot, so this adds zero new packages.
 
 What one `trace()` gives the scorer:
   * full redirect chain (who redirects where, across which domains)
-  * final landing URL — shorteners get re-scored against THIS, not
+  * final landing URL â€” shorteners get re-scored against THIS, not
     the t.co/bit.ly front
   * TLS handshake validity (self-signed / expired cert => flag)
   * status code + selected response headers
@@ -136,12 +136,13 @@ def _capture(response: httpx.Response, result: dict, history: list, body: bytes)
 
     # A hop that changes the registrable domain is where scams hide:
     # bit.ly/x9k2 -> free-iphone-winner.tk
-    from bot.analysis.url_analyzer import registered_domain
+    from bot.linkchecker.lexical import registered_domain
     if registered_domain(first_host) != registered_domain(last_host):
         result["cross_domain_redirect"] = True
 
 
 async def trace_many(urls: list[str]) -> list[dict]:
-    """Trace several URLs concurrently — the distributed-crawling spirit
+    """Trace several URLs concurrently â€” the distributed-crawling spirit
     of the research notes on a single-process scale."""
     return list(await asyncio.gather(*(trace(u) for u in urls)))
+

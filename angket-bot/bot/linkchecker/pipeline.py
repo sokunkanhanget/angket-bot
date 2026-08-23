@@ -1,14 +1,14 @@
-"""
-bot/analysis/link_checker.py
+﻿"""
+bot/linkchecker/pipeline.py
 ============================
-The full link-checking pipeline — orchestrates every signal source
+The full link-checking pipeline â€” orchestrates every signal source
 into one verdict per URL:
 
-    lexical (url_analyzer, sync, instant)
-      + network trace  (network_checks, async)   \
-      + DNS + domain age (domain_info, async)    / run concurrently
-      + vector similarity vs brand/phish vectors (vector_store)
-      + MinHash near-duplicate page match        (vector_store)
+    lexical (lexical.py, sync, instant)
+      + network trace  (network.py, async)        \
+      + DNS + domain age (domain_info.py, async)  /  run concurrently
+      + vector similarity vs brand/phish vectors (vectors.py)
+      + MinHash near-duplicate page match        (vectors.py)
       + re-score of the FINAL landing URL after redirects
 
 Score contributions are capped per family so no single category can
@@ -23,11 +23,13 @@ The verdict dict keeps the exact shape url_handler already renders
 from __future__ import annotations
 
 import asyncio
+import logging
+from urllib.parse import urlsplit
 
-from bot.analysis import network_checks, vector_store
-from bot.analysis import threat_intel
-from bot.analysis.domain_info import domain_age_days, resolve_host, score_domain_age
-from bot.analysis.url_analyzer import (
+from bot.linkchecker import network, vectors
+from bot.linkchecker import threat_intel
+from bot.linkchecker.domain_info import domain_age_days, resolve_host, score_domain_age
+from bot.linkchecker.lexical import (
     PROTECTED_BRANDS,
     _verdict_labels,
     check_url,
@@ -37,6 +39,8 @@ from bot.analysis.url_analyzer import (
 )
 from bot.config import VIRUSTOTAL_API_KEY
 
+logger = logging.getLogger(__name__)
+
 # Thresholds & caps ----------------------------------------------------
 
 PHISH_SIM_THRESHOLD = 0.55     # cosine vs known-phish pattern worth flagging
@@ -45,6 +49,30 @@ SEEN_BAD_SIM_THRESHOLD = 0.75  # cosine vs a link we previously flagged
 BRAND_PAGE_SPOOF_MIN = 3       # brand name occurrences in page text before we call it a spoof claim
 NEARDUP_THRESHOLD = 0.90       # MinHash similarity = same phishing kit
 MAX_NETWORK_POINTS = 45        # cap for all network-derived signals combined
+MAX_URLS_PER_MESSAGE = 5       # input validation: protect quota & event loop from spam
+
+
+def _web_urls(text: str) -> list[str]:
+    """Input validation layer: keep only web links and cap the count.
+
+    - non-http(s) schemes (javascript:, data:, file:) are ignored â€”
+      Telegram cannot render them, so they are not worth scoring;
+    - more than MAX_URLS_PER_MESSAGE links are dropped (spam guard):
+      each link costs network traces + possible VT quota.
+    """
+    kept: list[str] = []
+    for url in extract_urls(text):
+        if "://" in url:
+            scheme = urlsplit(url).scheme.lower()
+            if scheme not in ("http", "https"):
+                logger.debug("ignored non-web url scheme %r", scheme)
+                continue
+        kept.append(url)
+        if len(kept) >= MAX_URLS_PER_MESSAGE:
+            logger.info("message had more than %d links; extras ignored",
+                        MAX_URLS_PER_MESSAGE)
+            break
+    return kept
 
 
 async def analyze_url(raw_url: str) -> dict:
@@ -56,7 +84,7 @@ async def analyze_url(raw_url: str) -> dict:
 
     host = verdict["host"]
     if not host:
-        # Unparseable — nothing else to run.
+        # Unparseable â€” nothing else to run.
         return {**verdict, "detail": detail}
 
     normalized = raw_url if "://" in raw_url else f"http://{raw_url}"
@@ -69,7 +97,7 @@ async def analyze_url(raw_url: str) -> dict:
     is_official_brand = reg_domain in PROTECTED_BRANDS
 
     # Network + DNS + RDAP concurrently; vector search is local CPU.
-    net_task = asyncio.create_task(network_checks.trace(normalized))
+    net_task = asyncio.create_task(network.trace(normalized))
     dns_task = asyncio.create_task(resolve_host(host))
     age_task = asyncio.create_task(domain_age_days(host))
 
@@ -105,7 +133,7 @@ async def analyze_url(raw_url: str) -> dict:
     # --- DNS ----------------------------------------------------------
     if ips is None:
         score += 25
-        reasons.append("The host name does not resolve in DNS at all — nothing is really there.")
+        reasons.append("The host name does not resolve in DNS at all â€” nothing is really there.")
     elif len(ips) <= 5:
         detail.append(f"DNS resolves to: {', '.join(ips[:3])}")
 
@@ -131,9 +159,9 @@ async def analyze_url(raw_url: str) -> dict:
     if net is not None and net.get("error"):
         # A REAL certificate failure (handshake rejected) is strong
         # evidence; a plain-HTTP page is only worth the small padlock
-        # signal — Google itself serves http://www.google.com.
+        # signal â€” Google itself serves http://www.google.com.
         if net["tls_valid"] is False:
-            add_network(30, "TLS certificate is invalid — connections are not secure.")
+            add_network(30, "TLS certificate is invalid â€” connections are not secure.")
             detail.append(f"network: {net['error']}")
         else:
             add_network(15, "The server could not be reached (dead site or blocking bots).")
@@ -141,14 +169,14 @@ async def analyze_url(raw_url: str) -> dict:
     elif net:
         chain = net.get("redirect_chain") or []
         final_url = net["final_url"]
-        final_host = network_checks._host(final_url)
+        final_host = network._host(final_url)
 
         if chain:
-            hops = " → ".join(network_checks._host(u) for _, u in chain[-4:] + [(0, final_url)])
+            hops = " â†’ ".join(network._host(u) for _, u in chain[-4:] + [(0, final_url)])
             detail.append(f"redirect chain ({len(chain)} hop(s)): {hops}")
 
         if net.get("cross_domain_redirect"):
-            add_network(20, f"The link redirects to a different domain ({final_host}) — "
+            add_network(20, f"The link redirects to a different domain ({final_host}) â€” "
                             f"the visible address was not the real destination.")
 
             # Only a CROSS-DOMAIN redirect justifies re-scoring the
@@ -166,7 +194,7 @@ async def analyze_url(raw_url: str) -> dict:
             add_network(10, f"Redirects through {len(chain)} hops before landing.")
 
         if net.get("tls_valid") is False:
-            add_network(5, "The final page is served over plain HTTP — "
+            add_network(5, "The final page is served over plain HTTP â€” "
                            "anything you submit there is not encrypted.")
 
         if net["status"] and net["status"] >= 400:
@@ -194,7 +222,7 @@ async def analyze_url(raw_url: str) -> dict:
 
     # --- LSH near-duplicate page check (any fetched page) --------------
     if net and net.get("page_text"):
-        dup_host = network_checks._host(net["final_url"])
+        dup_host = network._host(net["final_url"])
         dup = _safe_near_dup(dup_host, net["page_text"])
         if dup and dup[1] >= NEARDUP_THRESHOLD:
             other_host, similarity = dup
@@ -206,7 +234,7 @@ async def analyze_url(raw_url: str) -> dict:
     # --- Flow 3: VirusTotal threat intelligence ------------------------
     # Quota-first: only spend a live API call when our own flows are
     # already suspicious; clean links answer from cache or not at all.
-    # Official brand domains skip VT entirely — they never need it.
+    # Official brand domains skip VT entirely â€” they never need it.
     if not is_official_brand:
         vt_target = net["final_url"] if isinstance(net, dict) and net.get("final_url") else normalized
         vt_stats = await threat_intel.lookup(
@@ -232,6 +260,7 @@ async def analyze_url(raw_url: str) -> dict:
     # against itself.
     _remember(normalized, net, level)
 
+    logger.info("verdict %s (%d) for %s", level, score, host)
     return {
         **verdict,
         "score": score,
@@ -258,13 +287,13 @@ def _remember(normalized: str, net, level: str) -> None:
     text mixes URL syntax with a slice of page content so both a
     lookalike URL and a copied page can match it later."""
     try:
-        final_url = network_checks._host(normalized)
+        final_url = network._host(normalized)
         if isinstance(net, dict) and net.get("final_url"):
             final_url = net["final_url"]
         page_slice = ""
         if isinstance(net, dict):
             page_slice = (net.get("page_text") or "")[:300]
-        vector_store.upsert_vector("seen", final_url.lower(),
+        vectors.upsert_vector("seen", final_url.lower(),
                                    f"{normalized} {page_slice}".strip(), level)
     except Exception:                          # noqa: BLE001 - never fail a check on bookkeeping
         pass
@@ -272,35 +301,35 @@ def _remember(normalized: str, net, level: str) -> None:
 
 def _safe_nearest(text: str):
     try:
-        return vector_store.nearest(text, k=4)
+        return vectors.nearest(text, k=4)
     except Exception:                          # noqa: BLE001 - DB trouble must not kill checks
         return []
 
 
 def _safe_near_dup(host: str, page_text: str):
     try:
-        sig = vector_store.store_page_signature(host, page_text)
-        return vector_store.nearest_page(host, sig)
+        sig = vectors.store_page_signature(host, page_text)
+        return vectors.nearest_page(host, sig)
     except Exception:                          # noqa: BLE001
         return None
 
 
 def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) -> str | None:
-    """Page *claims* to be a bank/brand but sits on an unrelated domain —
+    """Page *claims* to be a bank/brand but sits on an unrelated domain â€”
     the semantic-impersonation case vector search alone can't prove."""
-    from bot.analysis.url_analyzer import PROTECTED_BRANDS
+    from bot.linkchecker.lexical import PROTECTED_BRANDS
     low = page_text.lower()
     for domain, label in PROTECTED_BRANDS.items():
         brand = domain.split(".")[0]
         if low.count(brand) >= BRAND_PAGE_SPOOF_MIN and registered_domain(final_host) != domain:
             return (f"The page presents itself as {label}, but it lives on "
-                    f"'{registered_domain(final_host)}' — not the official {label} domain.")
+                    f"'{registered_domain(final_host)}' â€” not the official {label} domain.")
     return None
 
 
 async def check_message_full(text: str) -> list[dict]:
     """Check every link in a message through the full pipeline."""
-    urls = extract_urls(text)
+    urls = _web_urls(text)
     if not urls:
         return []
     return list(await asyncio.gather(*(analyze_url(u) for u in urls)))
@@ -312,6 +341,7 @@ def format_verdict_full(v: dict) -> str:
     detail = v.get("detail") or []
     if not detail:
         return base
-    lines = ["", "— technical details —"]
-    lines += [f"· {d}" for d in detail]
+    lines = ["", "â€” technical details â€”"]
+    lines += [f"Â· {d}" for d in detail]
     return base + "\n" + "\n".join(lines)
+

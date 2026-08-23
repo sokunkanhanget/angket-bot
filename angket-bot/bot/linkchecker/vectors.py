@@ -1,5 +1,5 @@
-"""
-bot/analysis/vector_store.py
+﻿"""
+bot/linkchecker/vectors.py
 ============================
 Vector search over links and page text, backed by SQLite.
 
@@ -15,7 +15,7 @@ This is the mentor-suggested "vector search with a database" piece:
   * Vectors are L2-normalized so COSINE SIMILARITY is a plain dot
     product. Stored as compact BLOBs in the same scan_log DB.
 
-  * `nearest()` does brute-force k-NN — perfectly fine at bot scale
+  * `nearest()` does brute-force k-NN â€” perfectly fine at bot scale
     (tens of thousands of rows). If this ever grows past that, swap
     the query loop for sqlite-vec / Faiss; the schema and embed()
     stay identical.
@@ -233,7 +233,7 @@ PHISH_PATTERNS = [
 
 def seed() -> None:
     """Idempotently load brand vectors + synthetic phishing patterns."""
-    from bot.analysis.url_analyzer import PROTECTED_BRANDS
+    from bot.linkchecker.lexical import PROTECTED_BRANDS
 
     for domain, label in PROTECTED_BRANDS.items():
         upsert_vector("brand", domain, domain, label)
@@ -243,3 +243,4 @@ def seed() -> None:
         for pattern in PHISH_PATTERNS:
             fake = pattern.format(brand=brand)
             upsert_vector("phish", fake, fake, f"{label} impersonation pattern")
+

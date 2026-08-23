@@ -1,8 +1,8 @@
-"""
-bot/handlers/url_handler.py
+﻿"""
+bot/linkchecker/handler.py
 ===========================
-Telegram wiring for URL checking. Thin on purpose — the real logic
-lives in bot/analysis/url_analyzer.py.
+Telegram wiring for URL checking. Thin on purpose â€” the real logic
+lives in this package (lexical.py).
 
 Two very different flows depending on where the link showed up:
 
@@ -19,27 +19,27 @@ Telegram BUSINESS chat (secretary mode)
 A business chat is a real conversation between the business owner and
 their customer. Anything the bot sends there using the connection
 (`business_connection_id`) is sent AS the business account and is
-visible to BOTH sides — there is no "reply that only the owner sees"
+visible to BOTH sides â€” there is no "reply that only the owner sees"
 within that chat. So for business messages we don't reply in the chat
 at all. Instead we DM the business OWNER privately (their own private
-chat with the bot — a totally separate chat the customer can't see),
+chat with the bot â€” a totally separate chat the customer can't see),
 using `BusinessConnection.user_chat_id`. That field is exactly what
 Telegram provides for "tell the business owner something, off to the
 side, without the customer knowing."
 
 That private DM shows who sent the link (full name, id) and when, a
 compact verdict, and two buttons:
-  - "See full details" / "Show less detail" — toggles the SAME message
+  - "See full details" / "Show less detail" â€” toggles the SAME message
     in place (edit_message_text) between the compact showcase and the
     full breakdown. No /start round-trip needed since we're already in
     the owner's DM.
-  - "Delete" — removes that notification message. It only ever existed
+  - "Delete" â€” removes that notification message. It only ever existed
     in the owner's own private chat with the bot, so deleting it is
-    only ever "for the user" — nobody else could see it to begin with.
+    only ever "for the user" â€” nobody else could see it to begin with.
 
 Key detail: we read `update.effective_message` instead of
 `update.message`, because business messages arrive on
-`update.business_message` — `update.message` is always None for those.
+`update.business_message` â€” `update.message` is always None for those.
 """
 
 from __future__ import annotations
@@ -51,12 +51,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from bot.analysis.link_checker import check_message_full, format_verdict_full
+from bot.linkchecker.pipeline import check_message_full, format_verdict_full
 from bot.analysis.utils import log_url_scan
-from bot.analysis.vector_store import seed as seed_vectors
+from bot.linkchecker.vectors import seed as seed_vectors
 
 WELCOME_TEXT = (
-    "🔗 **Link Scanner Bot**\n\n"
+    "ðŸ”— **Link Scanner Bot**\n\n"
     "Drop a link in here (or in a group/business chat I'm in) and I'll flag "
     "sus ones automatically. Tap \"See full details\" on any showcase to get "
     "the full breakdown here in DM."
@@ -122,10 +122,10 @@ def _stash_business_ticket(context: ContextTypes.DEFAULT_TYPE, short_text: str, 
 
 def _business_keyboard(ticket: str, showing_full: bool) -> InlineKeyboardMarkup:
     if showing_full:
-        detail_button = InlineKeyboardButton("🔼 Show less detail", callback_data=f"u:l:{ticket}")
+        detail_button = InlineKeyboardButton("ðŸ”¼ Show less detail", callback_data=f"u:l:{ticket}")
     else:
-        detail_button = InlineKeyboardButton("🔍 See full details", callback_data=f"u:d:{ticket}")
-    delete_button = InlineKeyboardButton("🗑️ Delete", callback_data=f"u:x:{ticket}")
+        detail_button = InlineKeyboardButton("ðŸ” See full details", callback_data=f"u:d:{ticket}")
+    delete_button = InlineKeyboardButton("ðŸ—‘ï¸ Delete", callback_data=f"u:x:{ticket}")
     return InlineKeyboardMarkup([[detail_button, delete_button]])
 
 
@@ -175,11 +175,11 @@ async def handle_business_url_callback(update: Update, context: ContextTypes.DEF
 # ---------------------------------------------------------------------------
 
 def _showcase_text(verdicts: list[dict]) -> str:
-    """Short, one-glance summary — the 'small showcase', not the full report."""
+    """Short, one-glance summary â€” the 'small showcase', not the full report."""
     if len(verdicts) == 1:
         v = verdicts[0]
-        return f"{v['emoji']} *{v['label']}*  —  `{v['host']}`"
-    lines = [f"{v['emoji']} `{v['host']}` — {v['label']}" for v in verdicts]
+        return f"{v['emoji']} *{v['label']}*  â€”  `{v['host']}`"
+    lines = [f"{v['emoji']} `{v['host']}` â€” {v['label']}" for v in verdicts]
     return "\n".join(lines)
 
 
@@ -190,16 +190,16 @@ def _full_breakdown_text(verdicts: list[dict]) -> str:
 def _sender_header(sender, sent_at) -> str:
     """Full name, id, and timestamp of whoever sent the link."""
     name = sender.full_name if sender else "Unknown sender"
-    uid = sender.id if sender else "—"
-    when = sent_at.strftime("%Y-%m-%d %H:%M UTC") if sent_at else "—"
-    return f"👤 *{name}*  (`{uid}`)\n🕒 {when}"
+    uid = sender.id if sender else "â€”"
+    when = sent_at.strftime("%Y-%m-%d %H:%M UTC") if sent_at else "â€”"
+    return f"ðŸ‘¤ *{name}*  (`{uid}`)\nðŸ•’ {when}"
 
 
 async def _owner_chat_id(context: ContextTypes.DEFAULT_TYPE, business_connection_id: str) -> int | None:
     """Resolve a business connection to the OWNER's private chat id.
 
     `BusinessConnection.user_chat_id` is Telegram's built-in "message
-    the business owner privately, off to the side" channel — separate
+    the business owner privately, off to the side" channel â€” separate
     from the actual business chat with the customer. We cache it in
     bot_data since it doesn't change for the lifetime of the
     connection; falls back to a live `getBusinessConnection` call
@@ -220,7 +220,7 @@ async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_T
     """Keep the business-connection -> owner-chat-id cache warm.
 
     Fires when a business connection is created, its settings change,
-    or it's revoked — register this on a BusinessConnectionHandler in
+    or it's revoked â€” register this on a BusinessConnectionHandler in
     bot.py so _owner_chat_id() rarely has to fall back to a live API call.
     """
     conn = update.business_connection
@@ -234,7 +234,7 @@ async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/start — doubles as the deep-link landing page for the NORMAL-chat
+    """/start â€” doubles as the deep-link landing page for the NORMAL-chat
     flow only (business-chat DMs toggle in place and never need /start).
 
     context.args carries the ticket when someone taps "See full details"
@@ -243,7 +243,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     NOTE: this owns the /start command for the links feature only.
     If a teammate's branch (file/text scanning) also wants to say
     something on /start, merge the two message bodies rather than
-    registering two competing CommandHandler("start", ...) — PTB only
+    registering two competing CommandHandler("start", ...) â€” PTB only
     calls the first one that matches.
     """
     if context.args:
@@ -251,7 +251,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         full = resolve_ticket(context, ticket)
         if full is None:
             await update.message.reply_text(
-                "⌛ That result has expired. Send the link again to re-check it."
+                "âŒ› That result has expired. Send the link again to re-check it."
             )
             return
         await update.message.reply_text(
@@ -276,10 +276,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         seed_vectors()
         context.bot_data["_vectors_seeded"] = True
 
-    # Network tracing can take a few seconds — show progress first
+    # Network tracing can take a few seconds â€” show progress first
     # (normal chats only; business flow stays invisible).
     is_business = bool(message.business_connection_id)
-    status = None if is_business else await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
+    status = None if is_business else await message.reply_text("ðŸ” Checking link...", parse_mode="Markdown")
 
     verdicts = await check_message_full(message.text)
     if not verdicts:
@@ -295,9 +295,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if is_business:
         owner_chat_id = await _owner_chat_id(context, message.business_connection_id)
         if owner_chat_id is None:
-            return  # can't resolve the owner right now — nothing safe to do
+            return  # can't resolve the owner right now â€” nothing safe to do
 
-        header = f"👀 *New link detected in your business chat*\n\n{_sender_header(sender, message.date)}\n\n"
+        header = f"ðŸ‘€ *New link detected in your business chat*\n\n{_sender_header(sender, message.date)}\n\n"
         short_text = header + _showcase_text(verdicts)
         full_text = header + _full_breakdown_text(verdicts)
 
@@ -317,7 +317,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     full = _full_breakdown_text(verdicts)
     ticket = _stash_ticket(context, full)
     risky = any(v["level"] != "safe" for v in verdicts)
-    label = "⚠️ Why is this sus?" if risky else "🔍 See full details"
+    label = "âš ï¸ Why is this sus?" if risky else "ðŸ” See full details"
     deep_link = f"https://t.me/{context.bot.username}?start={ticket}"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(label, url=deep_link)]])
 

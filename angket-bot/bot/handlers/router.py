@@ -1,7 +1,9 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from bot.analysis.url_analyzer import check_message, format_verdict
+# NOTE (link-checker owner): url_analyzer moved into the linkchecker
+# package — only this import line was updated, logic untouched.
+from bot.linkchecker.lexical import check_message, format_verdict
 from bot.analysis.text_analyzer import analyze_text
 
 async def route_text(update: Update, context: ContextTypes.DEFAULT_TYPE):

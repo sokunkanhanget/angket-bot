@@ -1,5 +1,5 @@
-"""
-bot/analysis/threat_intel.py
+﻿"""
+bot/linkchecker/threat_intel.py
 ============================
 Flow 3 of the link-checking pipeline: external threat-intelligence
 feeds, starting with VirusTotal.
@@ -7,7 +7,7 @@ feeds, starting with VirusTotal.
 What VirusTotal gives us that local analysis can't:
     ~70+ antivirus / phishing blacklists (Google Safe Browsing,
     Kaspersky, ESET...) have already seen most scam links. One HTTPS
-    GET answers "do known engines flag this URL?" — the single most
+    GET answers "do known engines flag this URL?" â€” the single most
     authoritative signal available for KNOWN bad links.
 
 Free Public API limits (important!):
@@ -15,7 +15,7 @@ Free Public API limits (important!):
     * 500 per day
 So this module is built quota-first:
 
-    1. Every answer is cached in SQLite (vt_cache) for 7 days — a URL
+    1. Every answer is cached in SQLite (vt_cache) for 7 days â€” a URL
        is only ever fetched once per week no matter how many times
        Telegram users send it.
     2. The caller passes live=False for URLs that look clean so far;
@@ -138,7 +138,7 @@ async def lookup(url: str, api_key: str | None, live: bool = True) -> dict | Non
     cached = _cache_get(url_id)
     if cached is not None:
         # A cache row of all zeros means "VT knows nothing / was asked
-        # before" — still counts as a real answer for TTL purposes but
+        # before" â€” still counts as a real answer for TTL purposes but
         # scores zero points.
         return cached if (cached["malicious"] or cached["suspicious"] or cached["total"]) else None
 
@@ -195,3 +195,4 @@ async def lookup(url: str, api_key: str | None, live: bool = True) -> dict | Non
     if result["total"] > 0:
         _cache_put(url_id, result)
     return result
+

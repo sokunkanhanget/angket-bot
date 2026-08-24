@@ -9,9 +9,15 @@ from bot.analysis.text_analyzer import analyze_text
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "🛡️ **Angket Bot**\n\n"
-        "Send me a file or text string to perform a malware scan.",
-        parse_mode="Markdown",
+        "🛡️ <b>Welcome to Angket Bot</b>\n"
+        "Your security assistant for checking suspicious content.\n\n"
+        "🔍 What can I scan?\n"
+        "• 📝 Text messages\n"
+        "• 📄 Files\n"
+        "• 🔗 URLs & links\n\n"
+        "Simply send me something, and I’ll analyze it for security threats.\n\n"
+        "Let’s keep your digital world safer.",
+        parse_mode="HTML",
     )
 
 

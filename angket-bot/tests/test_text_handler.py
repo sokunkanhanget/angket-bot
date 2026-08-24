@@ -15,12 +15,14 @@ def test_format_analysis_response_uses_high_risk_style():
         _result(85), {"suspicious": False, "matches": []}
     )
 
-    assert "⚠️ <b>Verdict: Likely a SCAM</b>" in response
-    assert "🔴 <b>85% High Risk</b>" in response
-    assert "🔍 <b>Key Reasons</b>" in response
-    assert "💡 <b>What You Can Do</b>" in response
+    assert "⚠️ <b>VERDICT: LIKELY A SCAM</b>" in response
+    assert "This message shows strong signs of being unsafe." in response
+    assert "🔴 <b>85%  HIGH RISK</b>" in response
+    assert "🔍 <b>KEY REASONS</b>" in response
+    assert "💡 <b>WHAT YOU SHOULD DO</b>" in response
     assert "• Uses an unrealistic offer &lt;now&gt;" in response
-    assert "ⓘ Our bot can make mistakes sometimes." in response
+    assert "ⓘ Angket Bot may occasionally make mistakes." in response
+    assert "────────────────────" in response
     assert "1. Verdict" not in response
 
 
@@ -32,10 +34,12 @@ def test_format_analysis_response_uses_medium_and_low_thresholds():
         _result(30, verdict="Not a Scam"), {"suspicious": False, "matches": []}
     )
 
-    assert "🟠 <b>31% Medium Risk</b>" in medium
-    assert "⚠️ <b>Verdict: SUSPICIOUS</b>" in medium
-    assert "🟢 <b>30% Low Risk</b>" in low
-    assert "✅ <b>Verdict: SAFE / LEGITIMATE</b>" in low
+    assert "🟠 <b>31%  MEDIUM RISK</b>" in medium
+    assert "⚠️ <b>VERDICT: SUSPICIOUS</b>" in medium
+    assert "This message has warning signs. Verify it before taking action." in medium
+    assert "🟢 <b>30%  LOW RISK</b>" in low
+    assert "✅ <b>VERDICT: SAFE / LEGITIMATE</b>" in low
+    assert "No strong scam indicators were detected in this message." in low
 
 
 def test_format_analysis_response_includes_keyword_match_only_when_present():
@@ -43,4 +47,4 @@ def test_format_analysis_response_includes_keyword_match_only_when_present():
         _result(61), {"suspicious": True, "matches": ["claim <reward>"]}
     )
 
-    assert "⚠️ <b>Keyword match:</b> <code>claim &lt;reward&gt;</code>" in response
+    assert "⚠️ <b>KEYWORD MATCH:</b> <code>claim &lt;reward&gt;</code>" in response

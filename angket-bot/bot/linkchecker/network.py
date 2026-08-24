@@ -1,7 +1,7 @@
-﻿"""
+"""
 bot/linkchecker/network.py
 ==============================
-Asynchronous network verification for links â€” the "Async I/O" and
+Asynchronous network verification for links — the "Async I/O" and
 "Network & HTTPS / Redirect Chains / Header Verification / DOM
 Parsing" rows of the research notes.
 
@@ -10,7 +10,7 @@ python-telegram-bot, so this adds zero new packages.
 
 What one `trace()` gives the scorer:
   * full redirect chain (who redirects where, across which domains)
-  * final landing URL â€” shorteners get re-scored against THIS, not
+  * final landing URL — shorteners get re-scored against THIS, not
     the t.co/bit.ly front
   * TLS handshake validity (self-signed / expired cert => flag)
   * status code + selected response headers
@@ -142,7 +142,7 @@ def _capture(response: httpx.Response, result: dict, history: list, body: bytes)
 
 
 async def trace_many(urls: list[str]) -> list[dict]:
-    """Trace several URLs concurrently â€” the distributed-crawling spirit
+    """Trace several URLs concurrently — the distributed-crawling spirit
     of the research notes on a single-process scale."""
     return list(await asyncio.gather(*(trace(u) for u in urls)))
 

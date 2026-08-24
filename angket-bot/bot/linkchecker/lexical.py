@@ -1,8 +1,8 @@
-﻿"""
+"""
 bot/linkchecker/lexical.py
 ============================
-The URL-checking brain for Angket Bot. Pure standard library â€” no
-dependencies â€” so it can be tested on its own, just like text_analyzer.py.
+The URL-checking brain for Angket Bot. Pure standard library — no
+dependencies — so it can be tested on its own, just like text_analyzer.py.
 
 Public functions the handler uses:
     check_message(text) -> list[dict]   # one verdict per URL found
@@ -68,7 +68,7 @@ URL_REGEX = re.compile(
 # --- Helpers ---------------------------------------------------------
 
 def levenshtein(a: str, b: str) -> int:
-    """Edit distance â€” used to catch typosquats like ababamk.com."""
+    """Edit distance — used to catch typosquats like ababamk.com."""
     if a == b:
         return 0
     if not a:
@@ -127,10 +127,10 @@ def _normalize(url: str):
 def _verdict_labels(score: int):
     """Turn a score into (level, emoji, label)."""
     if score >= 60:
-        return "dangerous", "ðŸ”´", "Dangerous"
+        return "dangerous", "🔴", "Dangerous"
     if score >= 25:
-        return "suspicious", "ðŸŸ ", "Suspicious"
-    return "safe", "ðŸŸ¢", "Looks OK"
+        return "suspicious", "🟠", "Suspicious"
+    return "safe", "🟢", "Looks OK"
 
 
 # --- Checks ----------------------------------------------------------
@@ -172,7 +172,7 @@ def check_url(raw_url: str) -> dict:
     if not host:
         return {"raw": raw_url, "host": "", "score": 0, "level": "safe",
                 "reasons": ["Could not parse this as a link."],
-                "emoji": "ðŸŸ¢", "label": "Looks OK"}
+                "emoji": "🟢", "label": "Looks OK"}
 
     reg = registered_domain(host)
     path_query = (parts.path + "?" + parts.query).lower()
@@ -184,7 +184,7 @@ def check_url(raw_url: str) -> dict:
 
     if parts.username or parts.password:
         score += 40
-        reasons.append("Contains '@' in the address â€” a trick to hide the real destination.")
+        reasons.append("Contains '@' in the address — a trick to hide the real destination.")
 
     if "xn--" in host:
         score += 30
@@ -192,7 +192,7 @@ def check_url(raw_url: str) -> dict:
 
     if host in URL_SHORTENERS or reg in URL_SHORTENERS:
         score += 25
-        reasons.append("Shortened link â€” the real destination is hidden until you click.")
+        reasons.append("Shortened link — the real destination is hidden until you click.")
 
     if tld in ABUSED_TLDS:
         score += 25
@@ -247,7 +247,7 @@ def format_verdict(v: dict) -> str:
         f"Link: `{v['host']}`",
         "",
     ]
-    lines += [f"â€¢ {r}" for r in v["reasons"]]
+    lines += [f"• {r}" for r in v["reasons"]]
     if v["level"] != "safe":
-        lines += ["", "âš ï¸ Do not log in, pay, or enter codes on this link."]
+        lines += ["", "⚠️ Do not log in, pay, or enter codes on this link."]
     return "\n".join(lines)

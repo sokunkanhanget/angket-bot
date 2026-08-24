@@ -1,7 +1,7 @@
-﻿"""
+"""
 bot/analysis/domain_info.py
 ===========================
-Host & domain metadata â€” the "WHOIS & Domain Age" and "DNS
+Host & domain metadata — the "WHOIS & Domain Age" and "DNS
 Resolution" rows of the research notes.
 
 Two signals, both fetched asynchronously:
@@ -12,7 +12,7 @@ Two signals, both fetched asynchronously:
      phishing setup.
 
   2. Domain creation date via RDAP (https://rdap.org). RDAP is the
-     modern JSON replacement for raw whois port 43 â€” one HTTPS GET per
+     modern JSON replacement for raw whois port 43 — one HTTPS GET per
      domain, no extra package. Registration age is one of the single
      strongest phishing predictors: most malicious domains are days or
      weeks old.
@@ -168,10 +168,10 @@ def score_domain_age(age_days: int | None) -> tuple[int, str] | None:
     if age_days is None:
         return None
     if age_days < 30:
-        return 35, f"Domain registered only {age_days} day(s) ago â€” brand-new domains are a classic phishing sign."
+        return 35, f"Domain registered only {age_days} day(s) ago — brand-new domains are a classic phishing sign."
     if age_days < 90:
-        return 20, f"Domain registered {age_days} days ago â€” still very young."
+        return 20, f"Domain registered {age_days} days ago — still very young."
     if age_days < 365:
-        return 10, f"Domain registered {age_days} days ago â€” less than a year old."
+        return 10, f"Domain registered {age_days} days ago — less than a year old."
     return None
 

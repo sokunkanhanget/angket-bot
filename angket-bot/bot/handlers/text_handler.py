@@ -22,15 +22,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 _VERDICT_STYLES = {
-    "Scam": ("⚠️", "Likely a SCAM"),
+    "Scam": ("⚠️", "LIKELY A SCAM"),
     "Not a Scam": ("✅", "SAFE / LEGITIMATE"),
     "Uncertain": ("⚠️", "SUSPICIOUS"),
 }
 
 _DISCLAIMER = (
-    "ⓘ Our bot can make mistakes sometimes.\n"
-    "Please double-check important information before taking any action.\n"
-    "Stay safe! 🛡"
+    "ⓘ Angket Bot may occasionally make mistakes.\n"
+    "Double-check important information before taking action.\n\n"
+    "🛡️ <b>Stay safe!</b>"
 )
 
 
@@ -50,8 +50,20 @@ def _risk_style(risk_percentage: int | None) -> tuple[str, str]:
     return "🔴", "High Risk"
 
 
-def _section(content: str) -> str:
-    return f"<blockquote>{content}</blockquote>"
+def _summary(verdict: str | None, risk_percentage: int | None) -> str:
+    if verdict == "Scam":
+        if risk_percentage is not None and risk_percentage <= 60:
+            return "This looks a bit suspicious, a few things about it don't add up. Be careful with it."
+        return "This really looks like a scam. We'd strongly recommend not acting on it."
+    if verdict == "Not a Scam":
+        if risk_percentage is not None and risk_percentage > 30:
+            return "This seems mostly fine, but a couple of small things stood out. Just double-check before you act."
+        return "This message looks safe, we didn't spot anything concerning."
+    if risk_percentage is not None and risk_percentage > 60:
+        return "Something feels off here. Best to avoid sharing any personal details."
+    if risk_percentage is not None and risk_percentage > 30:
+        return "A few red flags popped up. Worth verifying before you do anything with this."
+    return "We couldn't tell for sure whether this is safe or not because of not enough information to go on."
 
 
 def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
@@ -63,27 +75,18 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
     lines = [
-        _section(
-            f"{verdict_icon} <b>Verdict: {escape(verdict_label)}</b>\n"
-            f"<i>This link shows strong signs of being unsafe.</i>"
-        ),
-        _section(
-            f"🛡 <b>Scam Risk Level</b> {risk_icon} <b>{percentage}%</b> <b>{risk_label}</b>"
-        ),
-        _section(
-            f"🔍 <b>Key Reasons</b>\n"
-            f"{_format_list(llm_result.get('key_reasons', []), '•')}"
-        ),
-        _section(
-            f"💡 <b>What You Can Do</b>\n"
-            f"<blockquote>{_format_list(llm_result.get('recommendations', []), '✅')}</blockquote>"
-        ),
-        f"<i>{_DISCLAIMER}</i>",
+        f"{verdict_icon} <b>VERDICT: {escape(verdict_label)}</b>\n\n"
+        + _summary(llm_result.get("verdict"), risk_percentage),
+        f"{risk_icon} <b>SCAM RISK</b>: <b>{percentage} - {risk_label.upper()}</b>\n\n"
+        f"🔍 <b>KEY REASONS</b>\n{_format_list(llm_result.get('key_reasons', []), '•')}",
+        "💡 <b>WHAT YOU SHOULD DO</b>\n"
+        f"{_format_list(llm_result.get('recommendations', []), '✓')}",
+        f"──────────────────────────────────────────────\n{_DISCLAIMER}",
     ]
 
     if keyword_result["suspicious"]:
         matches = escape(", ".join(keyword_result["matches"]))
-        lines.insert(0, f"⚠️ <b>Keyword match:</b> <code>{matches}</code>")
+        lines.insert(3, f"⚠️ <b>KEYWORD MATCH:</b> <code>{matches}</code>")
 
     return "\n\n".join(lines)
 

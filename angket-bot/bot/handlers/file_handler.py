@@ -13,7 +13,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     file_name = document.file_name or "unknown_file"
     user_id = update.effective_user.id
     message = await update.message.reply_text(
-        f"📥 *Scanning `{file_name}`...*", parse_mode="Markdown"
+        f"📥 *Scanning `{file_name}`...*",
+        parse_mode="Markdown",
     )
 
     file_info = await context.bot.get_file(document.file_id)
@@ -55,4 +56,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         log_scan(user_id, file_name, sha256, 0)
 
-    await message.edit_text(reply, parse_mode="Markdown")
+    await message.edit_text(
+        reply,
+        parse_mode="Markdown",
+    )

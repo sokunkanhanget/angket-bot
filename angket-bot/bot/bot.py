@@ -5,6 +5,7 @@ from bot.config import TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
 from bot.handlers.file_handler import handle_file
 from bot.handlers.text_handler import handle_text, start
 
+
 def main():
     if not TELEGRAM_BOT_TOKEN or not VIRUSTOTAL_API_KEY:
         print("Error: Missing TELEGRAM_BOT_TOKEN or VIRUSTOTAL_API_KEY in .env file.")
@@ -19,6 +20,7 @@ def main():
 
     print("🤖 Bot is running...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()

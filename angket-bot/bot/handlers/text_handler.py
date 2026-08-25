@@ -1,10 +1,53 @@
 from html import escape
 
-from telegram import Update
+from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
+
+BTN_MENU = "MENU"
+BTN_SWITCH_LANGUAGE = "🌐 Switch Language"
+BTN_HOW_TO_USE = "📖 How to Use"
+BTN_SAFETY_TIPS = "🛡️ Safety Tips"
+BTN_LIVE_SCAN = "🔎 Live Message Scan"
+BTN_POLICY = "📜 Policy"
+BTN_HELP = "❓ Help"
+BTN_SUBSCRIPTION = "⭐ Subscription"
+
+TRIGGER_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    [[BTN_MENU]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
+
+MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [BTN_SWITCH_LANGUAGE, BTN_HOW_TO_USE],
+        [BTN_SAFETY_TIPS, BTN_LIVE_SCAN],
+        [BTN_POLICY, BTN_HELP],
+        [BTN_SUBSCRIPTION],
+    ],
+    resize_keyboard=True,
+)
+
+_MENU_RESPONSES = {
+    BTN_SWITCH_LANGUAGE: "🌐 <b>Switch Language</b>\n\nLanguage selection is coming soon.",
+    BTN_HOW_TO_USE: (
+        "📖 <b>How to Use</b>\n\n"
+        "Simply send me a text message, file, or link and I’ll analyze it for security threats."
+    ),
+    BTN_SAFETY_TIPS: (
+        "🛡️ <b>Safety Tips</b>\n\n"
+        "• Never share OTPs, passwords, or bank details.\n"
+        "• Verify links before clicking.\n"
+        "• Be cautious of urgent or too-good-to-be-true offers."
+    ),
+    BTN_LIVE_SCAN: "🔎 <b>Live Message Scan</b>\n\nSend me any message and I’ll scan it in real time.",
+    BTN_POLICY: "📜 <b>Policy</b>\n\nOur privacy and usage policy will be shown here.",
+    BTN_HELP: "❓ <b>Help</b>\n\nNeed assistance? Just send your question and we'll do our best to help.",
+    BTN_SUBSCRIPTION: "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
+}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -15,9 +58,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• 📝 Text messages\n"
         "• 📄 Files\n"
         "• 🔗 URLs & links\n\n"
-        "Simply send me something, and I’ll analyze it for security threats.\n\n"
+        "Use the buttons below to explore the menu.\n\n"
         "Let’s keep your digital world safer.",
         parse_mode="HTML",
+        reply_markup=MAIN_MENU_KEYBOARD,
     )
 
 
@@ -53,17 +97,17 @@ def _risk_style(risk_percentage: int | None) -> tuple[str, str]:
 def _summary(verdict: str | None, risk_percentage: int | None) -> str:
     if verdict == "Scam":
         if risk_percentage is not None and risk_percentage <= 60:
-            return "This looks a bit suspicious, a few things about it don't add up. Be careful with it."
-        return "This really looks like a scam. We'd strongly recommend not acting on it."
+            return "This message has warning signs. Verify it before taking action."
+        return "This message shows strong signs of being unsafe."
     if verdict == "Not a Scam":
         if risk_percentage is not None and risk_percentage > 30:
-            return "This seems mostly fine, but a couple of small things stood out. Just double-check before you act."
-        return "This message looks safe, we didn't spot anything concerning."
+            return "This message has warning signs. Verify it before taking action."
+        return "No strong scam indicators were detected in this message."
     if risk_percentage is not None and risk_percentage > 60:
-        return "Something feels off here. Best to avoid sharing any personal details."
+        return "This message shows strong signs of being unsafe."
     if risk_percentage is not None and risk_percentage > 30:
-        return "A few red flags popped up. Worth verifying before you do anything with this."
-    return "We couldn't tell for sure whether this is safe or not because of not enough information to go on."
+        return "This message has warning signs. Verify it before taking action."
+    return "No strong scam indicators were detected in this message."
 
 
 def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
@@ -77,7 +121,7 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
     lines = [
         f"{verdict_icon} <b>VERDICT: {escape(verdict_label)}</b>\n\n"
         + _summary(llm_result.get("verdict"), risk_percentage),
-        f"{risk_icon} <b>SCAM RISK</b>: <b>{percentage} - {risk_label.upper()}</b>\n\n"
+        f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
         f"🔍 <b>KEY REASONS</b>\n{_format_list(llm_result.get('key_reasons', []), '•')}",
         "💡 <b>WHAT YOU SHOULD DO</b>\n"
         f"{_format_list(llm_result.get('recommendations', []), '✓')}",
@@ -93,9 +137,29 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
+
+    if text.upper() == BTN_MENU:
+        await update.message.reply_text(
+            "📋 <b>Menu</b>\n\nChoose an action below.",
+            parse_mode="HTML",
+            reply_markup=MAIN_MENU_KEYBOARD,
+        )
+        return
+
+    menu_response = _MENU_RESPONSES.get(text)
+    if menu_response is not None:
+        await update.message.reply_text(
+            menu_response,
+            parse_mode="HTML",
+            reply_markup=MAIN_MENU_KEYBOARD,
+        )
+        return
+
     keyword_result = analyze_text(text)
     llm_result = await analyze_text_with_llm(text)
 
     await update.message.reply_text(
-        format_analysis_response(llm_result, keyword_result), parse_mode="HTML"
+        format_analysis_response(llm_result, keyword_result),
+        parse_mode="HTML",
+        reply_markup=MAIN_MENU_KEYBOARD,
     )

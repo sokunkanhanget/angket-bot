@@ -75,6 +75,24 @@ async def test_handle_text_shows_menu_response():
 
 
 @pytest.mark.asyncio
+async def test_handle_text_shows_how_to_use_guidance():
+    update = AsyncMock()
+    update.message.text = "📖 How to Use"
+    update.message.reply_text = AsyncMock()
+
+    await handle_text(update, AsyncMock())
+
+    response = update.message.reply_text.call_args[0][0]
+    assert "How to Use Angket Bot" in response
+    assert "1. Send the content you want to check" in response
+    assert "2. Let Angket analyze it" in response
+    assert "3. Get your result" in response
+    assert "🟢 <b>Low Risk:</b>" in response
+    assert "🟡 <b>Medium Risk:</b>" in response
+    assert "🔴 <b>High Risk:</b>" in response
+
+
+@pytest.mark.asyncio
 async def test_handle_text_analyzes_regular_messages():
     update = AsyncMock()
     update.message.text = "This is a test message"

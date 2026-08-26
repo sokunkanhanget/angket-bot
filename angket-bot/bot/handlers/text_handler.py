@@ -78,8 +78,23 @@ MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
 _MENU_RESPONSES = {
     BTN_SWITCH_LANGUAGE: "🌐 <b>Switch Language</b>\n\nLanguage selection is coming soon.",
     BTN_HOW_TO_USE: (
-        "📖 <b>How to Use</b>\n\n"
-        "Simply send me a text message, file, or link and I’ll analyze it for security threats."
+        "📖 <b>How to Use Angket Bot</b>\n\n"
+        "Angket helps you check suspicious content and understand the security risk.\n\n"
+        "<b>1. Send the content you want to check</b>\n\n"
+        "• 📝 Send a suspicious text message\n"
+        "• 📄 Upload a suspicious file\n"
+        "• 🔗 Send a URL or link\n\n"
+        "<b>2. Let Angket analyze it</b>\n\n"
+        "Angket will scan the content and identify potential security threats.\n\n"
+        "<b>3. Get your result</b>\n\n"
+        "You’ll receive:\n\n"
+        "• 📊 <b>Risk Level:</b> How risky the content may be.\n"
+        "• 🔍 <b>Key Reasons:</b> Why it was flagged.\n"
+        "• 💡 <b>What To Do:</b> What you should do next.\n\n"
+        "<b>Risk Levels</b>\n"
+        "🟢 <b>Low Risk:</b> No significant threat detected.\n"
+        "🟡 <b>Medium Risk:</b> Some suspicious signs detected. Be cautious.\n"
+        "🔴 <b>High Risk:</b> Strong signs of a potential threat. Avoid interacting with it."
     ),
     BTN_SAFETY_TIPS: (
         "🛡️ <b>Safety Tips</b>\n\n"

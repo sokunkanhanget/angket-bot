@@ -5,6 +5,50 @@ from telegram.ext import ContextTypes
 
 from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
+from bot.linkchecker.handler import resolve_ticket
+
+BTN_MENU = "MENU"
+BTN_SWITCH_LANGUAGE = "🌐 Switch Language"
+BTN_HOW_TO_USE = "📖 How to Use"
+BTN_SAFETY_TIPS = "🛡️ Safety Tips"
+BTN_LIVE_SCAN = "🔎 Live Message Scan"
+BTN_POLICY = "📜 Policy"
+BTN_HELP = "❓ Help"
+BTN_SUBSCRIPTION = "⭐ Subscription"
+
+TRIGGER_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    [[BTN_MENU]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
+
+MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [BTN_SWITCH_LANGUAGE, BTN_HOW_TO_USE],
+        [BTN_SAFETY_TIPS, BTN_LIVE_SCAN],
+        [BTN_POLICY, BTN_HELP],
+        [BTN_SUBSCRIPTION],
+    ],
+    resize_keyboard=True,
+)
+
+_MENU_RESPONSES = {
+    BTN_SWITCH_LANGUAGE: "🌐 <b>Switch Language</b>\n\nLanguage selection is coming soon.",
+    BTN_HOW_TO_USE: (
+        "📖 <b>How to Use</b>\n\n"
+        "Simply send me a text message, file, or link and I’ll analyze it for security threats."
+    ),
+    BTN_SAFETY_TIPS: (
+        "🛡️ <b>Safety Tips</b>\n\n"
+        "• Never share OTPs, passwords, or bank details.\n"
+        "• Verify links before clicking.\n"
+        "• Be cautious of urgent or too-good-to-be-true offers."
+    ),
+    BTN_LIVE_SCAN: "🔎 <b>Live Message Scan</b>\n\nSend me any message and I’ll scan it in real time.",
+    BTN_POLICY: "📜 <b>Policy</b>\n\nOur privacy and usage policy will be shown here.",
+    BTN_HELP: "❓ <b>Help</b>\n\nNeed assistance? Just send your question and we'll do our best to help.",
+    BTN_SUBSCRIPTION: "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
+}
 
 BTN_MENU = "MENU"
 BTN_SWITCH_LANGUAGE = "🌐 Switch Language"
@@ -51,6 +95,19 @@ _MENU_RESPONSES = {
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Deep-link tickets from link-checker showcases arrive here too
+    # (t.me/<bot>?start=<ticket>). A valid ticket takes priority over
+    # the welcome menu; an expired/unknown one falls through to it.
+    if context.args:
+        full = resolve_ticket(context, context.args[0])
+        if full is not None:
+            await update.message.reply_text(
+                full,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+            return
+
     await update.message.reply_text(
         "🛡️ <b>Welcome to Angket Bot</b>\n"
         "Your security assistant for checking suspicious content.\n\n"

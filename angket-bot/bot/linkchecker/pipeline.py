@@ -17,7 +17,8 @@ plain-language reason for the Telegram breakdown.
 
 The verdict dict keeps the exact shape url_handler already renders
 (raw/host/score/level/reasons/emoji/label) plus an optional
-`detail` list of extra technical lines shown in the full breakdown.
+`detail` list of extra technical lines, rendered by format_verdict_full
+as a trailing "Technical Evidence" section of the full breakdown.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ from bot.linkchecker.lexical import (
     _verdict_labels,
     check_url,
     extract_urls,
-    format_verdict,
     registered_domain,
 )
 from bot.config import VIRUSTOTAL_API_KEY
@@ -335,13 +335,92 @@ async def check_message_full(text: str) -> list[dict]:
     return list(await asyncio.gather(*(analyze_url(u) for u in urls)))
 
 
-def format_verdict_full(v: dict) -> str:
-    """format_verdict plus the technical `detail` section."""
-    base = format_verdict(v)
+def _risk_percent_and_label(score: int) -> tuple[int, str]:
+    """Percentage shown to the user (score is uncapped internally, capped
+    at 100 for display) plus a Low/Medium/High bucket using the SAME cut
+    points as text_handler._risk_style, for visual consistency across
+    features. Deliberately separate from _verdict_labels' 25/60
+    dangerous/suspicious/safe thresholds, which keep driving the
+    Verdict line's emoji/label unchanged."""
+    pct = min(score, 100)
+    if pct <= 30:
+        return pct, "Low Risk"
+    if pct <= 60:
+        return pct, "Medium Risk"
+    return pct, "High Risk"
+
+
+_VERDICT_SENTENCES = {
+    "dangerous": "This link is 🔴 *DANGEROUS* — avoid it.",
+    "suspicious": "This link is 🟠 *SUSPICIOUS* — proceed with caution.",
+    "safe": "This link is 🟢 *SAFE*.",
+}
+
+_RECOMMENDATIONS = {
+    "dangerous": [
+        "Do not open this link, log in, or enter any codes, passwords, or card details.",
+        "If you already entered anything, change that password now and contact your bank or provider.",
+        "Block and report the sender — this pattern matches known scam tactics.",
+    ],
+    "suspicious": [
+        "Don't log in, pay, or enter personal details until you confirm this is legitimate.",
+        "Go to the official site or app directly instead of clicking this link.",
+        "If someone sent this to you, verify with them through a separate channel first.",
+    ],
+    "safe": [
+        "No strong scam signals were found, but always double-check before entering sensitive info.",
+        "Make sure the address matches the official site exactly before logging in.",
+    ],
+}
+
+
+def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
+    """Full 5-section professional breakdown for one URL, Telegram-ready
+    (legacy Markdown parse_mode, matching the rest of linkchecker/handler.py).
+
+    Verdict (categorical, dangerous/suspicious/safe thresholds) and Scam
+    Risk Level (quantified percentage, its own Low/Medium/High cut points)
+    are deliberately independent — they answer different questions and can
+    disagree slightly at the margins by design.
+
+    include_evidence=False drops the trailing Technical Evidence section —
+    used for a link pasted directly into the bot's own private DM, which
+    wants the clean report without the technical detail dump.
+    """
+    pct, risk_label = _risk_percent_and_label(v["score"])
+    verdict_sentence = _VERDICT_SENTENCES[v["level"]]
+    recs = _RECOMMENDATIONS[v["level"]]
+
+    lines = [
+        "📡 *Angket Bot — Link Checker*",
+        "",
+        "🔗 *Scanned Link*",
+        f"`{v['host']}`",
+        "",
+        "🛡️ *1. Verdict*",
+        verdict_sentence,
+        "",
+        "📊 *2. Scam Risk Level*",
+        f"{pct}% estimated scam risk — {risk_label}",
+        "",
+        "🔍 *3. Key Reasons*",
+    ]
+    lines += [f"  • {r}" for r in v["reasons"]]
+    lines += [
+        "",
+        "💡 *4. What You Can Do*",
+    ]
+    lines += [f"  ✔ {r}" for r in recs]
+    lines += [
+        "",
+        "ℹ️ *5. Heads Up*",
+        "Bot can make mistakes. Please check carefully.",
+    ]
+
     detail = v.get("detail") or []
-    if not detail:
-        return base
-    lines = ["", "— technical details —"]
-    lines += [f"· {d}" for d in detail]
-    return base + "\n" + "\n".join(lines)
+    if include_evidence and detail:
+        lines += ["", "🧾 *Technical Evidence*"]
+        lines += [f"  · {d}" for d in detail]
+
+    return "\n".join(lines)
 

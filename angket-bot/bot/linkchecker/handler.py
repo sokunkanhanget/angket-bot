@@ -51,7 +51,11 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from bot.linkchecker.pipeline import check_message_full, format_verdict_full
+from bot.linkchecker.pipeline import (
+    check_message_full,
+    format_verdict_full,
+    _risk_percent_and_label,
+)
 from bot.analysis.utils import log_url_scan
 from bot.linkchecker.vectors import seed as seed_vectors
 
@@ -178,13 +182,19 @@ def _showcase_text(verdicts: list[dict]) -> str:
     """Short, one-glance summary — the 'small showcase', not the full report."""
     if len(verdicts) == 1:
         v = verdicts[0]
-        return f"{v['emoji']} *{v['label']}*  —  `{v['host']}`"
-    lines = [f"{v['emoji']} `{v['host']}` — {v['label']}" for v in verdicts]
+        pct, _ = _risk_percent_and_label(v["score"])
+        return f"{v['emoji']} *{v['label']}*  —  `{v['host']}`  ({pct}%)"
+    lines = []
+    for v in verdicts:
+        pct, _ = _risk_percent_and_label(v["score"])
+        lines.append(f"{v['emoji']} `{v['host']}` — {v['label']} ({pct}%)")
     return "\n".join(lines)
 
 
-def _full_breakdown_text(verdicts: list[dict]) -> str:
-    return "\n\n---\n\n".join(format_verdict_full(v) for v in verdicts)
+def _full_breakdown_text(verdicts: list[dict], include_evidence: bool = True) -> str:
+    return "\n\n---\n\n".join(
+        format_verdict_full(v, include_evidence=include_evidence) for v in verdicts
+    )
 
 
 def _sender_header(sender, sent_at) -> str:
@@ -233,6 +243,10 @@ async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_T
         cache.pop(conn.id, None)
 
 
+# TODO(BB): dead code — bot.py wires /start to text_handler.start, which
+# already reimplements ticket-resolution (see its docstring/comment in
+# bot.py). Confirm with teammate before removing, or delete in a
+# dedicated cleanup commit.
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/start — doubles as the deep-link landing page for the NORMAL-chat
     flow only (business-chat DMs toggle in place and never need /start).
@@ -313,7 +327,25 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    # --- Normal chat/group/DM: showcase in place, deep-link for details. ---
+    # --- Private DM with the bot itself: full breakdown right away. ---
+    # Already a 1:1 conversation, so there's no group to keep short for —
+    # skip the deep-link ticket/button round-trip entirely.
+    chat = update.effective_chat
+    is_private = chat is not None and chat.type == "private"
+
+    if is_private:
+        # No Technical Evidence dump here — a direct DM paste wants the
+        # clean report; that detail stays for the business/group flows,
+        # which are reached via an explicit "see full details" tap.
+        full = _full_breakdown_text(verdicts, include_evidence=False)
+        await status.edit_text(
+            full,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+        return
+
+    # --- Group/supergroup (channel as fallback): showcase in place, deep-link for details. ---
     full = _full_breakdown_text(verdicts)
     ticket = _stash_ticket(context, full)
     risky = any(v["level"] != "safe" for v in verdicts)

@@ -369,41 +369,38 @@ _RECOMMENDATIONS = {
 
 
 def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
-    """Full 5-section professional breakdown; include_evidence=False drops the Technical Evidence section."""
+    """Full breakdown; include_evidence=False drops the Technical Evidence section."""
     pct, risk_label = _risk_percent_and_label(v["score"])
     verdict_sentence = _VERDICT_SENTENCES[v["level"]]
     recs = _RECOMMENDATIONS[v["level"]]
 
     lines = [
-        "📡 *Angket Bot — Link Checker*",
+        "📡 *Angket Bot - Link Checker*",
         "",
         "🔗 *Scanned Link*",
         f"`{v['host']}`",
         "",
-        "🛡️ *1. Verdict*",
+        "🛡️ *Risk*",
         verdict_sentence,
-        "",
-        "📊 *2. Scam Risk Level*",
         f"{pct}% estimated scam risk — {risk_label}",
         "",
-        "🔍 *3. Key Reasons*",
+        "🔍 *Reasons*",
     ]
-    lines += [f"  • {r}" for r in v["reasons"]]
+    lines += [f"- {r}" for r in v["reasons"]]
     lines += [
         "",
-        "💡 *4. What You Can Do*",
+        "💡 *What Can You Do?*",
     ]
-    lines += [f"  ✔ {r}" for r in recs]
+    lines += [f"- {r}" for r in recs]
     lines += [
         "",
-        "ℹ️ *5. Heads Up*",
-        "Bot can make mistakes. Please check carefully.",
+        "ⓘ Bot can make mistakes. Please check carefully.",
     ]
 
     detail = v.get("detail") or []
     if include_evidence and detail:
         lines += ["", "🧾 *Technical Evidence*"]
-        lines += [f"  · {d}" for d in detail]
+        lines += [f"- {d}" for d in detail]
 
     return "\n".join(lines)
 

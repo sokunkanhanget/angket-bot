@@ -37,6 +37,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     level=logging.INFO,
 )
+# httpx logs the full request URL at INFO, and PTB embeds the bot token
+# directly in that URL (https://api.telegram.org/bot<TOKEN>/...) — quiet
+# it down so the token never hits stdout/log files.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

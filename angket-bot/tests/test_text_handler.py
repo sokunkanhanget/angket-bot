@@ -63,6 +63,7 @@ async def test_handle_text_shows_menu_response():
     update = AsyncMock()
     update.message.text = "🌐 Switch Language"
     update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
 
     await handle_text(update, AsyncMock())
 
@@ -79,6 +80,7 @@ async def test_handle_text_shows_how_to_use_guidance():
     update = AsyncMock()
     update.message.text = "📖 How to Use"
     update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
 
     await handle_text(update, AsyncMock())
 
@@ -97,6 +99,7 @@ async def test_handle_text_analyzes_regular_messages():
     update = AsyncMock()
     update.message.text = "This is a test message"
     update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
 
     with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": False, "matches": []}), patch(
         "bot.handlers.text_handler.analyze_text_with_llm",

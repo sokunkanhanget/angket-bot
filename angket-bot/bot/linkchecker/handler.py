@@ -243,10 +243,7 @@ async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_T
         cache.pop(conn.id, None)
 
 
-# TODO(BB): dead code — bot.py wires /start to text_handler.start, which
-# already reimplements ticket-resolution (see its docstring/comment in
-# bot.py). Confirm with teammate before removing, or delete in a
-# dedicated cleanup commit.
+# TODO(BB): dead code — bot.py wires /start to text_handler.start instead. Confirm before removing.
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/start — doubles as the deep-link landing page for the NORMAL-chat
     flow only (business-chat DMs toggle in place and never need /start).
@@ -327,16 +324,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    # --- Private DM with the bot itself: full breakdown right away. ---
-    # Already a 1:1 conversation, so there's no group to keep short for —
-    # skip the deep-link ticket/button round-trip entirely.
+    # --- Private DM with the bot itself: full breakdown right away, no button. ---
     chat = update.effective_chat
     is_private = chat is not None and chat.type == "private"
 
     if is_private:
-        # No Technical Evidence dump here — a direct DM paste wants the
-        # clean report; that detail stays for the business/group flows,
-        # which are reached via an explicit "see full details" tap.
         full = _full_breakdown_text(verdicts, include_evidence=False)
         await status.edit_text(
             full,

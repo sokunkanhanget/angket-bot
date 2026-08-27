@@ -17,8 +17,7 @@ plain-language reason for the Telegram breakdown.
 
 The verdict dict keeps the exact shape url_handler already renders
 (raw/host/score/level/reasons/emoji/label) plus an optional
-`detail` list of extra technical lines, rendered by format_verdict_full
-as a trailing "Technical Evidence" section of the full breakdown.
+`detail` list of extra technical lines shown in the full breakdown.
 """
 
 from __future__ import annotations
@@ -336,12 +335,7 @@ async def check_message_full(text: str) -> list[dict]:
 
 
 def _risk_percent_and_label(score: int) -> tuple[int, str]:
-    """Percentage shown to the user (score is uncapped internally, capped
-    at 100 for display) plus a Low/Medium/High bucket using the SAME cut
-    points as text_handler._risk_style, for visual consistency across
-    features. Deliberately separate from _verdict_labels' 25/60
-    dangerous/suspicious/safe thresholds, which keep driving the
-    Verdict line's emoji/label unchanged."""
+    """Score capped to a 0-100 display percentage, bucketed independently of _verdict_labels."""
     pct = min(score, 100)
     if pct <= 30:
         return pct, "Low Risk"
@@ -375,18 +369,7 @@ _RECOMMENDATIONS = {
 
 
 def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
-    """Full 5-section professional breakdown for one URL, Telegram-ready
-    (legacy Markdown parse_mode, matching the rest of linkchecker/handler.py).
-
-    Verdict (categorical, dangerous/suspicious/safe thresholds) and Scam
-    Risk Level (quantified percentage, its own Low/Medium/High cut points)
-    are deliberately independent — they answer different questions and can
-    disagree slightly at the margins by design.
-
-    include_evidence=False drops the trailing Technical Evidence section —
-    used for a link pasted directly into the bot's own private DM, which
-    wants the clean report without the technical detail dump.
-    """
+    """Full 5-section professional breakdown; include_evidence=False drops the Technical Evidence section."""
     pct, risk_label = _risk_percent_and_label(v["score"])
     verdict_sentence = _VERDICT_SENTENCES[v["level"]]
     recs = _RECOMMENDATIONS[v["level"]]

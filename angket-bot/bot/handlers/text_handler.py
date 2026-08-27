@@ -35,49 +35,6 @@ MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
 _MENU_RESPONSES = {
     BTN_SWITCH_LANGUAGE: "🌐 <b>Switch Language</b>\n\nLanguage selection is coming soon.",
     BTN_HOW_TO_USE: (
-        "📖 <b>How to Use</b>\n\n"
-        "Simply send me a text message, file, or link and I’ll analyze it for security threats."
-    ),
-    BTN_SAFETY_TIPS: (
-        "🛡️ <b>Safety Tips</b>\n\n"
-        "• Never share OTPs, passwords, or bank details.\n"
-        "• Verify links before clicking.\n"
-        "• Be cautious of urgent or too-good-to-be-true offers."
-    ),
-    BTN_LIVE_SCAN: "🔎 <b>Live Message Scan</b>\n\nSend me any message and I’ll scan it in real time.",
-    BTN_POLICY: "📜 <b>Policy</b>\n\nOur privacy and usage policy will be shown here.",
-    BTN_HELP: "❓ <b>Help</b>\n\nNeed assistance? Just send your question and we'll do our best to help.",
-    BTN_SUBSCRIPTION: "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
-}
-
-BTN_MENU = "MENU"
-BTN_SWITCH_LANGUAGE = "🌐 Switch Language"
-BTN_HOW_TO_USE = "📖 How to Use"
-BTN_SAFETY_TIPS = "🛡️ Safety Tips"
-BTN_LIVE_SCAN = "🔎 Live Message Scan"
-BTN_POLICY = "📜 Policy"
-BTN_HELP = "❓ Help"
-BTN_SUBSCRIPTION = "⭐ Subscription"
-
-TRIGGER_MENU_KEYBOARD = ReplyKeyboardMarkup(
-    [[BTN_MENU]],
-    resize_keyboard=True,
-    one_time_keyboard=True,
-)
-
-MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [BTN_SWITCH_LANGUAGE, BTN_HOW_TO_USE],
-        [BTN_SAFETY_TIPS, BTN_LIVE_SCAN],
-        [BTN_POLICY, BTN_HELP],
-        [BTN_SUBSCRIPTION],
-    ],
-    resize_keyboard=True,
-)
-
-_MENU_RESPONSES = {
-    BTN_SWITCH_LANGUAGE: "🌐 <b>Switch Language</b>\n\nLanguage selection is coming soon.",
-    BTN_HOW_TO_USE: (
         "📖 <b>How to Use Angket Bot</b>\n\n"
         "Angket helps you check suspicious content and understand the security risk.\n\n"
         "<b>1. Send the content you want to check</b>\n\n"
@@ -207,10 +164,13 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text or ""
+    message = update.effective_message  # update.message is None for business messages
+    if message is None or message.text is None:
+        return
+    text = message.text
 
     if text.upper() == BTN_MENU:
-        await update.message.reply_text(
+        await message.reply_text(
             "📋 <b>Menu</b>\n\nChoose an action below.",
             parse_mode="HTML",
             reply_markup=MAIN_MENU_KEYBOARD,
@@ -219,7 +179,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     menu_response = _MENU_RESPONSES.get(text)
     if menu_response is not None:
-        await update.message.reply_text(
+        await message.reply_text(
             menu_response,
             parse_mode="HTML",
             reply_markup=MAIN_MENU_KEYBOARD,
@@ -229,7 +189,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     keyword_result = analyze_text(text)
     llm_result = await analyze_text_with_llm(text)
 
-    await update.message.reply_text(
+    await message.reply_text(
         format_analysis_response(llm_result, keyword_result),
         parse_mode="HTML",
         reply_markup=MAIN_MENU_KEYBOARD,

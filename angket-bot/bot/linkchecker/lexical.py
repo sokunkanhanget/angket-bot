@@ -241,9 +241,7 @@ def check_message(text: str) -> list[dict]:
 
 
 def format_verdict(v: dict) -> str:
-    """Lexical-only preview of a verdict. Not used for Telegram replies —
-    see pipeline.format_verdict_full for the actual reply template, which
-    also incorporates the async pipeline's `detail` evidence."""
+    """Lexical-only preview — see pipeline.format_verdict_full for the actual reply template."""
     lines = [
         f"{v['emoji']} {v['label']}  (risk score: {v['score']})",
         f"Link: `{v['host']}`",

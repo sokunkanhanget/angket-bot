@@ -145,8 +145,7 @@ _VERDICT_STYLES = {
 
 _DISCLAIMER = (
     "ⓘ Angket Bot may occasionally make mistakes.\n"
-    "Double-check important information before taking action.\n\n"
-    "🛡️ <b>Stay safe!</b>"
+    "Double-check important information before taking action."
 )
 
 

@@ -20,6 +20,7 @@ from bot.linkchecker.handler import (
     handle_url,
     on_business_connection,
 )
+from bot.linkchecker.lexical import URL_REGEX
 
 # Feature ownership:
 #   bot/linkchecker/  — link checking (BB)
@@ -29,7 +30,13 @@ from bot.linkchecker.handler import (
 # Handler groups (PTB runs every group per update, independently):
 #   group 0  — teammate's text/LLM scan + file scan + /start menu
 #   group 1  — link checker showcase (silent when a message has no links)
-# This gives SEPARATE replies for suspicious text vs links by design.
+# These give SEPARATE replies for suspicious text vs links by design —
+# EXCEPT in a private/business chat with a link in it (see _LINK_TAKEOVER
+# below): there the link checker's reply is already the full report, so
+# group 0 stays silent instead of also firing a second, noisier reply.
+# This is a stopgap ahead of the real fix (feeding link findings into the
+# LLM call as context, still pending the teammate's/mentor's review) —
+# group/channel chats are untouched, still get both replies as before.
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -94,9 +101,17 @@ def main():
     # Teammate's text/LLM scan — normal chat text AND Telegram Business
     # messages (PTB's filters check update.effective_message under the
     # hood, so business messages satisfy filters.TEXT).
+    #
+    # _LINK_TAKEOVER: a Business chat's chat.type is "private" too (it's
+    # always a 1:1 with the customer), so filters.ChatType.PRIVATE already
+    # covers both "DM with the bot" and "chat automation" — exactly the
+    # two contexts BB scoped this fix to. Groups/channels are untouched.
+    _LINK_TAKEOVER = filters.ChatType.PRIVATE & filters.Regex(URL_REGEX)
+    text_filter = (
+        (filters.TEXT & ~filters.COMMAND) | filters.UpdateType.BUSINESS_MESSAGE
+    ) & ~_LINK_TAKEOVER
     app.add_handler(
-        MessageHandler((filters.TEXT & ~filters.COMMAND) | filters.UpdateType.BUSINESS_MESSAGE,
-                       handle_text),
+        MessageHandler(text_filter, handle_text),
         group=0,
     )
 

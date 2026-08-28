@@ -2,9 +2,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from bot.i18n import key_for_label, label
 from bot.handlers.text_handler import (
     MAIN_MENU_KEYBOARD,
     format_analysis_response,
+    get_language_keyboard,
+    get_user_lang,
     handle_text,
 )
 
@@ -56,6 +59,25 @@ def test_format_analysis_response_includes_keyword_match_only_when_present():
     )
 
     assert "⚠️ <b>KEYWORD MATCH:</b> <code>claim &lt;reward&gt;</code>" in response
+
+
+def test_key_for_label_and_language_keyboard_are_available():
+    assert key_for_label("🌐 Switch Language") == "switch_language"
+    assert key_for_label("🌐 ផ្លាស់ប្តូរភាសា") == "switch_language"
+    assert key_for_label("English") == "lang_en"
+    assert key_for_label("ខ្មែរ") == "lang_km"
+    keyboard = get_language_keyboard("km")
+    assert keyboard.keyboard[0][0].text == label("km", "lang_en")
+    assert keyboard.keyboard[0][1].text == label("km", "lang_km")
+    assert keyboard.keyboard[1][0].text == label("km", "back")
+
+
+def test_get_user_lang_defaults_and_persists_context():
+    context = type("Ctx", (), {"user_data": {}})()
+    assert get_user_lang(context) == "en"
+
+    context.user_data["lang"] = "km"
+    assert get_user_lang(context) == "km"
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ from telegram.ext import ContextTypes
 
 from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
+from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
 
 BTN_MENU = "MENU"
 BTN_SWITCH_LANGUAGE = "🌐 Switch Language"
@@ -65,7 +66,23 @@ _MENU_RESPONSES = {
 }
 
 
+def get_user_lang(context: ContextTypes.DEFAULT_TYPE) -> str:
+    return str(context.user_data.get("lang", DEFAULT_LANG))
+
+
+def get_language_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    locale = lang if lang in BUTTONS else DEFAULT_LANG
+    return ReplyKeyboardMarkup(
+        [
+            [label(locale, "lang_en"), label(locale, "lang_km")],
+            [label(locale, "back")],
+        ],
+        resize_keyboard=True,
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    lang = get_user_lang(context)
     await update.message.reply_text(
         "🛡️ <b>Welcome to Angket Bot</b>\n"
         "Your security assistant for checking suspicious content.\n\n"
@@ -78,6 +95,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="HTML",
         reply_markup=MAIN_MENU_KEYBOARD,
     )
+    context.user_data["lang"] = lang
 
 
 _VERDICT_STYLES = {
@@ -152,6 +170,33 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
+    lang = get_user_lang(context)
+    canonical_key = key_for_label(text)
+
+    if canonical_key == "switch_language":
+        await update.message.reply_text(
+            t(lang, "switch_language"),
+            parse_mode="HTML",
+            reply_markup=get_language_keyboard(lang),
+        )
+        return
+
+    if canonical_key in {"lang_en", "lang_km"}:
+        context.user_data["lang"] = "en" if canonical_key == "lang_en" else "km"
+        await update.message.reply_text(
+            t(context.user_data["lang"], "language_set"),
+            parse_mode="HTML",
+            reply_markup=MAIN_MENU_KEYBOARD,
+        )
+        return
+
+    if canonical_key == "back":
+        await update.message.reply_text(
+            "📋 <b>Menu</b>\n\nChoose an action below.",
+            parse_mode="HTML",
+            reply_markup=MAIN_MENU_KEYBOARD,
+        )
+        return
 
     if text.upper() == BTN_MENU:
         await update.message.reply_text(

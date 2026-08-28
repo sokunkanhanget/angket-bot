@@ -6,6 +6,7 @@ from telegram.ext import ContextTypes
 from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
 from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
+from bot.linkchecker.handler import resolve_ticket
 
 BTN_MENU = "MENU"
 BTN_SWITCH_LANGUAGE = "🌐 Switch Language"
@@ -83,6 +84,19 @@ def get_language_keyboard(lang: str) -> ReplyKeyboardMarkup:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_user_lang(context)
+    # Deep-link tickets from link-checker showcases arrive here too
+    # (t.me/<bot>?start=<ticket>). A valid ticket takes priority over
+    # the welcome menu; an expired/unknown one falls through to it.
+    if context.args:
+        full = resolve_ticket(context, context.args[0])
+        if full is not None:
+            await update.message.reply_text(
+                full,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+            return
+
     await update.message.reply_text(
         "🛡️ <b>Welcome to Angket Bot</b>\n"
         "Your security assistant for checking suspicious content.\n\n"
@@ -106,8 +120,7 @@ _VERDICT_STYLES = {
 
 _DISCLAIMER = (
     "ⓘ Angket Bot may occasionally make mistakes.\n"
-    "Double-check important information before taking action.\n\n"
-    "🛡️ <b>Stay safe!</b>"
+    "Double-check important information before taking action."
 )
 
 
@@ -169,12 +182,15 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text or ""
+    message = update.effective_message  
+    if message is None or message.text is None:
+        return
+    text = message.text
     lang = get_user_lang(context)
     canonical_key = key_for_label(text)
 
     if canonical_key == "switch_language":
-        await update.message.reply_text(
+        await message.reply_text(
             t(lang, "switch_language"),
             parse_mode="HTML",
             reply_markup=get_language_keyboard(lang),
@@ -183,7 +199,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if canonical_key in {"lang_en", "lang_km"}:
         context.user_data["lang"] = "en" if canonical_key == "lang_en" else "km"
-        await update.message.reply_text(
+        await message.reply_text(
             t(context.user_data["lang"], "language_set"),
             parse_mode="HTML",
             reply_markup=MAIN_MENU_KEYBOARD,
@@ -191,7 +207,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if canonical_key == "back":
-        await update.message.reply_text(
+        await message.reply_text(
             "📋 <b>Menu</b>\n\nChoose an action below.",
             parse_mode="HTML",
             reply_markup=MAIN_MENU_KEYBOARD,
@@ -199,7 +215,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if text.upper() == BTN_MENU:
-        await update.message.reply_text(
+        await message.reply_text(
             "📋 <b>Menu</b>\n\nChoose an action below.",
             parse_mode="HTML",
             reply_markup=MAIN_MENU_KEYBOARD,
@@ -208,7 +224,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     menu_response = _MENU_RESPONSES.get(text)
     if menu_response is not None:
-        await update.message.reply_text(
+        await message.reply_text(
             menu_response,
             parse_mode="HTML",
             reply_markup=MAIN_MENU_KEYBOARD,
@@ -218,7 +234,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     keyword_result = analyze_text(text)
     llm_result = await analyze_text_with_llm(text)
 
-    await update.message.reply_text(
+    await message.reply_text(
         format_analysis_response(llm_result, keyword_result),
         parse_mode="HTML",
         reply_markup=MAIN_MENU_KEYBOARD,

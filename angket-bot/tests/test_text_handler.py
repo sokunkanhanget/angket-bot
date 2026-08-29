@@ -81,19 +81,20 @@ def test_get_user_lang_defaults_and_persists_context():
 
 
 @pytest.mark.asyncio
-async def test_handle_text_shows_menu_response():
+async def test_handle_text_shows_language_keyboard_on_switch_language():
     update = AsyncMock()
     update.message.text = "🌐 Switch Language"
     update.message.reply_text = AsyncMock()
+    context = type("Ctx", (), {"user_data": {}})()
 
-    await handle_text(update, AsyncMock())
+    await handle_text(update, context)
 
     update.message.reply_text.assert_awaited_once()
     call_args = update.message.reply_text.call_args[0]
     assert "Switch Language" in call_args[0]
     _, kwargs = update.message.reply_text.await_args
-    assert kwargs["reply_markup"] == MAIN_MENU_KEYBOARD
-    assert kwargs["reply_markup"].keyboard[0][0].text == "🌐 Switch Language"
+    assert kwargs["reply_markup"] == get_language_keyboard("en")
+    assert kwargs["reply_markup"].keyboard[0][0].text == "English"
 
 
 @pytest.mark.asyncio
@@ -101,8 +102,9 @@ async def test_handle_text_shows_how_to_use_guidance():
     update = AsyncMock()
     update.message.text = "📖 How to Use"
     update.message.reply_text = AsyncMock()
+    context = type("Ctx", (), {"user_data": {}})()
 
-    await handle_text(update, AsyncMock())
+    await handle_text(update, context)
 
     response = update.message.reply_text.call_args[0][0]
     assert "How to Use Angket Bot" in response
@@ -119,6 +121,7 @@ async def test_handle_text_analyzes_regular_messages():
     update = AsyncMock()
     update.message.text = "This is a test message"
     update.message.reply_text = AsyncMock()
+    context = type("Ctx", (), {"user_data": {}})()
 
     with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": False, "matches": []}), patch(
         "bot.handlers.text_handler.analyze_text_with_llm",
@@ -129,7 +132,7 @@ async def test_handle_text_analyzes_regular_messages():
             "recommendations": ["Be careful"],
         }),
     ):
-        await handle_text(update, AsyncMock())
+        await handle_text(update, context)
 
     update.message.reply_text.assert_awaited_once()
     call_args = update.message.reply_text.call_args[0]

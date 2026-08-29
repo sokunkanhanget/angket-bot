@@ -85,6 +85,7 @@ async def test_handle_text_shows_language_keyboard_on_switch_language():
     update = AsyncMock()
     update.message.text = "🌐 Switch Language"
     update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
     context = type("Ctx", (), {"user_data": {}})()
 
     await handle_text(update, context)
@@ -102,6 +103,7 @@ async def test_handle_text_shows_how_to_use_guidance():
     update = AsyncMock()
     update.message.text = "📖 How to Use"
     update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
     context = type("Ctx", (), {"user_data": {}})()
 
     await handle_text(update, context)
@@ -121,6 +123,7 @@ async def test_handle_text_analyzes_regular_messages():
     update = AsyncMock()
     update.message.text = "This is a test message"
     update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
     context = type("Ctx", (), {"user_data": {}})()
 
     with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": False, "matches": []}), patch(

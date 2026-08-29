@@ -47,6 +47,16 @@ PHISH_SIM_STRONG = 0.80        # near-certain impersonation
 SEEN_BAD_SIM_THRESHOLD = 0.75  # cosine vs a link we previously flagged
 BRAND_PAGE_SPOOF_MIN = 3       # brand name occurrences in page text before we call it a spoof claim
 NEARDUP_THRESHOLD = 0.90       # MinHash similarity = same phishing kit
+# Below this, MinHash is unreliable - not just literal empty pages, but
+# generic bot-challenge/interstitial pages (Cloudflare "Checking your
+# browser...", reCAPTCHA walls, "enable JavaScript" stubs) that are
+# genuinely non-empty text but IDENTICAL across countless unrelated
+# sites. Confirmed live: linkedin.com's 191-char challenge page still
+# spuriously matched another site's copy of the same boilerplate.
+# Real fake-login phishing kits run to hundreds/thousands of chars
+# (a copied bank login page isn't 200 characters), so this cuts the
+# false-positive surface without losing real detection power.
+MIN_PAGE_TEXT_FOR_NEARDUP = 300
 MAX_NETWORK_POINTS = 45        # cap for all network-derived signals combined
 MAX_URLS_PER_MESSAGE = 5       # input validation: protect quota & event loop from spam
 
@@ -233,7 +243,15 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
         detail.append(f"similarity {seen_sim:.2f} to an earlier flagged link")
 
     # --- LSH near-duplicate page check (any fetched page) --------------
-    if net and net.get("page_text"):
+    # Gated on a minimum length: a bot-blocked/CAPTCHA/JS-only page
+    # (common on sites with real anti-bot defenses - Amazon, Google...)
+    # returns near-empty text after tag-stripping, and MinHash on
+    # near-empty text is degenerate - two DIFFERENT near-empty pages
+    # (e.g. both just "\n") hash to ~100% "similar" with zero actual
+    # content in common. Confirmed live: this false-flagged amazon.com
+    # as "near-identical" to an unrelated typosquat domain that had
+    # also returned near-empty content when it was scanned.
+    if net and net.get("page_text") and len(net["page_text"]) >= MIN_PAGE_TEXT_FOR_NEARDUP:
         dup_host = network._host(net["final_url"])
         dup = _safe_near_dup(dup_host, net["page_text"])
         if dup and dup[1] >= NEARDUP_THRESHOLD:

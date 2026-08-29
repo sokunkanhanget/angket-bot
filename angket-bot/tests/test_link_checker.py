@@ -268,6 +268,68 @@ def test_check_message_full_does_not_duplicate_a_link_already_visible(seeded_vec
     assert len(verdicts) == 1
 
 
+def test_analyze_url_does_not_flag_near_dup_on_degenerate_page_text(seeded_vectors, monkeypatch):
+    # Regression test for a real false positive hit live: a bot-blocked
+    # /CAPTCHA/JS-only page (common on sites with real anti-bot defenses
+    # - this exact case was Amazon) returns near-empty text after
+    # tag-stripping. MinHash on near-empty text is degenerate - two
+    # completely UNRELATED sites that both happen to return "\n" as
+    # their page text used to hash to ~100% "similar", with zero actual
+    # content in common, and Amazon got flagged as near-identical to an
+    # unrelated typosquat domain purely because of this.
+    vectors.store_page_signature("totally-unrelated-site.tk", "\n")
+
+    async def near_empty_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=True,
+                         final_url="https://www.amazon.com/",
+                         page_html="<html></html>", page_text="\n").result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", near_empty_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://www.amazon.com/"))
+
+    assert not any("near-identical" in r for r in verdict["reasons"])
+
+
+def test_analyze_url_does_not_flag_near_dup_on_generic_challenge_page(seeded_vectors, monkeypatch):
+    # A second, sneakier version of the same bug: a bot-challenge page
+    # (Cloudflare "Checking your browser...", reCAPTCHA wall) is real,
+    # non-empty text - not caught by an empty-text guard alone - but
+    # it's IDENTICAL boilerplate across countless unrelated sites.
+    # Confirmed live: linkedin.com's real 191-char challenge page still
+    # spuriously matched another site's copy of the same text.
+    challenge_page = "Checking your browser before accessing the site.\n" \
+                      "This process is automatic. Please wait a moment."
+    vectors.store_page_signature("totally-unrelated-site.tk", challenge_page)
+
+    async def challenge_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=True,
+                         final_url="https://www.linkedin.com/",
+                         page_html="<html></html>", page_text=challenge_page).result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", challenge_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://www.linkedin.com/"))
+
+    assert not any("near-identical" in r for r in verdict["reasons"])
+
+
 def test_analyze_url_merges_network_signals(seeded_vectors, monkeypatch):
     fake = _FakeNet(
         reachable=True, status=200, tls_valid=True,

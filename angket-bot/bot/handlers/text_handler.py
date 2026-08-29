@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
 from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
-from bot.linkchecker.handler import resolve_ticket
+from bot.url_checker.message.handler import resolve_ticket
 
 BTN_MENU = "MENU"
 BTN_SWITCH_LANGUAGE = "🌐 Switch Language"

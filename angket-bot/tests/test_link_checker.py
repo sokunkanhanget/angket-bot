@@ -10,8 +10,15 @@ import asyncio
 
 import pytest
 
-from bot.linkchecker import network, pipeline, threat_intel, vectors
-from bot.linkchecker.lexical import check_url, extract_urls, registered_domain
+from bot.url_checker import pipeline
+from bot.url_checker.features import network, threat_intel, vectors
+from bot.url_checker.features.lexical import (
+    check_anchor_mismatch,
+    check_url,
+    domain_entropy,
+    extract_urls,
+    registered_domain,
+)
 
 
 # --- lexical analyzer (existing behaviour, still intact) ---------------
@@ -30,6 +37,67 @@ def test_check_url_flags_raw_ip():
 def test_registered_domain_handles_multi_level_suffix():
     assert registered_domain("www.bank.com.kh") == "bank.com.kh"
     assert registered_domain("mail.google.com") == "google.com"
+
+
+# --- URL string entropy ---------------------------------------------------
+
+def test_domain_entropy_higher_for_diverse_characters():
+    # Not a claim that entropy alone separates random from real (it
+    # doesn't reliably at domain-name lengths - see the digit-gating
+    # test below) - just checking the raw math does what it says.
+    assert domain_entropy("aaaaaaaa") == 0.0
+    assert domain_entropy("ab12cd34") > domain_entropy("aaaacccc")
+
+
+def test_check_url_flags_digit_mixed_random_domain():
+    v = check_url("http://xk4j9fzqp2m.tk/login")
+    assert any("randomly generated" in r for r in v["reasons"])
+
+
+def test_check_url_does_not_flag_real_words_as_random():
+    # The false-positive case entropy-alone would get wrong: a real
+    # dictionary word can have higher raw character diversity than a
+    # short random string, but it never mixes digits into the name.
+    for url in (
+        "https://ababank.com",
+        "https://subscription-service.com",
+        "https://verification-portal.com",
+    ):
+        v = check_url(url)
+        assert not any("randomly generated" in r for r in v["reasons"]), url
+
+
+def test_check_url_skips_entropy_when_already_a_brand_disguise():
+    # "paypal-4x7k9m2p" clears both the length and digit-mix gates and
+    # would score above the entropy threshold on its own (verified:
+    # ~3.46 bits/char) - but since the brand-buried check already
+    # fires on it, it should get that ONE reason, not a second
+    # redundant "looks random" reason stacked on top.
+    v = check_url("http://paypal-4x7k9m2p.com/login")
+    reasons_text = " ".join(v["reasons"])
+    assert "PayPal" in reasons_text
+    assert "randomly generated" not in reasons_text
+
+
+# --- anchor-text mismatch (Telegram text_link entities) -------------------
+
+def test_check_anchor_mismatch_flags_url_shaped_display_text():
+    result = check_anchor_mismatch("https://ababank.com", "http://ababank-secure-login.tk/verify")
+    assert result is not None
+    points, reason = result
+    assert points > 0
+    assert "ababank.com" in reason
+    assert "ababank-secure-login.tk" in reason
+
+
+def test_check_anchor_mismatch_ignores_ordinary_link_text():
+    # "Click here" isn't URL-shaped, so there's nothing to compare -
+    # this must NOT flag every normal hyperlink in existence.
+    assert check_anchor_mismatch("Click here for your account", "http://ababank-secure-login.tk/verify") is None
+
+
+def test_check_anchor_mismatch_allows_matching_domains():
+    assert check_anchor_mismatch("https://ababank.com/login", "https://ababank.com/login?ref=sms") is None
 
 
 # --- embeddings & vector search -----------------------------------------
@@ -129,7 +197,75 @@ def _use_tmp_db(monkeypatch, db_path):
     # Both modules do `from bot.config import SCAN_LOG_DB` at import
     # time, so patch each module's own binding, not bot.config.
     monkeypatch.setattr(vectors, "SCAN_LOG_DB", db_path)
-    monkeypatch.setattr("bot.linkchecker.domain_info.SCAN_LOG_DB", db_path)
+    monkeypatch.setattr("bot.url_checker.features.domain_info.SCAN_LOG_DB", db_path)
+
+
+def _stub_out_network(monkeypatch, tls_valid=True):
+    """Minimal network/DNS/age stubs for tests that only care about the
+    lexical/anchor-mismatch signal, not the network layer."""
+    async def fake_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=tls_valid).result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+
+def test_check_message_full_sees_link_hidden_entirely_behind_entity_text(seeded_vectors, monkeypatch):
+    # The message's VISIBLE text has no URL in it at all ("Click here")
+    # - extract_urls() alone would return zero verdicts here, exactly
+    # the invisible-link blind spot this closes. The real destination
+    # only exists in the Telegram TEXT_LINK entity, passed as hidden_links.
+    _stub_out_network(monkeypatch)
+    assert extract_urls("Click here") == []
+
+    verdicts = asyncio.run(pipeline.check_message_full(
+        "Click here",
+        hidden_links=[("Click here", "http://free-prize-winner.tk/claim")],
+    ))
+
+    assert len(verdicts) == 1
+    assert verdicts[0]["host"] == "free-prize-winner.tk"
+
+
+def test_check_message_full_scores_anchor_text_mismatch(seeded_vectors, monkeypatch):
+    # Display text claims the official bank domain; the entity's real
+    # url goes somewhere else entirely - the deceptive case the
+    # mismatch check specifically targets. Two verdicts come back: the
+    # visible display text ("https://ababank.com" is real text in the
+    # message) gets its own normal check, and the hidden entity's
+    # actual destination gets analyzed separately with the mismatch
+    # reason attached.
+    _stub_out_network(monkeypatch)
+
+    verdicts = asyncio.run(pipeline.check_message_full(
+        "https://ababank.com",
+        hidden_links=[("https://ababank.com", "http://ababank-secure-login.tk/verify")],
+    ))
+
+    assert len(verdicts) == 2
+    phishing = next(v for v in verdicts if v["host"] == "ababank-secure-login.tk")
+    assert phishing["level"] == "dangerous"
+    assert any("not the real destination" in r for r in phishing["reasons"])
+
+
+def test_check_message_full_does_not_duplicate_a_link_already_visible(seeded_vectors, monkeypatch):
+    # If the same url is already in the visible text, the hidden_links
+    # entry for it must not produce a second, duplicate verdict.
+    _stub_out_network(monkeypatch)
+
+    verdicts = asyncio.run(pipeline.check_message_full(
+        "check https://ababank.com please",
+        hidden_links=[("https://ababank.com", "https://ababank.com")],
+    ))
+
+    assert len(verdicts) == 1
 
 
 def test_analyze_url_merges_network_signals(seeded_vectors, monkeypatch):
@@ -317,7 +453,7 @@ def test_cross_domain_shortener_still_rescored(seeded_vectors, monkeypatch):
 
 # --- Flow 3: VirusTotal threat intelligence -------------------------------
 
-from bot.linkchecker import threat_intel
+from bot.url_checker.features import threat_intel
 
 
 def test_vt_score_thresholds():

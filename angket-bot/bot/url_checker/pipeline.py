@@ -1,5 +1,5 @@
 """
-bot/linkchecker/pipeline.py
+bot/url_checker/pipeline.py
 ============================
 The full link-checking pipeline — orchestrates every signal source
 into one verdict per URL:
@@ -26,12 +26,12 @@ import asyncio
 import logging
 from urllib.parse import urlsplit
 
-from bot.linkchecker import network, vectors
-from bot.linkchecker import threat_intel
-from bot.linkchecker.domain_info import domain_age_days, resolve_host, score_domain_age
-from bot.linkchecker.lexical import (
+from bot.url_checker.features import network, threat_intel, vectors
+from bot.url_checker.features.domain_info import domain_age_days, resolve_host, score_domain_age
+from bot.url_checker.features.lexical import (
     PROTECTED_BRANDS,
     _verdict_labels,
+    check_anchor_mismatch,
     check_url,
     extract_urls,
     registered_domain,
@@ -74,12 +74,25 @@ def _web_urls(text: str) -> list[str]:
     return kept
 
 
-async def analyze_url(raw_url: str) -> dict:
-    """Full async check of one URL -> merged verdict dict."""
+async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
+    """Full async check of one URL -> merged verdict dict.
+
+    display_text: what a Telegram MessageEntity.TEXT_LINK showed to the
+    user, if this URL came from one - Telegram lets a message show
+    "https://ababank.com" while actually linking anywhere, so when the
+    displayed text is itself URL-shaped and doesn't match, that's
+    scored as a strong signal (see check_anchor_mismatch).
+    """
     verdict = check_url(raw_url)
     score = verdict["score"]
     reasons = list(verdict["reasons"])
     detail: list[str] = []
+
+    if display_text:
+        mismatch = check_anchor_mismatch(display_text, raw_url)
+        if mismatch:
+            score += mismatch[0]
+            reasons.append(mismatch[1])
 
     host = verdict["host"]
     if not host:
@@ -316,7 +329,7 @@ def _safe_near_dup(host: str, page_text: str):
 def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) -> str | None:
     """Page *claims* to be a bank/brand but sits on an unrelated domain —
     the semantic-impersonation case vector search alone can't prove."""
-    from bot.linkchecker.lexical import PROTECTED_BRANDS
+    from bot.url_checker.features.lexical import PROTECTED_BRANDS
     low = page_text.lower()
     for domain, label in PROTECTED_BRANDS.items():
         brand = domain.split(".")[0]
@@ -326,12 +339,38 @@ def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) ->
     return None
 
 
-async def check_message_full(text: str) -> list[dict]:
-    """Check every link in a message through the full pipeline."""
+async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | None = None) -> list[dict]:
+    """Check every link in a message through the full pipeline.
+
+    hidden_links: [(display_text, actual_url), ...] pulled from Telegram
+    MessageEntity.TEXT_LINK entities - a link whose real destination
+    never appears in the visible message text at all (the message shows
+    "Click here", the entity alone carries the real URL) is invisible to
+    extract_urls()'s regex, so the caller (message/handler.py) passes
+    these in separately so the bot actually sees and scores them.
+    """
     urls = _web_urls(text)
+    display_by_url: dict[str, str] = {}
+
+    seen = {u.lower() for u in urls}
+    for display_text, url in (hidden_links or []):
+        if not url or "://" not in url:
+            continue
+        if urlsplit(url).scheme.lower() not in ("http", "https"):
+            continue
+        if url.lower() in seen:
+            continue  # already covered as a visible link
+        seen.add(url.lower())
+        display_by_url[url] = display_text
+        urls.append(url)
+        if len(urls) >= MAX_URLS_PER_MESSAGE:
+            break
+
     if not urls:
         return []
-    return list(await asyncio.gather(*(analyze_url(u) for u in urls)))
+    return list(await asyncio.gather(
+        *(analyze_url(u, display_by_url.get(u)) for u in urls)
+    ))
 
 
 def _risk_percent_and_label(score: int) -> tuple[int, str]:

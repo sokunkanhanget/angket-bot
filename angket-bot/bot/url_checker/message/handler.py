@@ -1,6 +1,6 @@
 """
-bot/linkchecker/handler.py
-===========================
+bot/url_checker/message/handler.py
+====================================
 Telegram wiring for URL checking. Thin on purpose — the real logic
 lives in this package (lexical.py).
 
@@ -47,17 +47,17 @@ from __future__ import annotations
 import secrets
 import time
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import MessageEntity, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from bot.linkchecker.pipeline import (
+from bot.url_checker.pipeline import (
     check_message_full,
     format_verdict_full,
     _risk_percent_and_label,
 )
 from bot.analysis.utils import log_url_scan
-from bot.linkchecker.vectors import seed as seed_vectors
+from bot.url_checker.features.vectors import seed as seed_vectors
 
 WELCOME_TEXT = (
     "🔗 **Link Scanner Bot**\n\n"
@@ -275,6 +275,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
 
 
+def _extract_text_link_entities(message) -> list[tuple[str, str]]:
+    """Telegram lets a message show arbitrary text as a link to a
+    DIFFERENT url (MessageEntity.TEXT_LINK) - e.g. the message displays
+    "https://ababank.com" while actually pointing at a phishing domain,
+    or even just "Click here" with no visible URL at all. extract_urls()
+    only regexes the visible text, so it's blind to both cases; this
+    pulls the real (display_text, url) pairs out via PTB's own
+    parse_entities(), which - unlike a hand-rolled text[offset:length]
+    slice - correctly accounts for Telegram's UTF-16 entity offsets
+    (a naive slice breaks on messages with Khmer or emoji before the
+    link, both common here).
+    """
+    try:
+        parsed = message.parse_entities(types=[MessageEntity.TEXT_LINK])
+    except Exception:                          # noqa: BLE001 - never let entity parsing break a scan
+        return []
+    return [(display, entity.url) for entity, display in parsed.items() if entity.url]
+
+
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # effective_message covers normal messages AND business messages.
     message = update.effective_message
@@ -292,7 +311,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     is_business = bool(message.business_connection_id)
     status = None if is_business else await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
 
-    verdicts = await check_message_full(message.text)
+    hidden_links = _extract_text_link_entities(message)
+    verdicts = await check_message_full(message.text, hidden_links)
     if not verdicts:
         if status is not None:
             await status.delete()

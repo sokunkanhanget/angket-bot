@@ -1,6 +1,6 @@
 """
-bot/linkchecker/lexical.py
-============================
+bot/url_checker/features/lexical.py
+=====================================
 The URL-checking brain for Angket Bot. Pure standard library — no
 dependencies — so it can be tested on its own, just like text_analyzer.py.
 
@@ -11,7 +11,9 @@ Public functions the handler uses:
 
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from urllib.parse import urlsplit
 
 
@@ -52,6 +54,10 @@ SUSPICIOUS_URL_WORDS = {
     "claim", "winner", "reward", "otp", "password", "unlock", "suspend",
     "recover",
 }
+
+ENTROPY_MIN_LENGTH = 8    # shorter labels are too small to measure meaningfully
+ENTROPY_MIN_DIGITS = 2    # real brand/dictionary names almost never mix digits mid-name
+ENTROPY_THRESHOLD = 3.0   # bits/char - calibrated against synthetic random labels; see domain_entropy
 
 MULTI_LEVEL_SUFFIXES = {
     "com.kh", "gov.kh", "edu.kh", "net.kh", "org.kh", "co.kh",
@@ -122,6 +128,49 @@ def _normalize(url: str):
     parts = urlsplit(normalized)
     host = (parts.hostname or "").lower()
     return normalized, host, parts
+
+
+def domain_entropy(label: str) -> float:
+    """Shannon entropy in bits/char - raw character diversity.
+
+    Deliberately NOT used alone (see check_url): at domain-name lengths
+    (8-16 chars) it's noisy on its own - a real dictionary word like
+    "subscription" (entropy ~3.25) can score HIGHER than a genuinely
+    random 8-char string like "pbhsahxt" (~2.75), since Shannon entropy
+    measures character diversity, not "does this look like language".
+    check_url() gates this on digit-mixing first: real brand/dictionary
+    names essentially never intersperse digits mid-name, which is a far
+    more precise auto-generated-domain signal than entropy alone.
+    """
+    if not label:
+        return 0.0
+    length = len(label)
+    counts = Counter(label)
+    return -sum((n / length) * math.log2(n / length) for n in counts.values())
+
+
+def check_anchor_mismatch(display_text: str, actual_url: str) -> tuple[int, str] | None:
+    """Flags a link whose DISPLAYED text is itself URL/domain-shaped but
+    points somewhere else - e.g. a message shows "https://ababank.com"
+    while the real destination (a Telegram MessageEntity.TEXT_LINK's
+    url, which can differ freely from what's shown) is a phishing
+    domain. Ordinary descriptive link text ("click here", "read more")
+    has nothing URL-shaped to compare, so it's never flagged - that's
+    completely normal hyperlink usage, not a scam signal on its own.
+    """
+    display_urls = extract_urls(display_text)
+    if not display_urls:
+        return None
+
+    _, display_host, _ = _normalize(display_urls[0])
+    _, actual_host, _ = _normalize(actual_url)
+    if not display_host or not actual_host:
+        return None
+
+    if registered_domain(display_host) != registered_domain(actual_host):
+        return (55, f"Link text shows '{display_host}' but actually goes to "
+                    f"'{actual_host}' — the displayed address is not the real destination.")
+    return None
 
 
 def _verdict_labels(score: int):
@@ -207,6 +256,21 @@ def check_url(raw_url: str) -> dict:
     if hits:
         score += min(len(hits) * 10, 30)
         reasons.append(f"Contains scam-typical words: {', '.join(hits[:4])}.")
+
+    # Skip on an already-flagged brand disguise/typosquat - a known-bad
+    # domain doesn't need a second, redundant "looks random" reason.
+    # Gated on digit-mixing before entropy: real brand/dictionary names
+    # essentially never intersperse digits mid-name, so this alone
+    # already excludes real words that happen to score high on raw
+    # character-diversity entropy (see domain_entropy's docstring).
+    core_label = reg.split(".")[0] if reg else ""
+    digit_count = sum(1 for c in core_label if c.isdigit())
+    if not brand and len(core_label) >= ENTROPY_MIN_LENGTH and digit_count >= ENTROPY_MIN_DIGITS:
+        entropy = domain_entropy(core_label)
+        if entropy >= ENTROPY_THRESHOLD:
+            score += 15
+            reasons.append(f"Domain name '{core_label}' looks randomly generated "
+                            f"(mixed digits/letters, high character entropy) — common in auto-generated scam domains.")
 
     labels_before = []
     if reg and host.endswith(reg):

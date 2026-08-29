@@ -15,7 +15,7 @@ from bot.analysis.utils import init_db, init_url_db
 from bot.config import GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
 from bot.handlers.file_handler import handle_file
 from bot.handlers.text_handler import handle_text, start
-from bot.linkchecker.handler import (
+from bot.url_checker.message.handler import (
     handle_business_url_callback,
     handle_url,
     on_business_connection,
@@ -23,7 +23,7 @@ from bot.linkchecker.handler import (
 from bot.route import TEXT_FILTER
 
 # Feature ownership:
-#   bot/linkchecker/  — link checking (BB)
+#   bot/url_checker/  — link checking (BB)
 #   text_handler / file_handler / llm_analyzer — teammates' text & file scanning
 # Shared infra lives in bot/analysis/utils.py so both log to one DB.
 #
@@ -90,7 +90,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
     # Keeps the business-connection -> owner-chat-id cache warm (see
-    # linkchecker/handler.on_business_connection for why this matters).
+    # url_checker/message/handler.on_business_connection for why this matters).
     app.add_handler(BusinessConnectionHandler(on_business_connection))
 
     # "See full details" / "Show less detail" / "Delete" taps on the

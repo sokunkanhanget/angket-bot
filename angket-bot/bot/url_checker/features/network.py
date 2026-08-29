@@ -1,6 +1,6 @@
 """
-bot/linkchecker/network.py
-==============================
+bot/url_checker/features/network.py
+=====================================
 Asynchronous network verification for links — the "Async I/O" and
 "Network & HTTPS / Redirect Chains / Header Verification / DOM
 Parsing" rows of the research notes.
@@ -136,7 +136,7 @@ def _capture(response: httpx.Response, result: dict, history: list, body: bytes)
 
     # A hop that changes the registrable domain is where scams hide:
     # bit.ly/x9k2 -> free-iphone-winner.tk
-    from bot.linkchecker.lexical import registered_domain
+    from bot.url_checker.features.lexical import registered_domain
     if registered_domain(first_host) != registered_domain(last_host):
         result["cross_domain_redirect"] = True
 

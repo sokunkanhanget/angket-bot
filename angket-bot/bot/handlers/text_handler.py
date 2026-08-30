@@ -277,7 +277,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if status is not None:
             await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)
         else:
-            await message.reply_text(reply_text, parse_mode="HTML", reply_markup=MAIN_MENU_KEYBOARD)
+            await message.reply_text(reply_text, parse_mode="HTML", reply_markup=main_menu_keyboard)
         return
 
     # Group/supergroup and business chat: unchanged text-only reasoning -

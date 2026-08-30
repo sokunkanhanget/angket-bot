@@ -17,6 +17,7 @@ from bot.handlers.file_handler import handle_file
 from bot.handlers.text_handler import handle_text, start
 from bot.url_checker.message.handler import (
     handle_business_url_callback,
+    handle_photo,
     handle_url,
     on_business_connection,
 )
@@ -107,6 +108,13 @@ def main():
     # answer independently; silent when no links are found.
     url_filter = (filters.TEXT & ~filters.COMMAND) | filters.UpdateType.BUSINESS_MESSAGE
     app.add_handler(MessageHandler(url_filter, handle_url), group=1)
+
+    # QR codes shared as photos are invisible to handle_url (no text to
+    # regex) - decodes any QR code found and runs it through the same
+    # link-checking pipeline. Same group/business-message pattern as
+    # the text-based link checker above.
+    photo_filter = filters.PHOTO | filters.UpdateType.BUSINESS_MESSAGE
+    app.add_handler(MessageHandler(photo_filter, handle_photo), group=1)
 
     logger.info("Bot is running...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)  # ALL_TYPES so business_message actually gets delivered

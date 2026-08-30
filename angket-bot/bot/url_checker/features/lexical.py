@@ -64,8 +64,18 @@ MULTI_LEVEL_SUFFIXES = {
     "com.au", "co.uk", "org.uk", "gov.uk", "com.sg",
 }
 
+# The (?:[a-zA-Z0-9._%+-]+@)? group captures a userinfo@ prefix when
+# present (e.g. "real-bank.com@evil.tk") - without it, extract_urls()
+# would silently truncate past the '@' and hand check_url() only
+# "evil.tk", losing the exact evidence its own '@'-trick check
+# (parts.username/parts.password) depends on. Optional, so ordinary
+# domains without an '@' are unaffected. Trade-off: a bare email
+# mention ("contact me at john@example.com") now also gets flagged by
+# that same '@' check - same behavior check_url() already gives anyone
+# who calls it directly with a full string; this just makes normal
+# message scanning reach it too, instead of it being silently dead.
 URL_REGEX = re.compile(
-    r"(?:https?://)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"(?:https?://)?(?:[a-zA-Z0-9._%+-]+@)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
     r"[a-z]{2,24}(?::\d{2,5})?(?:/[^\s<>()]*)?",
     re.IGNORECASE,
 )

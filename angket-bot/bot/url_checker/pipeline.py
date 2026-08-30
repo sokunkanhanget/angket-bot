@@ -27,6 +27,7 @@ import logging
 from urllib.parse import urlsplit
 
 from bot.url_checker.features import network, threat_intel, vectors
+from bot.url_checker.features.cert_info import cert_issued_days_ago, score_cert_age
 from bot.url_checker.features.domain_info import domain_age_days, resolve_host, score_domain_age
 from bot.url_checker.features.lexical import (
     PROTECTED_BRANDS,
@@ -118,19 +119,23 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
     reg_domain = registered_domain(host)
     is_official_brand = reg_domain in PROTECTED_BRANDS
 
-    # Network + DNS + RDAP concurrently; vector search is local CPU.
+    # Network + DNS + RDAP + TLS cert concurrently; vector search is local CPU.
     net_task = asyncio.create_task(network.trace(normalized))
     dns_task = asyncio.create_task(resolve_host(host))
     age_task = asyncio.create_task(domain_age_days(host))
+    cert_task = asyncio.create_task(cert_issued_days_ago(host))
 
-    net, ips, age_days = await asyncio.gather(net_task, dns_task, age_task,
-                                              return_exceptions=True)
+    net, ips, age_days, cert_age_days = await asyncio.gather(
+        net_task, dns_task, age_task, cert_task, return_exceptions=True
+    )
     if isinstance(net, Exception):
         net = None
     if isinstance(ips, Exception):
         ips = None
     if isinstance(age_days, Exception):
         age_days = None
+    if isinstance(cert_age_days, Exception):
+        cert_age_days = None
 
     # --- Vector search over stored brand/phish embeddings -------------
     sim_hits = _safe_nearest(normalized)
@@ -166,6 +171,14 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
         reasons.append(age_scored[1])
     elif age_days:
         detail.append(f"Domain first registered {age_days}.")
+
+    # --- TLS certificate issuance age -----------------------------------
+    cert_scored = score_cert_age(cert_age_days)
+    if cert_scored:
+        score += cert_scored[0]
+        reasons.append(cert_scored[1])
+    elif cert_age_days:
+        detail.append(f"TLS certificate issued {cert_age_days} day(s) ago.")
 
     # --- Network-derived signals ---------------------------------------
     network_points = 0
@@ -229,6 +242,21 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
             if spoof:
                 score += 35
                 reasons.append(spoof)
+
+        # Credential-theft pattern: a login form that visually sits on
+        # this page but actually submits the password to a different
+        # domain entirely. Gated the same as the brand-spoof check - an
+        # official brand's own page legitimately posting to its own
+        # infra isn't this pattern.
+        page_html = net.get("page_html") or ""
+        if page_html and not is_official_brand:
+            exfil_target = _credential_exfil_target(page_html, final_host)
+            if exfil_target:
+                score += 40
+                reasons.append(f"This page has a login form that submits your password to "
+                                f"a different domain ('{exfil_target}') than the page itself "
+                                f"— a classic credential-theft pattern.")
+                detail.append(f"form action targets: {exfil_target}")
 
     # --- Match against links we've already flagged from Telegram -------
     # Gated by the brand whitelist so one mislabelled scan can never
@@ -342,6 +370,25 @@ def _safe_near_dup(host: str, page_text: str):
         return vectors.nearest_page(host, sig)
     except Exception:                          # noqa: BLE001
         return None
+
+
+def _credential_exfil_target(page_html: str, final_host: str) -> str | None:
+    """None unless the page has a password field AND at least one form
+    submits to an ABSOLUTE url on a DIFFERENT registrable domain than
+    the page it's displayed on - the actual credential-theft pattern,
+    not just "this page happens to have a login form" (plenty of real
+    sites do). A relative action ("/login", "", "#") submits back to
+    the same origin and is completely normal, so it's ignored here.
+    """
+    if not network.has_password_field(page_html):
+        return None
+    for action in network.find_form_actions(page_html):
+        if not action or "://" not in action:
+            continue  # relative/empty/fragment action -> same origin, not suspicious
+        action_host = network._host(action)
+        if action_host and registered_domain(action_host) != registered_domain(final_host):
+            return action_host
+    return None
 
 
 def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) -> str | None:

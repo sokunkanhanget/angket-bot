@@ -19,5 +19,9 @@ urllib3==2.7.0
 vt-py==0.22.0
 yarl==1.24.5
 google-genai==2.19.0
+opencv-python-headless==5.0.0.93
+numpy==2.5.2
 pytest==9.1.1
 pytest-asyncio==1.4.0
+qrcode==8.2
+pillow==12.3.0

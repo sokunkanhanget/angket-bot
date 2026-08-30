@@ -13,13 +13,16 @@ from bot.url_checker.message.handler import extract_text_link_entities, resolve_
 from bot.url_checker.pipeline import check_message_full
 
 BTN_MENU = "MENU"
-BTN_SWITCH_LANGUAGE = "🌐 Switch Language"
-BTN_HOW_TO_USE = "📖 How to Use"
-BTN_SAFETY_TIPS = "🛡️ Safety Tips"
-BTN_LIVE_SCAN = "🔎 Live Message Scan"
-BTN_POLICY = "📜 Policy"
-BTN_HELP = "❓ Help"
-BTN_SUBSCRIPTION = "⭐ Subscription"
+
+# Menu items shown on the main menu, in canonical-key form (excludes "menu" itself).
+_MAIN_MENU_KEYS = [
+    ["switch_language", "how_to_use"],
+    ["safety_tips", "live_scan"],
+    ["policy", "help"],
+    ["subscription"],
+]
+
+_MENU_RESPONSE_KEYS = {"how_to_use", "safety_tips", "live_scan", "policy", "help", "subscription"}
 
 TRIGGER_MENU_KEYBOARD = ReplyKeyboardMarkup(
     [[BTN_MENU]],
@@ -27,48 +30,17 @@ TRIGGER_MENU_KEYBOARD = ReplyKeyboardMarkup(
     one_time_keyboard=True,
 )
 
-MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        [BTN_SWITCH_LANGUAGE, BTN_HOW_TO_USE],
-        [BTN_SAFETY_TIPS, BTN_LIVE_SCAN],
-        [BTN_POLICY, BTN_HELP],
-        [BTN_SUBSCRIPTION],
-    ],
-    resize_keyboard=True,
-)
 
-_MENU_RESPONSES = {
-    BTN_SWITCH_LANGUAGE: "🌐 <b>Switch Language</b>\n\nLanguage selection is coming soon.",
-    BTN_HOW_TO_USE: (
-        "📖 <b>How to Use Angket Bot</b>\n\n"
-        "Angket helps you check suspicious content and understand the security risk.\n\n"
-        "<b>1. Send the content you want to check</b>\n\n"
-        "• 📝 Send a suspicious text message\n"
-        "• 📄 Upload a suspicious file\n"
-        "• 🔗 Send a URL or link\n\n"
-        "<b>2. Let Angket analyze it</b>\n\n"
-        "Angket will scan the content and identify potential security threats.\n\n"
-        "<b>3. Get your result</b>\n\n"
-        "You’ll receive:\n\n"
-        "• 📊 <b>Risk Level:</b> How risky the content may be.\n"
-        "• 🔍 <b>Key Reasons:</b> Why it was flagged.\n"
-        "• 💡 <b>What To Do:</b> What you should do next.\n\n"
-        "<b>Risk Levels</b>\n"
-        "🟢 <b>Low Risk:</b> No significant threat detected.\n"
-        "🟡 <b>Medium Risk:</b> Some suspicious signs detected. Be cautious.\n"
-        "🔴 <b>High Risk:</b> Strong signs of a potential threat. Avoid interacting with it."
-    ),
-    BTN_SAFETY_TIPS: (
-        "🛡️ <b>Safety Tips</b>\n\n"
-        "• Never share OTPs, passwords, or bank details.\n"
-        "• Verify links before clicking.\n"
-        "• Be cautious of urgent or too-good-to-be-true offers."
-    ),
-    BTN_LIVE_SCAN: "🔎 <b>Live Message Scan</b>\n\nSend me any message and I’ll scan it in real time.",
-    BTN_POLICY: "📜 <b>Policy</b>\n\nOur privacy and usage policy will be shown here.",
-    BTN_HELP: "❓ <b>Help</b>\n\nNeed assistance? Just send your question and we'll do our best to help.",
-    BTN_SUBSCRIPTION: "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
-}
+def get_main_menu_keyboard(lang: str) -> ReplyKeyboardMarkup:
+    locale = lang if lang in BUTTONS else DEFAULT_LANG
+    return ReplyKeyboardMarkup(
+        [[label(locale, key) for key in row] for row in _MAIN_MENU_KEYS],
+        resize_keyboard=True,
+    )
+
+
+MAIN_MENU_KEYBOARDS = {locale: get_main_menu_keyboard(locale) for locale in BUTTONS}
+MAIN_MENU_KEYBOARD = MAIN_MENU_KEYBOARDS[DEFAULT_LANG]
 
 
 def get_user_lang(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -111,7 +83,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Use the buttons below to explore the menu.\n\n"
         "Let’s keep your digital world safer.",
         parse_mode="HTML",
-        reply_markup=MAIN_MENU_KEYBOARD,
+        reply_markup=MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD),
     )
     context.user_data["lang"] = lang
 
@@ -238,6 +210,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     lang = get_user_lang(context)
     canonical_key = key_for_label(text)
+    main_menu_keyboard = MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD)
 
     if canonical_key == "switch_language":
         await message.reply_text(
@@ -248,36 +221,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if canonical_key in {"lang_en", "lang_km"}:
-        context.user_data["lang"] = "en" if canonical_key == "lang_en" else "km"
-        await message.reply_text(
-            t(context.user_data["lang"], "language_set"),
+        lang = "en" if canonical_key == "lang_en" else "km"
+        context.user_data["lang"] = lang
+        await update.message.reply_text(
+            t(lang, "language_set"),
             parse_mode="HTML",
-            reply_markup=MAIN_MENU_KEYBOARD,
+            reply_markup=MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD),
         )
         return
 
-    if canonical_key == "back":
-        await message.reply_text(
-            "📋 <b>Menu</b>\n\nChoose an action below.",
+    if canonical_key in ("back", "menu") or text.upper() == BTN_MENU:
+        await update.message.reply_text(
+            t(lang, "menu_title"),
             parse_mode="HTML",
-            reply_markup=MAIN_MENU_KEYBOARD,
+            reply_markup=main_menu_keyboard,
         )
         return
 
-    if text.upper() == BTN_MENU:
-        await message.reply_text(
-            "📋 <b>Menu</b>\n\nChoose an action below.",
+    if canonical_key in _MENU_RESPONSE_KEYS:
+        await update.message.reply_text(
+            t(lang, canonical_key),
             parse_mode="HTML",
-            reply_markup=MAIN_MENU_KEYBOARD,
-        )
-        return
-
-    menu_response = _MENU_RESPONSES.get(text)
-    if menu_response is not None:
-        await message.reply_text(
-            menu_response,
-            parse_mode="HTML",
-            reply_markup=MAIN_MENU_KEYBOARD,
+            reply_markup=main_menu_keyboard,
         )
         return
 
@@ -323,5 +288,5 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await message.reply_text(
         format_analysis_response(llm_result, keyword_result),
         parse_mode="HTML",
-        reply_markup=MAIN_MENU_KEYBOARD,
+        reply_markup=main_menu_keyboard,
     )

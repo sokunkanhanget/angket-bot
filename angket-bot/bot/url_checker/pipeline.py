@@ -1,5 +1,5 @@
 """
-bot/linkchecker/pipeline.py
+bot/url_checker/pipeline.py
 ============================
 The full link-checking pipeline — orchestrates every signal source
 into one verdict per URL:
@@ -26,12 +26,13 @@ import asyncio
 import logging
 from urllib.parse import urlsplit
 
-from bot.linkchecker import network, vectors
-from bot.linkchecker import threat_intel
-from bot.linkchecker.domain_info import domain_age_days, resolve_host, score_domain_age
-from bot.linkchecker.lexical import (
+from bot.url_checker.features import network, threat_intel, vectors
+from bot.url_checker.features.cert_info import cert_issued_days_ago, score_cert_age
+from bot.url_checker.features.domain_info import domain_age_days, resolve_host, score_domain_age
+from bot.url_checker.features.lexical import (
     PROTECTED_BRANDS,
     _verdict_labels,
+    check_anchor_mismatch,
     check_url,
     extract_urls,
     registered_domain,
@@ -47,6 +48,16 @@ PHISH_SIM_STRONG = 0.80        # near-certain impersonation
 SEEN_BAD_SIM_THRESHOLD = 0.75  # cosine vs a link we previously flagged
 BRAND_PAGE_SPOOF_MIN = 3       # brand name occurrences in page text before we call it a spoof claim
 NEARDUP_THRESHOLD = 0.90       # MinHash similarity = same phishing kit
+# Below this, MinHash is unreliable - not just literal empty pages, but
+# generic bot-challenge/interstitial pages (Cloudflare "Checking your
+# browser...", reCAPTCHA walls, "enable JavaScript" stubs) that are
+# genuinely non-empty text but IDENTICAL across countless unrelated
+# sites. Confirmed live: linkedin.com's 191-char challenge page still
+# spuriously matched another site's copy of the same boilerplate.
+# Real fake-login phishing kits run to hundreds/thousands of chars
+# (a copied bank login page isn't 200 characters), so this cuts the
+# false-positive surface without losing real detection power.
+MIN_PAGE_TEXT_FOR_NEARDUP = 300
 MAX_NETWORK_POINTS = 45        # cap for all network-derived signals combined
 MAX_URLS_PER_MESSAGE = 5       # input validation: protect quota & event loop from spam
 
@@ -74,12 +85,25 @@ def _web_urls(text: str) -> list[str]:
     return kept
 
 
-async def analyze_url(raw_url: str) -> dict:
-    """Full async check of one URL -> merged verdict dict."""
+async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
+    """Full async check of one URL -> merged verdict dict.
+
+    display_text: what a Telegram MessageEntity.TEXT_LINK showed to the
+    user, if this URL came from one - Telegram lets a message show
+    "https://ababank.com" while actually linking anywhere, so when the
+    displayed text is itself URL-shaped and doesn't match, that's
+    scored as a strong signal (see check_anchor_mismatch).
+    """
     verdict = check_url(raw_url)
     score = verdict["score"]
     reasons = list(verdict["reasons"])
     detail: list[str] = []
+
+    if display_text:
+        mismatch = check_anchor_mismatch(display_text, raw_url)
+        if mismatch:
+            score += mismatch[0]
+            reasons.append(mismatch[1])
 
     host = verdict["host"]
     if not host:
@@ -95,19 +119,23 @@ async def analyze_url(raw_url: str) -> dict:
     reg_domain = registered_domain(host)
     is_official_brand = reg_domain in PROTECTED_BRANDS
 
-    # Network + DNS + RDAP concurrently; vector search is local CPU.
+    # Network + DNS + RDAP + TLS cert concurrently; vector search is local CPU.
     net_task = asyncio.create_task(network.trace(normalized))
     dns_task = asyncio.create_task(resolve_host(host))
     age_task = asyncio.create_task(domain_age_days(host))
+    cert_task = asyncio.create_task(cert_issued_days_ago(host))
 
-    net, ips, age_days = await asyncio.gather(net_task, dns_task, age_task,
-                                              return_exceptions=True)
+    net, ips, age_days, cert_age_days = await asyncio.gather(
+        net_task, dns_task, age_task, cert_task, return_exceptions=True
+    )
     if isinstance(net, Exception):
         net = None
     if isinstance(ips, Exception):
         ips = None
     if isinstance(age_days, Exception):
         age_days = None
+    if isinstance(cert_age_days, Exception):
+        cert_age_days = None
 
     # --- Vector search over stored brand/phish embeddings -------------
     sim_hits = _safe_nearest(normalized)
@@ -143,6 +171,14 @@ async def analyze_url(raw_url: str) -> dict:
         reasons.append(age_scored[1])
     elif age_days:
         detail.append(f"Domain first registered {age_days}.")
+
+    # --- TLS certificate issuance age -----------------------------------
+    cert_scored = score_cert_age(cert_age_days)
+    if cert_scored:
+        score += cert_scored[0]
+        reasons.append(cert_scored[1])
+    elif cert_age_days:
+        detail.append(f"TLS certificate issued {cert_age_days} day(s) ago.")
 
     # --- Network-derived signals ---------------------------------------
     network_points = 0
@@ -207,6 +243,21 @@ async def analyze_url(raw_url: str) -> dict:
                 score += 35
                 reasons.append(spoof)
 
+        # Credential-theft pattern: a login form that visually sits on
+        # this page but actually submits the password to a different
+        # domain entirely. Gated the same as the brand-spoof check - an
+        # official brand's own page legitimately posting to its own
+        # infra isn't this pattern.
+        page_html = net.get("page_html") or ""
+        if page_html and not is_official_brand:
+            exfil_target = _credential_exfil_target(page_html, final_host)
+            if exfil_target:
+                score += 40
+                reasons.append(f"This page has a login form that submits your password to "
+                                f"a different domain ('{exfil_target}') than the page itself "
+                                f"— a classic credential-theft pattern.")
+                detail.append(f"form action targets: {exfil_target}")
+
     # --- Match against links we've already flagged from Telegram -------
     # Gated by the brand whitelist so one mislabelled scan can never
     # poison the memory for official domains.
@@ -220,7 +271,15 @@ async def analyze_url(raw_url: str) -> dict:
         detail.append(f"similarity {seen_sim:.2f} to an earlier flagged link")
 
     # --- LSH near-duplicate page check (any fetched page) --------------
-    if net and net.get("page_text"):
+    # Gated on a minimum length: a bot-blocked/CAPTCHA/JS-only page
+    # (common on sites with real anti-bot defenses - Amazon, Google...)
+    # returns near-empty text after tag-stripping, and MinHash on
+    # near-empty text is degenerate - two DIFFERENT near-empty pages
+    # (e.g. both just "\n") hash to ~100% "similar" with zero actual
+    # content in common. Confirmed live: this false-flagged amazon.com
+    # as "near-identical" to an unrelated typosquat domain that had
+    # also returned near-empty content when it was scanned.
+    if net and net.get("page_text") and len(net["page_text"]) >= MIN_PAGE_TEXT_FOR_NEARDUP:
         dup_host = network._host(net["final_url"])
         dup = _safe_near_dup(dup_host, net["page_text"])
         if dup and dup[1] >= NEARDUP_THRESHOLD:
@@ -313,10 +372,29 @@ def _safe_near_dup(host: str, page_text: str):
         return None
 
 
+def _credential_exfil_target(page_html: str, final_host: str) -> str | None:
+    """None unless the page has a password field AND at least one form
+    submits to an ABSOLUTE url on a DIFFERENT registrable domain than
+    the page it's displayed on - the actual credential-theft pattern,
+    not just "this page happens to have a login form" (plenty of real
+    sites do). A relative action ("/login", "", "#") submits back to
+    the same origin and is completely normal, so it's ignored here.
+    """
+    if not network.has_password_field(page_html):
+        return None
+    for action in network.find_form_actions(page_html):
+        if not action or "://" not in action:
+            continue  # relative/empty/fragment action -> same origin, not suspicious
+        action_host = network._host(action)
+        if action_host and registered_domain(action_host) != registered_domain(final_host):
+            return action_host
+    return None
+
+
 def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) -> str | None:
     """Page *claims* to be a bank/brand but sits on an unrelated domain —
     the semantic-impersonation case vector search alone can't prove."""
-    from bot.linkchecker.lexical import PROTECTED_BRANDS
+    from bot.url_checker.features.lexical import PROTECTED_BRANDS
     low = page_text.lower()
     for domain, label in PROTECTED_BRANDS.items():
         brand = domain.split(".")[0]
@@ -326,12 +404,38 @@ def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) ->
     return None
 
 
-async def check_message_full(text: str) -> list[dict]:
-    """Check every link in a message through the full pipeline."""
+async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | None = None) -> list[dict]:
+    """Check every link in a message through the full pipeline.
+
+    hidden_links: [(display_text, actual_url), ...] pulled from Telegram
+    MessageEntity.TEXT_LINK entities - a link whose real destination
+    never appears in the visible message text at all (the message shows
+    "Click here", the entity alone carries the real URL) is invisible to
+    extract_urls()'s regex, so the caller (message/handler.py) passes
+    these in separately so the bot actually sees and scores them.
+    """
     urls = _web_urls(text)
+    display_by_url: dict[str, str] = {}
+
+    seen = {u.lower() for u in urls}
+    for display_text, url in (hidden_links or []):
+        if not url or "://" not in url:
+            continue
+        if urlsplit(url).scheme.lower() not in ("http", "https"):
+            continue
+        if url.lower() in seen:
+            continue  # already covered as a visible link
+        seen.add(url.lower())
+        display_by_url[url] = display_text
+        urls.append(url)
+        if len(urls) >= MAX_URLS_PER_MESSAGE:
+            break
+
     if not urls:
         return []
-    return list(await asyncio.gather(*(analyze_url(u) for u in urls)))
+    return list(await asyncio.gather(
+        *(analyze_url(u, display_by_url.get(u)) for u in urls)
+    ))
 
 
 def _risk_percent_and_label(score: int) -> tuple[int, str]:

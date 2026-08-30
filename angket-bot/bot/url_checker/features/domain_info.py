@@ -1,6 +1,6 @@
 """
-bot/analysis/domain_info.py
-===========================
+bot/url_checker/features/domain_info.py
+=========================================
 Host & domain metadata — the "WHOIS & Domain Age" and "DNS
 Resolution" rows of the research notes.
 
@@ -149,7 +149,7 @@ async def fetch_registration(host: str) -> tuple[str | None, str | None]:
 
 async def domain_age_days(host: str) -> int | None:
     """Days since registration, or None if unknown."""
-    from bot.linkchecker.lexical import registered_domain
+    from bot.url_checker.features.lexical import registered_domain
     reg = registered_domain(host)
     created, _ = await fetch_registration(reg)
     if not created:

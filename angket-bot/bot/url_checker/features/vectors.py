@@ -1,6 +1,6 @@
 """
-bot/linkchecker/vectors.py
-============================
+bot/url_checker/features/vectors.py
+=====================================
 Vector search over links and page text, backed by SQLite.
 
 This is the mentor-suggested "vector search with a database" piece:
@@ -233,7 +233,7 @@ PHISH_PATTERNS = [
 
 def seed() -> None:
     """Idempotently load brand vectors + synthetic phishing patterns."""
-    from bot.linkchecker.lexical import PROTECTED_BRANDS
+    from bot.url_checker.features.lexical import PROTECTED_BRANDS
 
     for domain, label in PROTECTED_BRANDS.items():
         upsert_vector("brand", domain, domain, label)

@@ -1,6 +1,6 @@
 """
-bot/linkchecker/network.py
-==============================
+bot/url_checker/features/network.py
+=====================================
 Asynchronous network verification for links — the "Async I/O" and
 "Network & HTTPS / Redirect Chains / Header Verification / DOM
 Parsing" rows of the research notes.
@@ -37,6 +37,8 @@ USER_AGENT = ("Mozilla/5.0 (compatible; AngketBotLinkChecker/1.0; "
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
+_PASSWORD_INPUT_RE = re.compile(r'<input\b[^>]*\btype\s*=\s*["\']password["\']', re.IGNORECASE)
+_FORM_ACTION_RE = re.compile(r'<form\b[^>]*\baction\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
 
 
 def _host(url: str) -> str:
@@ -49,6 +51,25 @@ def extract_page_text(html: str) -> str:
     title = title_match.group(1).strip() if title_match else ""
     body = _TAG_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", html))
     return f"{title}\n{re.sub(r'\s+', ' ', body).strip()}"
+
+
+def has_password_field(html: str) -> bool:
+    """Regex, not a real DOM parser - good enough to answer "is there a
+    login form on this page" without pulling in BeautifulSoup/lxml."""
+    return bool(_PASSWORD_INPUT_RE.search(html or ""))
+
+
+def find_form_actions(html: str) -> list[str]:
+    """Every <form action="..."> target on the page, in source order.
+
+    The classic credential-theft pattern: a login form that visually
+    sits on ababank.com but actually POSTs the password somewhere else
+    entirely. A relative action ("/login", "", "#") submits back to the
+    same page/origin - completely normal, not flagged here. Only an
+    ABSOLUTE action pointing at a different registrable domain than the
+    page itself is the tell, which the caller (pipeline.py) checks.
+    """
+    return _FORM_ACTION_RE.findall(html or "")
 
 
 async def trace(raw_url: str) -> dict:
@@ -136,7 +157,7 @@ def _capture(response: httpx.Response, result: dict, history: list, body: bytes)
 
     # A hop that changes the registrable domain is where scams hide:
     # bit.ly/x9k2 -> free-iphone-winner.tk
-    from bot.linkchecker.lexical import registered_domain
+    from bot.url_checker.features.lexical import registered_domain
     if registered_domain(first_host) != registered_domain(last_host):
         result["cross_domain_redirect"] = True
 

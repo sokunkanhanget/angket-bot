@@ -5,8 +5,12 @@ from telegram.ext import ContextTypes
 
 from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
+from bot.context_engine import analyze_unified
 from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
-from bot.linkchecker.handler import resolve_ticket
+from bot.url_checker.features.lexical import URL_REGEX
+from bot.url_checker.features.vectors import seed as seed_vectors
+from bot.url_checker.message.handler import extract_text_link_entities, resolve_ticket
+from bot.url_checker.pipeline import check_message_full
 
 BTN_MENU = "MENU"
 
@@ -153,11 +157,57 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
     return "\n\n".join(lines)
 
 
+def format_unified_response(unified: dict, keyword_result: dict) -> str:
+    """Same visual shape as format_analysis_response, but key_reasons are
+    {text, source} objects (context_engine.py's schema) instead of plain
+    strings, so a reason that came from checking a link can be tagged 🔗
+    - the "why" for a verdict a link-only or text-only check couldn't
+    have produced on its own."""
+    verdict_icon, verdict_label = _VERDICT_STYLES.get(
+        unified.get("verdict"), ("⚪", "UNABLE TO VERIFY")
+    )
+    risk_icon, risk_label = _risk_style(unified.get("risk_percentage"))
+    risk_percentage = unified.get("risk_percentage")
+    percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
+
+    reason_items = unified.get("key_reasons") or []
+    if reason_items:
+        reason_lines = []
+        for r in reason_items:
+            text, source = (r.get("text", ""), r.get("source")) if isinstance(r, dict) else (str(r), None)
+            tag = " 🔗" if source == "link_evidence" else ""
+            reason_lines.append(f"• {escape(text)}{tag}")
+        reasons_block = "\n".join(reason_lines)
+    else:
+        reasons_block = "• None provided"
+
+    lines = [
+        f"{verdict_icon} <b>VERDICT: {escape(verdict_label)}</b>\n\n"
+        + _summary(unified.get("verdict"), risk_percentage),
+        f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
+        f"🔍 <b>KEY REASONS</b>\n{reasons_block}",
+        "💡 <b>WHAT YOU SHOULD DO</b>\n"
+        f"{_format_list(unified.get('recommendations', []), '✓')}",
+        f"──────────────────────────────────────────────\n{_DISCLAIMER}",
+    ]
+
+    if keyword_result["suspicious"]:
+        matches = escape(", ".join(keyword_result["matches"]))
+        lines.insert(3, f"⚠️ <b>KEYWORD MATCH:</b> <code>{matches}</code>")
+
+    return "\n\n".join(lines)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message  
-    if message is None or message.text is None:
+    message = update.effective_message
+    if message is None:
         return
-    text = message.text
+    # A caption (photo/document sent with a message) carries the same
+    # kind of scam wording plain text does - route.py now sends those
+    # here too, so this must not stay blind to message.caption.
+    text = message.text or message.caption
+    if text is None:
+        return
     lang = get_user_lang(context)
     canonical_key = key_for_label(text)
     main_menu_keyboard = MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD)
@@ -197,6 +247,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     keyword_result = analyze_text(text)
+
+    # Plain private DM (not a business chat, whose reply visibility works
+    # very differently - see url_checker/message/handler.py's owner-DM
+    # design): reason over text AND any link together in one Gemini call,
+    # instead of the link-only verdict a private-chat link used to fall
+    # back to. See bot/context_engine.py for why this exists - a
+    # text-only scam that includes ANY link, even a lexically clean one,
+    # used to lose all of its text reasoning here.
+    chat = update.effective_chat
+    is_business = bool(message.business_connection_id)
+    is_plain_private = chat is not None and chat.type == "private" and not is_business
+
+    if is_plain_private:
+        if not context.bot_data.get("_vectors_seeded"):
+            seed_vectors()
+            context.bot_data["_vectors_seeded"] = True
+
+        hidden_links = extract_text_link_entities(message)
+        has_links = bool(URL_REGEX.search(text)) or bool(hidden_links)
+        status = None
+        if has_links:
+            status = await message.reply_text("🔍 Checking...", parse_mode="Markdown")
+
+        link_verdicts = await check_message_full(text, hidden_links)
+        unified = await analyze_unified(text, keyword_result, link_verdicts)
+        reply_text = format_unified_response(unified, keyword_result)
+
+        if status is not None:
+            await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)
+        else:
+            await message.reply_text(reply_text, parse_mode="HTML", reply_markup=main_menu_keyboard)
+        return
+
+    # Group/supergroup and business chat: unchanged text-only reasoning -
+    # any link in the message is still checked separately by
+    # url_checker's own handle_url/business-owner-DM flow.
     llm_result = await analyze_text_with_llm(text)
 
     await message.reply_text(

@@ -277,20 +277,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
 
 
-def _extract_text_link_entities(message) -> list[tuple[str, str]]:
+def extract_text_link_entities(message) -> list[tuple[str, str]]:
     """Telegram lets a message show arbitrary text as a link to a
     DIFFERENT url (MessageEntity.TEXT_LINK) - e.g. the message displays
     "https://ababank.com" while actually pointing at a phishing domain,
     or even just "Click here" with no visible URL at all. extract_urls()
     only regexes the visible text, so it's blind to both cases; this
     pulls the real (display_text, url) pairs out via PTB's own
-    parse_entities(), which - unlike a hand-rolled text[offset:length]
-    slice - correctly accounts for Telegram's UTF-16 entity offsets
-    (a naive slice breaks on messages with Khmer or emoji before the
-    link, both common here).
+    parse_entities()/parse_caption_entities(), which - unlike a
+    hand-rolled text[offset:length] slice - correctly accounts for
+    Telegram's UTF-16 entity offsets (a naive slice breaks on messages
+    with Khmer or emoji before the link, both common here). A photo or
+    document's link lives in caption_entities, not entities, so the
+    right parser has to be picked based on which one the message has.
     """
     try:
-        parsed = message.parse_entities(types=[MessageEntity.TEXT_LINK])
+        parsed = (
+            message.parse_entities(types=[MessageEntity.TEXT_LINK])
+            if message.text is not None
+            else message.parse_caption_entities(types=[MessageEntity.TEXT_LINK])
+        )
     except Exception:                          # noqa: BLE001 - never let entity parsing break a scan
         return []
     return [(display, entity.url) for entity, display in parsed.items() if entity.url]
@@ -298,8 +304,12 @@ def _extract_text_link_entities(message) -> list[tuple[str, str]]:
 
 async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # effective_message covers normal messages AND business messages.
+    # A link can arrive as plain text or as a photo/document caption.
     message = update.effective_message
-    if message is None or message.text is None:
+    if message is None:
+        return
+    text = message.text or message.caption
+    if text is None:
         return
 
     # Full pipeline: lexical + network trace + DNS/domain age + vector
@@ -313,8 +323,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     is_business = bool(message.business_connection_id)
     status = None if is_business else await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
 
-    hidden_links = _extract_text_link_entities(message)
-    verdicts = await check_message_full(message.text, hidden_links)
+    hidden_links = extract_text_link_entities(message)
+    verdicts = await check_message_full(text, hidden_links)
     if not verdicts:
         if status is not None:
             await status.delete()

@@ -7,8 +7,10 @@ fakes so the merged-verdict logic can be verified deterministically.
 """
 
 import asyncio
+import datetime
 
 import pytest
+from telegram import Chat, Message, MessageEntity
 
 from bot.url_checker import pipeline
 from bot.url_checker.features import network, threat_intel, vectors
@@ -20,6 +22,7 @@ from bot.url_checker.features.lexical import (
     registered_domain,
 )
 from bot.url_checker.features.qr_decode import decode_qr
+from bot.url_checker.message.handler import extract_text_link_entities
 
 
 # --- lexical analyzer (existing behaviour, still intact) ---------------
@@ -234,6 +237,41 @@ def test_decode_qr_returns_none_for_non_qr_image():
 def test_decode_qr_never_crashes_on_garbage_bytes():
     assert decode_qr(b"not an image at all") is None
     assert decode_qr(b"") is None
+
+
+# --- caption blindness fix (photo/document TEXT_LINK entities) -----------
+
+def _caption_message(caption: str, entities: list[MessageEntity]) -> Message:
+    return Message(
+        message_id=1,
+        date=datetime.datetime.now(),
+        chat=Chat(id=1, type=Chat.PRIVATE),
+        caption=caption,
+        caption_entities=entities,
+        text=None,
+    )
+
+
+def test_extract_text_link_entities_reads_caption_entities():
+    # Regression: a photo/document caption hides its TEXT_LINK entity in
+    # message.caption_entities, not message.entities - a message with no
+    # .text used to make this helper (and handle_url entirely) blind to
+    # a "Click here"-style deceptive link attached to a file/photo.
+    caption = "Click here"
+    entity = MessageEntity(
+        type=MessageEntity.TEXT_LINK, offset=0, length=len(caption),
+        url="http://free-prize-winner.tk/claim",
+    )
+    message = _caption_message(caption, [entity])
+
+    assert extract_text_link_entities(message) == [
+        ("Click here", "http://free-prize-winner.tk/claim")
+    ]
+
+
+def test_extract_text_link_entities_empty_for_plain_caption():
+    message = _caption_message("just a normal caption, no link", [])
+    assert extract_text_link_entities(message) == []
 
 
 # --- orchestrator merge logic (network faked) -----------------------------

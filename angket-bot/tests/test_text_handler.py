@@ -117,6 +117,112 @@ async def test_handle_text_shows_how_to_use_guidance():
 
 
 @pytest.mark.asyncio
+async def test_handle_text_analyzes_a_caption_when_text_is_absent():
+    # Regression: a photo/document sent with a caption has .text = None
+    # (the wording lives in .caption instead) - handle_text used to
+    # bail out immediately in that case, so scam wording attached to a
+    # file/photo was never scanned at all.
+    update = AsyncMock()
+    update.message.text = None
+    update.message.caption = "URGENT: verify your account now or it will be suspended"
+    update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
+
+    with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), patch(
+        "bot.handlers.text_handler.analyze_text_with_llm",
+        AsyncMock(return_value={
+            "verdict": "Scam",
+            "risk_percentage": 80,
+            "key_reasons": ["Urgent request"],
+            "recommendations": ["Be careful"],
+        }),
+    ):
+        await handle_text(update, AsyncMock())
+
+    update.message.reply_text.assert_awaited_once()
+    assert "VERDICT" in update.message.reply_text.call_args[0][0]
+
+
+def _private_update(text):
+    update = AsyncMock()
+    update.message.text = text
+    update.message.caption = None
+    update.message.business_connection_id = None
+    update.message.reply_text = AsyncMock()
+    update.effective_message = update.message
+    update.effective_chat.type = "private"
+    return update
+
+
+def _private_context():
+    context = AsyncMock()
+    context.bot_data = {"_vectors_seeded": True}  # skip real vector seeding
+    return context
+
+
+@pytest.mark.asyncio
+async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link():
+    # Plain private chat, no link: context-engineering path still fires
+    # (unconditionally, per bot/context_engine.py), just with zero link
+    # evidence - no "Checking..." status message needed since there's
+    # nothing to network-trace.
+    update = _private_update("free bitcoin now, click nowhere")
+    context = _private_context()
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(
+        "bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])
+    ), patch(
+        "bot.handlers.text_handler.analyze_unified",
+        AsyncMock(return_value={
+            "verdict": "Scam",
+            "risk_percentage": 90,
+            "key_reasons": [{"text": "Promises free money", "source": "message_text"}],
+            "recommendations": ["Ignore it"],
+        }),
+    ) as mock_unified:
+        await handle_text(update, context)
+
+    mock_unified.assert_awaited_once()
+    update.message.reply_text.assert_awaited_once()
+    reply = update.message.reply_text.call_args[0][0]
+    assert "VERDICT: LIKELY A SCAM" in reply
+    assert "Promises free money" in reply
+
+
+@pytest.mark.asyncio
+async def test_handle_text_shows_status_and_edits_it_when_a_link_is_present():
+    # A link in a plain private-chat message must show the "Checking..."
+    # status first (network trace can take a while), then EDIT that same
+    # message into the unified verdict - not send a second new message.
+    update = _private_update("official update, click http://free-prize-winner.tk/claim")
+    context = _private_context()
+
+    status_message = AsyncMock()
+    update.message.reply_text = AsyncMock(return_value=status_message)
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(
+        "bot.handlers.text_handler.check_message_full",
+        AsyncMock(return_value=[{"host": "free-prize-winner.tk", "level": "dangerous",
+                                  "score": 80, "reasons": ["scam TLD"]}]),
+    ), patch(
+        "bot.handlers.text_handler.analyze_unified",
+        AsyncMock(return_value={
+            "verdict": "Scam",
+            "risk_percentage": 95,
+            "key_reasons": [{"text": "Link uses a scam TLD", "source": "link_evidence"}],
+            "recommendations": ["Do not click"],
+        }),
+    ):
+        await handle_text(update, context)
+
+    update.message.reply_text.assert_awaited_once_with("🔍 Checking...", parse_mode="Markdown")
+    status_message.edit_text.assert_awaited_once()
+    edited_text = status_message.edit_text.call_args[0][0]
+    assert "🔗" in edited_text  # link-sourced reason tagged
+    assert "Link uses a scam TLD" in edited_text
+
+
+@pytest.mark.asyncio
 async def test_handle_text_analyzes_regular_messages():
     update = AsyncMock()
     update.message.text = "This is a test message"

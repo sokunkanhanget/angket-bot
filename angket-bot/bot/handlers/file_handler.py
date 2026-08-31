@@ -34,6 +34,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     sha256 = hashlib.sha256(file_data.getbuffer()).hexdigest()
 
     result = await scan_vt_hash(sha256)
+    
+    # Store the hash in context for later use (e.g., View Full Report button)
+    context.user_data["last_scan_hash"] = sha256
+    context.user_data["last_scan_file"] = file_name
 
     if result["found"]:
         malicious = result["malicious"]

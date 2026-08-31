@@ -16,31 +16,31 @@
     "menu_prompt": "📱 **Main Menu**\nChoose an option or send a file to scan:",
 
     "section_verdict": "🛡️ **1. Verdict ✨**",
-    "verdict_safe": "🟢 **This item appears to be SAFE.**",
-    "verdict_danger": "🚨 **This is likely a MALICIOUS THREAT.**",
+    "verdict_safe": "🟢 This item appears to be SAFE.",
+    "verdict_danger": "🚨 This is likely a MALICIOUS THREAT.",
 
     "section_risk": "📊 **2. Security Risk Level 👤**",
     "risk_label_safe": "Low Risk",
     "risk_label_danger": "High Risk",
 
-    "section_reasons": "🔍 **3. Key Analysis Factors**",
-    "reason_safe_1": "• No malicious signatures detected across 70+ security engines.",
-    "reason_safe_2": "• Domain / File hash has established clean history.",
-    "reason_safe_3": "• No known phishing or scam patterns identified.",
-    "reason_danger_1": "• Flagged as harmful by **{malicious} out of {total}** antivirus engines.",
-    "reason_danger_2": "• High correlation with known malware delivery signatures.",
-    "reason_danger_3": "• Suspicious executable behavior or URL redirect pattern.",
+    "section_reasons": "🔍 **3. Key Reasons**",
+    "reason_safe_1": "No malicious signatures detected across 70+ security engines.",
+    "reason_safe_2": "Domain / File hash has established clean history.",
+    "reason_safe_3": "No known phishing or scam patterns identified.",
+    "reason_danger_1": "Flagged as harmful by {malicious} out of {total} antivirus engines.",
+    "reason_danger_2": "High correlation with known malware delivery signatures.",
+    "reason_danger_3": "Suspicious executable behavior or URL redirect pattern.",
 
     "section_action": "💡 **4. What You Can Do 💡**",
-    "action_safe": "🟢 **Safe to proceed.**\n> Always verify the source if this file or link was unexpected.",
-    "action_danger": "🛑 **Do not open or execute this file.**\n> Delete the message immediately and report the sender if untrusted.",
+    "action_safe": "🟢 Safe to proceed. Always verify the source if this file or link was unexpected.",
+    "action_danger": "🛑 Do not open or execute this file. Delete the message immediately and report the sender if untrusted.",
 
-    "section_notice": "ℹ️ **5. Heads Up ⚠️**",
-    "notice_box": "> Angket Bot can make mistakes sometimes.\n> Please double-check important information before taking action.\n> Stay safe! 🛡️",
+    "section_notice": "",
+    "notice_box": "───────────────────────────────────────────\nⓘ **Angket Bot** may **occasionally make mistakes**.\nDouble-check **important information** before taking action.\n───────────────────────────────────────────",
 
     "btn_check_another": "🛡️ Check Another",
     "btn_safety_tips": "📖 Safety Tips",
-    "btn_report_scam": "⚠️ Report Threat"
+    "btn_view_report": "📊 View Full Report"
   },
   "kh": {
     "welcome": "👋 **សូមស្វាគមន៍មកកាន់ Angket Bot!**\n\nសូមជ្រើសរើសភាសារបស់អ្នកនៅខាងក្រោម៖",
@@ -59,30 +59,30 @@
     "menu_prompt": "📱 **ម៉ឺនុយចម្បង**\nសូមជ្រើសរើសជម្រើសខាងក្រោម ឬផ្ញើឯកសារដើម្បីស្កេន៖",
 
     "section_verdict": "🛡️ **១. លទ្ធផលនៃការវិភាគ ✨**",
-    "verdict_safe": "🟢 **ឯកសារនេះ មានសុវត្ថិភាព។**",
-    "verdict_danger": "🚨 **ប្រយ័ត្ន! នេះអាចជាមេរោគ ឬការបោកប្រាស់។**",
+    "verdict_safe": "🟢 ឯកសារនេះ មានសុវត្ថិភាព។",
+    "verdict_danger": "🚨 ប្រយ័ត្ន! នេះអាចជាមេរោគ ឬការបោកប្រាស់។",
 
     "section_risk": "📊 **២. កម្រិតហានិភ័យ 👤**",
     "risk_label_safe": "ហានិភ័យទាប (Low Risk)",
     "risk_label_danger": "ហានិភ័យខ្ពស់ (High Risk)",
 
     "section_reasons": "🔍 **៣. មូលហេតុចម្បងៗ**",
-    "reason_safe_1": "• មិនមានប្រព័ន្ធសុវត្ថិភាពណា detectar ឃើញមេរោគឡើយ។",
-    "reason_safe_2": "• មានប្រវត្តិស្អាតស្អំនៅក្នុងទិន្នន័យសុវត្ថិភាព។",
-    "reason_safe_3": "• មិនមានទម្រង់ជាការបោកប្រាស់ (Phishing/Scam) ឡើយ។",
-    "reason_danger_1": "• ត្រូវបានកំណត់ថាមានគ្រោះថ្នាក់ដោយ **{malicious}/{total}** កម្មវិធីប្រឆាំងមេរោគ។",
-    "reason_danger_2": "• មានសញ្ញាសម្គាល់ដូចទៅនឹងប្រភេទមេរោគដែលគេស្គាល់។",
-    "reason_danger_3": "• មានសកម្មភាពសង្ស័យ ឬតំណភ្ជាប់បញ្ជូនបន្តមិនច្បាស់លាស់។",
+    "reason_safe_1": "មិនមានប្រព័ន្ធសុវត្ថិភាពណា detectar ឃើញមេរោគឡើយ។",
+    "reason_safe_2": "មានប្រវត្តិស្អាតស្អំនៅក្នុងទិន្នន័យសុវត្ថិភាព។",
+    "reason_safe_3": "មិនមានទម្រង់ជាការបោកប្រាស់ (Phishing/Scam) ឡើយ។",
+    "reason_danger_1": "ត្រូវបានកំណត់ថាមានគ្រោះថ្នាក់ដោយ {malicious}/{total} កម្មវិធីប្រឆាំងមេរោគ។",
+    "reason_danger_2": "មានសញ្ញាសម្គាល់ដូចទៅនឹងប្រភេទមេរោគដែលគេស្គាល់។",
+    "reason_danger_3": "មានសកម្មភាពសង្ស័យ ឬតំណភ្ជាប់បញ្ជូនបន្តមិនច្បាស់លាស់។",
 
     "section_action": "💡 **៤. អ្វីដែលអ្នកគួរធ្វើ 💡**",
-    "action_safe": "🟢 **អាចប្រើប្រាស់បានដោយសុវត្ថិភាព។**\n> ទោះជាយ៉ាងណា សូមបន្តប្រុងប្រយ័ត្នចំពោះប្រភពដែលមិនស្គាល់។",
-    "action_danger": "� **សូមកុំបើក ឬទាញយកឯកសារនេះឱ្យសោះ!**\n> សូមលុបសារនេះចោល ឬរាយការណ៍ប្រសិនបើផ្ញើមកពីគណនីចម្លែក។",
+    "action_safe": "🟢 អាចប្រើប្រាស់បានដោយសុវត្ថិភាព។ ទោះជាយ៉ាងណា សូមបន្តប្រុងប្រយ័ត្នចំពោះប្រភពដែលមិនស្គាល់។",
+    "action_danger": "🛑 សូមកុំបើក ឬទាញយកឯកសារនេះឱ្យសោះ! សូមលុបសារនេះចោល ឬរាយការណ៍ប្រសិនបើផ្ញើមកពីគណនីចម្លែក។",
 
-    "section_notice": "ℹ️ **៥. ការរំលឹកស្មារតី ⚠️**",
-    "notice_box": "> ប្រព័ន្ធ Angket Bot អាចនឹងមានកំហុសឆ្គងជួនកាល។\n> សូមពិនិត្យព័ត៌មានសំខាន់ៗឡើងវិញ មុនពេលសម្រេចចិត្ត។\n> រក្សាសុវត្ថិភាព! 🛡️",
+    "section_notice": "",
+    "notice_box": "───────────────────────────────────────────\nⓘ **Angket Bot** អាច**នឹងមានកំហុស។\n**ពិនិត្យលម្អិត** ព័ត៌មាន **សំខាន់ៗ** មុនពេលសម្រេចចិត្ត។\n───────────────────────────────────────────",
 
     "btn_check_another": "🛡️ ស្កេនផ្សេងទៀត",
     "btn_safety_tips": "📖 គន្លឹះសុវត្ថិភាព",
-    "btn_report_scam": "⚠️ រាយការណ៍មេរោគ"
+    "btn_view_report": "📊 មើលរបាយការណ៍ពេញលេញ"
   }
 }

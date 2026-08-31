@@ -8,11 +8,11 @@ def get_action_keyboard(lang: str = "en") -> ReplyKeyboardMarkup:
     """
     Returns the 3-button keyboard shown after a scan result.
     """
-    keyboard = [
+    keyboard = [ 
         [
             KeyboardButton(tr("btn_check_another", lang)),
             KeyboardButton(tr("btn_safety_tips", lang)),
-            KeyboardButton(tr("btn_report_scam", lang)),
+            KeyboardButton(tr("btn_view_report", lang)),
         ]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -96,6 +96,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             else "📖 **គន្លឹះសុវត្ថិភាព៖**\n• កុំទាញយកឯកសារ (.exe, .apk) ពីប្រភពដែលមិនច្បាស់លាស់។\n• ត្រូវពិនិត្យឈ្មោះ Domain ឱ្យបានច្បាស់លាស់ជានិច្ច។"
         )
         await update.message.reply_text(tips_msg, parse_mode="Markdown")
+        return
+
+    if text in [tr("btn_view_report", "en"), tr("btn_view_report", "kh")]:
+        file_hash = context.user_data.get("last_scan_hash")
+        file_name = context.user_data.get("last_scan_file", "file")
+        
+        if file_hash:
+            vt_url = f"https://www.virustotal.com/gui/file/{file_hash}"
+            msg = (
+                f"📊 **View Full Report**\n\n"
+                f"File: `{file_name}`\n\n"
+                f"[Click here to view the full VirusTotal analysis]({vt_url})"
+                if lang == "en"
+                else f"📊 **មើលរបាយការណ៍ពេញលេញ**\n\n"
+                f"ឯកសារ: `{file_name}`\n\n"
+                f"[ចូលទៅ VirusTotal]({vt_url})"
+            )
+            await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
+        else:
+            msg = "No scan history available." if lang == "en" else "មិនមានប្រវត្តិស្កេនទេ។"
+            await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
     # Language Switch button handling

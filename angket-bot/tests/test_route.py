@@ -1,7 +1,7 @@
 """
 tests/test_route.py
 =====================
-Regression tests for two routing behaviors:
+Regression tests for routing behavior:
 
 1. Caption blindness fix: a message that carries its scam text/link in
    a photo/document CAPTION (rather than plain .text) must not be
@@ -9,11 +9,15 @@ Regression tests for two routing behaviors:
    used to check filters.TEXT only.
 
 2. Context-engineering routing: plain PRIVATE chat is no longer
-   suppressed by a link (handle_text now reasons over text + link
-   together itself - see bot/context_engine.py), but BUSINESS chat
-   still takes the old link-takeover path (its link checking stays on
-   url_checker's separate owner-DM flow, unchanged) to avoid a
-   duplicate reply there.
+   suppressed by a link (handle_text reasons over text + link together
+   itself - see bot/context_engine.py). GROUP/supergroup chat keeps the
+   old two-independent-replies behavior, untouched.
+
+3. Business chat automation: Business messages are now excluded from
+   BOTH the old text scanner (TEXT_FILTER) and the old link checker
+   (url_filter) entirely - they're fully owned by
+   handle_business_message (bot.py group 3), which checks text, links,
+   and files together in one call and reports privately to the owner.
 """
 
 import datetime
@@ -23,11 +27,8 @@ from telegram.ext import filters
 
 from bot.route import TEXT_FILTER
 
-# Mirrors bot.py's url_filter exactly (group 1, handle_url) - private
-# chat is excluded there on purpose, business chat is not.
-URL_FILTER = (
-    (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.ChatType.PRIVATE
-) | filters.UpdateType.BUSINESS_MESSAGE
+# Mirrors bot.py's url_filter exactly (group 1, handle_url).
+URL_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.ChatType.PRIVATE
 
 
 def _update(caption=None, text=None, chat_type=Chat.PRIVATE, message_id=1):
@@ -87,19 +88,21 @@ def test_plain_private_chat_link_is_excluded_from_the_old_link_checker():
     assert not bool(URL_FILTER.check_update(update))
 
 
-def test_business_chat_link_still_takes_over_from_text_scanner():
-    # Business chat's link-checking intentionally still goes through
-    # the separate owner-DM flow (url_checker/message/handler.py) -
-    # untouched by this pass - so the text scanner must stay suppressed
-    # here exactly like before, to avoid a duplicate reply.
+def test_business_chat_never_reaches_the_old_text_scanner():
+    # Business chat is fully owned by handle_business_message now,
+    # link or not - handle_text has no owner-DM logic and would either
+    # duplicate the check or reply visibly in the business chat.
     update = _business_update(text="claim now http://free-prize-winner.tk/claim")
     assert not bool(TEXT_FILTER.check_update(update))
-    assert bool(URL_FILTER.check_update(update))
 
-
-def test_business_chat_with_no_link_still_reaches_text_scanner():
     update = _business_update(text="urgent, verify your account now")
-    assert bool(TEXT_FILTER.check_update(update))
+    assert not bool(TEXT_FILTER.check_update(update))
+
+
+def test_business_chat_never_reaches_the_old_link_checker():
+    # Same reasoning: handle_business_message now checks links itself.
+    update = _business_update(text="claim now http://free-prize-winner.tk/claim")
+    assert not bool(URL_FILTER.check_update(update))
 
 
 def test_group_chat_caption_link_does_not_suppress_text_scanner():

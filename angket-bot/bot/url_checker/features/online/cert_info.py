@@ -1,5 +1,5 @@
 """
-bot/url_checker/features/cert_info.py
+bot/url_checker/features/online/cert_info.py
 =======================================
 TLS certificate issuance age - freshly-issued certificates (especially
 free Let's Encrypt certs, issued in seconds via ACME) are common in

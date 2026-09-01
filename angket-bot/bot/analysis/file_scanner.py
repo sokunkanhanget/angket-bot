@@ -1,6 +1,21 @@
+import hashlib
+import io
+
 import vt
+from telegram.ext import ContextTypes
 
 from bot.config import VIRUSTOTAL_API_KEY
+
+
+async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:
+    """Download a Telegram file and return its SHA-256 hex digest, ready
+    for scan_vt_hash() - shared by every flow that scans an uploaded
+    file (handle_file, handle_business_message) so a future fix (e.g. a
+    size guard) only needs to land in one place."""
+    file_info = await context.bot.get_file(file_id)
+    buf = io.BytesIO()
+    await file_info.download_to_memory(buf)
+    return hashlib.sha256(buf.getvalue()).hexdigest()
 
 
 async def scan_vt_hash(file_hash: str) -> dict:

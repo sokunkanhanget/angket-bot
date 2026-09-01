@@ -1,5 +1,5 @@
 """
-bot/url_checker/features/threat_intel.py
+bot/url_checker/features/online/threat_intel.py
 ==========================================
 Flow 3 of the link-checking pipeline: external threat-intelligence
 feeds, starting with VirusTotal.

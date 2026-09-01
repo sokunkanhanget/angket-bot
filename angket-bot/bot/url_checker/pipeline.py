@@ -26,15 +26,17 @@ import asyncio
 import logging
 from urllib.parse import urlsplit
 
-from bot.url_checker.features import network, threat_intel, vectors
-from bot.url_checker.features.cert_info import cert_issued_days_ago, score_cert_age
-from bot.url_checker.features.domain_info import domain_age_days, resolve_host, score_domain_age
-from bot.url_checker.features.lexical import (
+from bot.url_checker.features.online import network, threat_intel
+from bot.url_checker.features.offline import vectors
+from bot.url_checker.features.online.cert_info import cert_issued_days_ago, score_cert_age
+from bot.url_checker.features.online.domain_info import domain_age_days, resolve_host, score_domain_age
+from bot.url_checker.features.offline.lexical import (
     PROTECTED_BRANDS,
     _verdict_labels,
     check_anchor_mismatch,
     check_url,
     extract_urls,
+    has_malformed_protocol,
     registered_domain,
 )
 from bot.config import VIRUSTOTAL_API_KEY
@@ -85,7 +87,9 @@ def _web_urls(text: str) -> list[str]:
     return kept
 
 
-async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
+async def analyze_url(
+    raw_url: str, display_text: str | None = None, malformed_protocol: bool = False
+) -> dict:
     """Full async check of one URL -> merged verdict dict.
 
     display_text: what a Telegram MessageEntity.TEXT_LINK showed to the
@@ -93,11 +97,23 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
     "https://ababank.com" while actually linking anywhere, so when the
     displayed text is itself URL-shaped and doesn't match, that's
     scored as a strong signal (see check_anchor_mismatch).
+
+    malformed_protocol: whether the ORIGINAL message text wrote this
+    link as "http//..."/"https//..." (missing the colon) - mentor-
+    flagged signal. Computed by the caller (check_message_full) from
+    the raw text, since by this point raw_url has already had that
+    malformed prefix silently stripped by URL_REGEX (see
+    has_malformed_protocol's docstring).
     """
     verdict = check_url(raw_url)
     score = verdict["score"]
     reasons = list(verdict["reasons"])
     detail: list[str] = []
+
+    if malformed_protocol:
+        score += 15
+        reasons.append("Link is written with a malformed protocol (missing ':') "
+                        "- not a format normal links use.")
 
     if display_text:
         mismatch = check_anchor_mismatch(display_text, raw_url)
@@ -138,7 +154,7 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
         cert_age_days = None
 
     # --- Vector search over stored brand/phish embeddings -------------
-    sim_hits = _safe_nearest(normalized)
+    sim_hits = await _safe_nearest(normalized)
     phish_sims = [s for s, kind, *_ in sim_hits if kind == "phish"]
     brand_sims = [s for s, kind, key, label in sim_hits if kind == "brand"]
     best_phish = max(phish_sims, default=0.0)
@@ -263,7 +279,7 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
     # poison the memory for official domains.
     seen_sim = 0.0
     if not is_official_brand:
-        seen_sim = _best_seen_bad_similarity(normalized)
+        seen_sim = await _best_seen_bad_similarity(normalized)
     if seen_sim >= SEEN_BAD_SIM_THRESHOLD:
         score += 20
         reasons.append("Closely resembles a link that was previously flagged "
@@ -316,7 +332,7 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
     # verdict level, so future lookalinks match against it. This must
     # happen AFTER the similarity query above, or a link would match
     # against itself.
-    _remember(normalized, net, level)
+    await _remember(normalized, net, level)
 
     logger.info("verdict %s (%d) for %s", level, score, host)
     return {
@@ -330,17 +346,17 @@ async def analyze_url(raw_url: str, display_text: str | None = None) -> dict:
     }
 
 
-def _best_seen_bad_similarity(text: str) -> float:
+async def _best_seen_bad_similarity(text: str) -> float:
     """Highest cosine similarity to any link we previously flagged as
     suspicious/dangerous (kind='seen' rows carry their old verdict)."""
     best = 0.0
-    for sim, kind, _key, label in _safe_nearest(text):
+    for sim, kind, _key, label in await _safe_nearest(text):
         if kind == "seen" and label in ("suspicious", "dangerous"):
             best = max(best, sim)
     return best
 
 
-def _remember(normalized: str, net, level: str) -> None:
+async def _remember(normalized: str, net, level: str) -> None:
     """Store this link's embedding for future reference. The embedding
     text mixes URL syntax with a slice of page content so both a
     lookalike URL and a copied page can match it later."""
@@ -351,15 +367,20 @@ def _remember(normalized: str, net, level: str) -> None:
         page_slice = ""
         if isinstance(net, dict):
             page_slice = (net.get("page_text") or "")[:300]
-        vectors.upsert_vector("seen", final_url.lower(),
+        await vectors.upsert_vector("seen", final_url.lower(),
                                    f"{normalized} {page_slice}".strip(), level)
     except Exception:                          # noqa: BLE001 - never fail a check on bookkeeping
         pass
 
 
-def _safe_nearest(text: str):
+async def _safe_nearest(text: str):
+    # Explicitly scoped to link-relevant kinds only - url_vectors now also
+    # holds 'scam_pattern' rows (message-text-shaped, seeded for
+    # context_engine.py's offline fallback), which would otherwise compete
+    # for this global top-4 window and could crowd out a real phish/brand/
+    # seen match, silently zeroing the similarity score below.
     try:
-        return vectors.nearest(text, k=4)
+        return await vectors.nearest(text, k=4, kinds=("brand", "phish", "seen"))
     except Exception:                          # noqa: BLE001 - DB trouble must not kill checks
         return []
 
@@ -394,7 +415,7 @@ def _credential_exfil_target(page_html: str, final_host: str) -> str | None:
 def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) -> str | None:
     """Page *claims* to be a bank/brand but sits on an unrelated domain —
     the semantic-impersonation case vector search alone can't prove."""
-    from bot.url_checker.features.lexical import PROTECTED_BRANDS
+    from bot.url_checker.features.offline.lexical import PROTECTED_BRANDS
     low = page_text.lower()
     for domain, label in PROTECTED_BRANDS.items():
         brand = domain.split(".")[0]
@@ -416,6 +437,10 @@ async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | No
     """
     urls = _web_urls(text)
     display_by_url: dict[str, str] = {}
+    # Scoped to visible-text-derived urls only - a hidden TEXT_LINK
+    # entity's url comes from Telegram's own API field, always
+    # well-formed, so it can never carry this malformed-text signal.
+    malformed_visible_urls = {u.lower() for u in urls} if has_malformed_protocol(text) else set()
 
     seen = {u.lower() for u in urls}
     for display_text, url in (hidden_links or []):
@@ -434,7 +459,7 @@ async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | No
     if not urls:
         return []
     return list(await asyncio.gather(
-        *(analyze_url(u, display_by_url.get(u)) for u in urls)
+        *(analyze_url(u, display_by_url.get(u), u.lower() in malformed_visible_urls) for u in urls)
     ))
 
 

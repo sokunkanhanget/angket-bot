@@ -1,5 +1,5 @@
 """
-bot/url_checker/features/lexical.py
+bot/url_checker/features/offline/lexical.py
 =====================================
 The URL-checking brain for Angket Bot. Pure standard library — no
 dependencies — so it can be tested on its own, just like text_analyzer.py.
@@ -131,6 +131,26 @@ def extract_urls(text: str) -> list[str]:
             seen.add(key)
             out.append(url)
     return out
+
+
+# Mentor-flagged signal: a link written as "http//..." or "https//..." -
+# missing the colon before the double slash - either a typo or a
+# deliberate attempt to dodge naive filters that only ever recognize a
+# well-formed "http://"/"https://" prefix. A properly-formed URL never
+# matches this: the colon always sits between the scheme name and the
+# slashes ("https://"), so "https" is immediately followed by ":", not
+# "//" - this only fires on the malformed form. URL_REGEX's own
+# optional (?:https?://)? group silently drops this prefix entirely
+# rather than matching it (see extract_urls' docstring for the '@'
+# case, same idea), so the signal has to be checked against the raw
+# message text directly, not the already-extracted URL string.
+MALFORMED_PROTOCOL_RE = re.compile(r"\bhttps?//", re.IGNORECASE)
+
+
+def has_malformed_protocol(text: str) -> bool:
+    """True if the raw message text contains a "http//" or "https//"
+    (no colon) link anywhere."""
+    return bool(MALFORMED_PROTOCOL_RE.search(text or ""))
 
 
 def _normalize(url: str):

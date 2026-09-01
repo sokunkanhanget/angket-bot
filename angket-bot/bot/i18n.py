@@ -13,6 +13,9 @@ BUTTONS = {
         "policy": "📜 Policy",
         "help": "❓ Help",
         "subscription": "⭐ Subscription",
+        "delete": "🗑️ Delete",
+        "ignore": "🙈 Ignore",
+        "view_on_virustotal": "📊 View on VirusTotal",
     },
     "km": {
         "menu": "ម៉ឺនុយ",
@@ -26,6 +29,9 @@ BUTTONS = {
         "policy": "📜 គោលការណ៍",
         "help": "❓ ជំនួយ",
         "subscription": "⭐ ការជាវ",
+        "delete": "🗑️ លុប",
+        "ignore": "🙈 មិនអើពើ",
+        "view_on_virustotal": "📊 មើលនៅលើ VirusTotal",
     },
 }
 
@@ -94,6 +100,8 @@ TEXT = {
         ),
         "help": "❓ <b>Help</b>\n\nNeed assistance? Just send your question and we'll do our best to help.",
         "subscription": "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
+        "file_deleted": "🗑️ Message deleted.",
+        "file_scan_ignored": "🙈 Ignored. No action taken.",
     },
     "km": {
         "switch_language": "🌐 <b>ផ្លាស់ប្តូរភាសា</b>",
@@ -159,6 +167,8 @@ TEXT = {
         ),
         "help": "❓ <b>ជំនួយ</b>\n\nត្រូវការជំនួយ? គ្រាន់តែផ្ញើសំណួររបស់អ្នក ហើយយើងនឹងខិតខំជួយអ្នកឱ្យបានល្អបំផុត។",
         "subscription": "⭐ <b>ការជាវ</b>\n\nគម្រោងជាវនឹងមកដល់ឆាប់ៗនេះ។",
+        "file_deleted": "🗑️ សារត្រូវបានលុប។",
+        "file_scan_ignored": "🙈 មិនអើពើ។ គ្មានសកម្មភាពត្រូវបានធ្វើឡើយ។",
     },
 }
 

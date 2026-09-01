@@ -13,15 +13,16 @@ import pytest
 from telegram import Chat, Message, MessageEntity
 
 from bot.url_checker import pipeline
-from bot.url_checker.features import network, threat_intel, vectors
-from bot.url_checker.features.lexical import (
+from bot.url_checker.features.online import network, threat_intel
+from bot.url_checker.features.offline import vectors
+from bot.url_checker.features.offline.lexical import (
     check_anchor_mismatch,
     check_url,
     domain_entropy,
     extract_urls,
+    has_malformed_protocol,
     registered_domain,
 )
-from bot.url_checker.features.qr_decode import decode_qr
 from bot.url_checker.message.handler import extract_text_link_entities
 
 
@@ -131,6 +132,19 @@ def test_check_anchor_mismatch_allows_matching_domains():
     assert check_anchor_mismatch("https://ababank.com/login", "https://ababank.com/login?ref=sms") is None
 
 
+# --- malformed-protocol links (mentor-flagged: "http//"/"https//") -------
+
+def test_has_malformed_protocol_flags_missing_colon():
+    assert has_malformed_protocol("check this out http//free-prize-winner.tk/claim")
+    assert has_malformed_protocol("go to https//free-prize-winner.tk/claim now")
+
+
+def test_has_malformed_protocol_ignores_well_formed_links():
+    assert not has_malformed_protocol("visit http://ababank.com safely")
+    assert not has_malformed_protocol("visit https://ababank.com safely")
+    assert not has_malformed_protocol("plain text with no link at all")
+
+
 # --- embeddings & vector search -----------------------------------------
 
 def test_embed_is_normalized_and_deterministic():
@@ -151,20 +165,60 @@ def test_cosine_similarity_orders_phish_above_unrelated():
     assert sim_phish > sim_other
 
 
-def test_vector_store_roundtrip(tmp_path, monkeypatch):
-    db = tmp_path / "vectors.db"
-    _use_tmp_db(monkeypatch, str(db))
+@pytest.mark.asyncio
+async def test_vector_store_roundtrip(fake_vector_store):
+    # upsert_vector/nearest are async and Postgres-backed now (see
+    # tests/conftest.py) - fake_vector_store implements the exact same
+    # contract in-memory with the real embed()/cosine() math, so this
+    # still tests a genuine write-then-read round trip, offline.
+    await fake_vector_store.upsert_vector("phish", "fake-a.tk", "ababank-secure-login.tk")
+    await fake_vector_store.upsert_vector("brand", "ababank.com", "ababank.com", "ABA Bank")
 
-    vectors.upsert_vector("phish", "fake-a.tk", "ababank-secure-login.tk")
-    vectors.upsert_vector("brand", "ababank.com", "ababank.com", "ABA Bank")
-
-    hits = vectors.nearest("ababank-secure-login.tk", k=2)
+    hits = await fake_vector_store.nearest("ababank-secure-login.tk", k=2)
     kinds = [kind for _, kind, _, _ in hits]
     assert "phish" in kinds
     # Querying the official domain itself must rank the brand vector first.
-    hits = vectors.nearest("ababank.com", k=1)
+    hits = await fake_vector_store.nearest("ababank.com", k=1)
     assert hits[0][2] == "ababank.com"
     assert hits[0][0] == pytest.approx(1.0, abs=1e-5)
+
+
+@pytest.mark.asyncio
+async def test_ensure_seeded_survives_a_db_failure(monkeypatch):
+    # Regression found by /code-review: seed_vectors() used to be called
+    # directly at every handler call site with zero exception handling -
+    # a Supabase outage on the first message after a restart would crash
+    # handle_text/handle_url/handle_business_message uncaught, giving the
+    # user/owner zero reply. ensure_seeded() must
+    # swallow the failure and leave bot_data unmarked so the next
+    # message simply retries.
+    async def _boom():
+        raise RuntimeError("Supabase unreachable")
+
+    monkeypatch.setattr(vectors, "seed", _boom)
+
+    bot_data = {}
+    await vectors.ensure_seeded(bot_data)  # must not raise
+
+    assert "_vectors_seeded" not in bot_data
+
+
+@pytest.mark.asyncio
+async def test_ensure_seeded_is_idempotent_once_it_succeeds(fake_vector_store, monkeypatch):
+    bot_data = {}
+    await vectors.ensure_seeded(bot_data)
+    assert bot_data["_vectors_seeded"] is True
+
+    # A second call must not re-seed (no-op if already marked done).
+    called = {"n": 0}
+
+    async def _spy():
+        called["n"] += 1
+
+    monkeypatch.setattr(vectors, "seed", _spy)
+    await vectors.ensure_seeded(bot_data)
+
+    assert called["n"] == 0
 
 
 # --- MinHash LSH ---------------------------------------------------------
@@ -208,35 +262,6 @@ def test_has_password_field_false_when_absent():
 def test_find_form_actions_extracts_targets():
     html = '<form action="https://attacker.tk/steal"></form><form action="/login"></form>'
     assert network.find_form_actions(html) == ["https://attacker.tk/steal", "/login"]
-
-
-# --- QR code decoding -------------------------------------------------
-
-def test_decode_qr_reads_a_real_generated_code():
-    import io
-    import qrcode
-
-    img = qrcode.make("http://free-prize-winner.tk/claim")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-
-    assert decode_qr(buf.getvalue()) == "http://free-prize-winner.tk/claim"
-
-
-def test_decode_qr_returns_none_for_non_qr_image():
-    import io
-    from PIL import Image
-
-    img = Image.new("RGB", (50, 50), color="white")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-
-    assert decode_qr(buf.getvalue()) is None
-
-
-def test_decode_qr_never_crashes_on_garbage_bytes():
-    assert decode_qr(b"not an image at all") is None
-    assert decode_qr(b"") is None
 
 
 # --- caption blindness fix (photo/document TEXT_LINK entities) -----------
@@ -310,20 +335,9 @@ class _FakeNet:
         self.result.update(overrides)
 
 
-@pytest.fixture
-def seeded_vectors(tmp_path, monkeypatch):
-    """Isolate every SQLite-touching module to a temp DB, then seed."""
-    db = str(tmp_path / "test_scan.db")
-    _use_tmp_db(monkeypatch, db)
-    vectors.seed()
-    return db
-
-
-def _use_tmp_db(monkeypatch, db_path):
-    # Both modules do `from bot.config import SCAN_LOG_DB` at import
-    # time, so patch each module's own binding, not bot.config.
-    monkeypatch.setattr(vectors, "SCAN_LOG_DB", db_path)
-    monkeypatch.setattr("bot.url_checker.features.domain_info.SCAN_LOG_DB", db_path)
+# seeded_vectors fixture now lives in tests/conftest.py (shared, and
+# backed by an in-memory fake store since url_vectors moved to
+# Supabase Postgres - see that file's docstring for why).
 
 
 def _stub_out_network(monkeypatch, tls_valid=True):
@@ -566,13 +580,60 @@ def test_analyze_url_survives_total_network_failure(seeded_vectors, monkeypatch)
     assert "does not resolve" in " ".join(verdict["reasons"])
 
 
+def test_analyze_url_flags_malformed_protocol(seeded_vectors, monkeypatch):
+    async def dead_net(url):
+        return _FakeNet(error="connection refused").result
+
+    async def none_resolve(host):
+        return None
+
+    async def none_age(host):
+        return None
+
+    monkeypatch.setattr(pipeline.network, "trace", dead_net)
+    monkeypatch.setattr(pipeline, "resolve_host", none_resolve)
+    monkeypatch.setattr(pipeline, "domain_age_days", none_age)
+
+    clean = asyncio.run(pipeline.analyze_url("ababank.com"))
+    malformed = asyncio.run(pipeline.analyze_url("ababank.com", malformed_protocol=True))
+
+    assert malformed["score"] > clean["score"]
+    assert any("malformed protocol" in r for r in malformed["reasons"])
+    assert not any("malformed protocol" in r for r in clean["reasons"])
+
+
+@pytest.mark.asyncio
+async def test_check_message_full_detects_malformed_protocol_in_the_raw_text(seeded_vectors, monkeypatch):
+    # Regression for the mentor-flagged signal: URL_REGEX's own optional
+    # scheme group silently drops "http//"/"https//" (see
+    # has_malformed_protocol's docstring), so analyze_url alone never
+    # sees it unless check_message_full checks the RAW text itself and
+    # threads the flag through.
+    async def dead_net(url):
+        return _FakeNet(error="connection refused").result
+
+    async def none_resolve(host):
+        return None
+
+    async def none_age(host):
+        return None
+
+    monkeypatch.setattr(pipeline.network, "trace", dead_net)
+    monkeypatch.setattr(pipeline, "resolve_host", none_resolve)
+    monkeypatch.setattr(pipeline, "domain_age_days", none_age)
+
+    verdicts = await pipeline.check_message_full("claim now http//free-prize-winner.tk/claim")
+
+    assert len(verdicts) == 1
+    assert any("malformed protocol" in r for r in verdicts[0]["reasons"])
+
+
 # --- self-learning memory (Telegram links -> future reference) -----------
 
 def test_flagged_link_is_remembered_for_future(seeded_vectors, monkeypatch):
     """A dangerous-looking link must be stored as kind='seen' with its
-    verdict level, so the DB grows as the bot scans Telegram traffic."""
-    import sqlite3
-
+    verdict level, so the vector store grows as the bot scans Telegram
+    traffic."""
     async def dead_net(url):
         return _FakeNet(error="connection refused").result
 
@@ -588,14 +649,12 @@ def test_flagged_link_is_remembered_for_future(seeded_vectors, monkeypatch):
 
     verdict = asyncio.run(pipeline.analyze_url("http://ababank-secure-login-verify-account.tk"))
 
-    conn = sqlite3.connect(seeded_vectors)
-    try:
-        rows = conn.execute(
-            "select kind, key, label from url_vectors where kind = 'seen'").fetchall()
-    finally:
-        conn.close()
-    assert rows, "flagged link was not remembered"
-    assert rows[0][2] == verdict["level"]
+    seen_rows = [
+        (kind, key, label) for (kind, key), (label, _vec) in seeded_vectors.rows.items()
+        if kind == "seen"
+    ]
+    assert seen_rows, "flagged link was not remembered"
+    assert seen_rows[0][2] == verdict["level"]
 
 
 def test_second_lookalike_link_matches_first_flagged(seeded_vectors, monkeypatch):
@@ -631,23 +690,12 @@ def test_second_lookalike_link_matches_first_flagged(seeded_vectors, monkeypatch
 
 def test_official_brand_survives_plain_http_www_and_poisoned_memory(seeded_vectors, monkeypatch):
     """google.com over plain http redirecting to www.google.com must stay
-    SAFE even if the memory DB already contains a poisoned 'dangerous'
+    SAFE even if the memory store already contains a poisoned 'dangerous'
     seen-row for google (which a past bug created)."""
-    import sqlite3
-
     # Poison the memory exactly like the bug did.
-    conn = sqlite3.connect(seeded_vectors)
-    try:
-        conn.execute(
-            "insert or replace into url_vectors(kind, key, label, vec, added_at) "
-            "values ('seen', ?, ?, ?, datetime('now'))",
-            ("http://www.google.com/",
-             vectors._pack(vectors.embed("http://www.google.com/")),
-             "dangerous"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    seeded_vectors.rows[("seen", "http://www.google.com/")] = (
+        "dangerous", vectors.embed("http://www.google.com/")
+    )
 
     async def fake_trace(url):
         return _FakeNet(
@@ -703,9 +751,6 @@ def test_cross_domain_shortener_still_rescored(seeded_vectors, monkeypatch):
 
 
 # --- Flow 3: VirusTotal threat intelligence -------------------------------
-
-from bot.url_checker.features import threat_intel
-
 
 def test_vt_score_thresholds():
     # Many engines -> strongest signal

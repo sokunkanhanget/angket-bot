@@ -7,10 +7,11 @@ from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
 from bot.context_engine import analyze_unified
 from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
-from bot.url_checker.features.lexical import URL_REGEX
-from bot.url_checker.features.vectors import seed as seed_vectors
+from bot.url_checker.features.offline.lexical import URL_REGEX
+from bot.url_checker.features.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.url_checker.message.handler import extract_text_link_entities, resolve_ticket
 from bot.url_checker.pipeline import check_message_full
+from bot.verdict_style import SOURCE_TAGS, VERDICT_STYLES, risk_style
 
 BTN_MENU = "MENU"
 
@@ -88,12 +89,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["lang"] = lang
 
 
-_VERDICT_STYLES = {
-    "Scam": ("⚠️", "LIKELY A SCAM"),
-    "Not a Scam": ("✅", "SAFE / LEGITIMATE"),
-    "Uncertain": ("⚠️", "SUSPICIOUS"),
-}
-
 _DISCLAIMER = (
     "ⓘ Angket Bot may occasionally make mistakes.\n"
     "Double-check important information before taking action."
@@ -104,16 +99,6 @@ def _format_list(items: list, prefix: str) -> str:
     if not items:
         return f"{prefix} None provided"
     return "\n".join(f"{prefix} {escape(str(item))}" for item in items)
-
-
-def _risk_style(risk_percentage: int | None) -> tuple[str, str]:
-    if risk_percentage is None:
-        return "⚪", "Unknown Risk"
-    if risk_percentage <= 30:
-        return "🟢", "Low Risk"
-    if risk_percentage <= 60:
-        return "🟠", "Medium Risk"
-    return "🔴", "High Risk"
 
 
 def _summary(verdict: str | None, risk_percentage: int | None) -> str:
@@ -133,10 +118,10 @@ def _summary(verdict: str | None, risk_percentage: int | None) -> str:
 
 
 def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
-    verdict_icon, verdict_label = _VERDICT_STYLES.get(
+    verdict_icon, verdict_label = VERDICT_STYLES.get(
         llm_result.get("verdict"), ("⚪", "UNABLE TO VERIFY")
     )
-    risk_icon, risk_label = _risk_style(llm_result.get("risk_percentage"))
+    risk_icon, risk_label = risk_style(llm_result.get("risk_percentage"))
     risk_percentage = llm_result.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
@@ -163,10 +148,10 @@ def format_unified_response(unified: dict, keyword_result: dict) -> str:
     strings, so a reason that came from checking a link can be tagged 🔗
     - the "why" for a verdict a link-only or text-only check couldn't
     have produced on its own."""
-    verdict_icon, verdict_label = _VERDICT_STYLES.get(
+    verdict_icon, verdict_label = VERDICT_STYLES.get(
         unified.get("verdict"), ("⚪", "UNABLE TO VERIFY")
     )
-    risk_icon, risk_label = _risk_style(unified.get("risk_percentage"))
+    risk_icon, risk_label = risk_style(unified.get("risk_percentage"))
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
@@ -175,7 +160,7 @@ def format_unified_response(unified: dict, keyword_result: dict) -> str:
         reason_lines = []
         for r in reason_items:
             text, source = (r.get("text", ""), r.get("source")) if isinstance(r, dict) else (str(r), None)
-            tag = " 🔗" if source == "link_evidence" else ""
+            tag = SOURCE_TAGS.get(source, "")
             reason_lines.append(f"• {escape(text)}{tag}")
         reasons_block = "\n".join(reason_lines)
     else:
@@ -248,21 +233,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     keyword_result = analyze_text(text)
 
-    # Plain private DM (not a business chat, whose reply visibility works
-    # very differently - see url_checker/message/handler.py's owner-DM
-    # design): reason over text AND any link together in one Gemini call,
-    # instead of the link-only verdict a private-chat link used to fall
-    # back to. See bot/context_engine.py for why this exists - a
-    # text-only scam that includes ANY link, even a lexically clean one,
-    # used to lose all of its text reasoning here.
+    # Plain private DM: reason over text AND any link together in one
+    # Gemini call, instead of the link-only verdict a private-chat link
+    # used to fall back to. See bot/context_engine.py for why this
+    # exists - a text-only scam that includes ANY link, even a
+    # lexically clean one, used to lose all of its text reasoning here.
+    # Business chat never reaches this function at all (route.py's
+    # TEXT_FILTER excludes it) - it's fully owned by
+    # url_checker/message/handler.handle_business_message, whose
+    # owner-DM reply visibility works very differently from a normal
+    # chat reply.
     chat = update.effective_chat
-    is_business = bool(message.business_connection_id)
-    is_plain_private = chat is not None and chat.type == "private" and not is_business
+    is_plain_private = chat is not None and chat.type == "private"
 
     if is_plain_private:
-        if not context.bot_data.get("_vectors_seeded"):
-            seed_vectors()
-            context.bot_data["_vectors_seeded"] = True
+        await ensure_vectors_seeded(context.bot_data)
 
         hidden_links = extract_text_link_entities(message)
         has_links = bool(URL_REGEX.search(text)) or bool(hidden_links)
@@ -280,9 +265,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await message.reply_text(reply_text, parse_mode="HTML", reply_markup=main_menu_keyboard)
         return
 
-    # Group/supergroup and business chat: unchanged text-only reasoning -
-    # any link in the message is still checked separately by
-    # url_checker's own handle_url/business-owner-DM flow.
+    # Group/supergroup chat: unchanged text-only reasoning - any link in
+    # the message is still checked separately by url_checker's own
+    # handle_url flow.
     llm_result = await analyze_text_with_llm(text)
 
     await message.reply_text(

@@ -44,7 +44,8 @@ Key detail: we read `update.effective_message` instead of
 
 from __future__ import annotations
 
-import io
+import asyncio
+import logging
 import secrets
 import time
 
@@ -52,14 +53,19 @@ from telegram import MessageEntity, Update, InlineKeyboardButton, InlineKeyboard
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
+from bot.analysis.file_scanner import download_and_hash, scan_vt_hash
+from bot.analysis.text_analyzer import analyze_text
+from bot.context_engine import analyze_unified
 from bot.url_checker.pipeline import (
     check_message_full,
     format_verdict_full,
     _risk_percent_and_label,
 )
+from bot.verdict_style import SOURCE_TAGS, VERDICT_STYLES, risk_style
 from bot.analysis.utils import log_url_scan
-from bot.url_checker.features.qr_decode import decode_qr
-from bot.url_checker.features.vectors import seed as seed_vectors
+from bot.url_checker.features.offline.vectors import ensure_seeded as ensure_vectors_seeded
+
+logger = logging.getLogger(__name__)
 
 WELCOME_TEXT = (
     "🔗 **Link Scanner Bot**\n\n"
@@ -314,9 +320,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     # Full pipeline: lexical + network trace + DNS/domain age + vector
     # search + LSH. Brand/phish vectors are seeded once per process.
-    if not context.bot_data.get("_vectors_seeded"):
-        seed_vectors()
-        context.bot_data["_vectors_seeded"] = True
+    await ensure_vectors_seeded(context.bot_data)
 
     # Network tracing can take a few seconds — show progress first
     # (normal chats only; business flow stays invisible).
@@ -333,50 +337,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _reply_with_verdicts(update, context, message, verdicts, status, is_business)
 
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """QR codes shared as photos are invisible to handle_url entirely -
-    extract_urls() only ever sees message.text, and a photo has none.
-    Decodes any QR code in the image and runs whatever it contains
-    through the EXACT same pipeline a typed link would go through, so
-    a scam QR code gets the same full breakdown a typed scam link does.
-    """
-    message = update.effective_message
-    if message is None or not message.photo:
-        return
-
-    if not context.bot_data.get("_vectors_seeded"):
-        seed_vectors()
-        context.bot_data["_vectors_seeded"] = True
-
-    is_business = bool(message.business_connection_id)
-    status = None if is_business else await message.reply_text(
-        "🔍 Checking image for QR codes...", parse_mode="Markdown"
-    )
-
-    file_info = await context.bot.get_file(message.photo[-1].file_id)  # largest size
-    image_bytes = io.BytesIO()
-    await file_info.download_to_memory(image_bytes)
-
-    decoded_url = decode_qr(image_bytes.getvalue())
-    if decoded_url is None:
-        if status is not None:
-            await status.delete()
-        return  # no QR code found - stay silent, same pattern as handle_url with no links
-
-    verdicts = await check_message_full(decoded_url)
-    if not verdicts:
-        if status is not None:
-            await status.delete()
-        return  # QR decoded to something that isn't a web link
-
-    await _reply_with_verdicts(update, context, message, verdicts, status, is_business)
-
-
 async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
                                 status, is_business: bool) -> None:
-    """Shared by handle_url and handle_photo - once you have a list of
-    verdicts, the business/private/group reply branching is identical
-    regardless of whether the link came from typed text or a QR code."""
+    """Once you have a list of verdicts, the business/private/group reply
+    branching is identical regardless of where the link(s) came from."""
     sender = update.effective_user
     for v in verdicts:
         log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
@@ -428,5 +392,147 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
         _showcase_text(verdicts),
         parse_mode="Markdown",
         disable_web_page_preview=True,  # don't preview a possibly-bad link
+        reply_markup=keyboard,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Business chat automation: ONE unified text+link+file check per message,
+# reasoning over everything together (see bot/context_engine.py) instead of
+# separate, uncoordinated per-signal checks. Telegram's Business API lets a
+# user connect Angket to their own business account so every customer
+# message gets checked automatically and privately reported to them.
+# ---------------------------------------------------------------------------
+
+def _format_unified_business_text(unified: dict) -> str:
+    """Markdown rendering of an analyze_unified() verdict for the business
+    owner-DM notification - same shape as text_handler.py's
+    format_unified_response, but Markdown instead of HTML to match every
+    other business notification in this file."""
+    verdict_icon, verdict_label = VERDICT_STYLES.get(
+        unified.get("verdict"), ("⚪", "UNABLE TO VERIFY")
+    )
+    risk_icon, risk_label = risk_style(unified.get("risk_percentage"))
+    risk_percentage = unified.get("risk_percentage")
+    percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
+
+    reason_lines = [
+        f"- {r.get('text', '')}{SOURCE_TAGS.get(r.get('source'), '')}"
+        for r in (unified.get("key_reasons") or [])
+    ] or ["- None provided"]
+
+    lines = [
+        f"{verdict_icon} *VERDICT: {verdict_label}*",
+        f"{risk_icon} *{percentage}  {risk_label.upper()}*",
+        "",
+        "*Key Reasons*",
+        "\n".join(reason_lines),
+    ]
+    recs = unified.get("recommendations") or []
+    if recs:
+        lines += ["", "*What They Can Do*", "\n".join(f"- {r}" for r in recs)]
+    lines += ["", "ⓘ Bot can make mistakes. Please check carefully."]
+    return "\n".join(lines)
+
+
+async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Unified text+link+file check for Telegram Business chat automation:
+    when a customer messages a connected business account, the owner gets
+    ONE private notification reasoning over everything found in that
+    message together, instead of separate per-signal checks.
+
+    Covers text/caption, links, and attached documents - a business photo
+    is handled the same way via its caption (message.text or
+    message.caption both fall through to the same `text` variable below).
+    There is no image-content analysis (no QR decoding) - out of scope by
+    design, see bot.py's group comment.
+    """
+    message = update.effective_message
+    if message is None:
+        return
+
+    text = message.text or message.caption or ""
+    keyword_result = analyze_text(text)
+
+    # Resolved first (usually a bot_data cache hit, not a real network
+    # call) so a revoked/unresolvable connection skips the expensive link
+    # trace + file scan below entirely, instead of paying for both and
+    # then discarding the result.
+    owner_chat_id = await _owner_chat_id(context, message.business_connection_id)
+    if owner_chat_id is None:
+        return  # can't resolve the owner right now - nothing safe to do
+
+    await ensure_vectors_seeded(context.bot_data)
+
+    hidden_links = extract_text_link_entities(message)
+    document = message.document
+
+    async def _check_file() -> dict:
+        sha256 = await download_and_hash(context, document.file_id)
+        return await scan_vt_hash(sha256)
+
+    # A message can have both a link (in caption/entities) and a file at
+    # once - the two checks are fully independent network chains, so run
+    # them concurrently instead of paying their latency back-to-back.
+    # return_exceptions=True matters here: without it, one check failing
+    # (e.g. a file over Telegram's download limit, or a VirusTotal
+    # hiccup) would discard an ALREADY-SUCCEEDED link result and crash
+    # the whole handler - the owner would learn about neither, even
+    # though the link check had already come back clean. Same pattern
+    # pipeline.py's analyze_url already uses for its own network/DNS/
+    # RDAP/TLS gather.
+    tasks = [check_message_full(text, hidden_links)]
+    if document is not None:
+        tasks.append(_check_file())
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    link_verdicts = results[0]
+    if isinstance(link_verdicts, Exception):
+        logger.exception("Link check failed in business chat", exc_info=link_verdicts)
+        link_verdicts = []
+
+    file_verdict = results[1] if document is not None else None
+    if isinstance(file_verdict, Exception):
+        logger.exception("File check failed in business chat", exc_info=file_verdict)
+        file_verdict = None
+
+    if not text and not link_verdicts and file_verdict is None:
+        return  # truly nothing to check at all - stay silent
+
+    sender = update.effective_user
+    for v in link_verdicts:
+        log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
+
+    unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict)
+
+    # A link or file is always worth telling the owner about (matches
+    # handle_url/handle_file's "report every finding, even 'safe'"
+    # convention elsewhere in this project). Pure text with no link or
+    # file only bothers the owner if the FULL Gemini reasoning actually
+    # flags a concern - gating on the crude local keyword list instead
+    # (like this used to) is exactly what silently missed a real "Hi Mom,
+    # send $800 now, don't call" family-emergency scam during testing:
+    # no keyword match, no link, no file, yet obviously a scam.
+    if not link_verdicts and file_verdict is None and unified.get("verdict") == "Not a Scam":
+        return
+
+    header = f"👀 *New activity in your business chat*\n\n{_sender_header(sender, message.date)}\n\n"
+    body = header + _format_unified_business_text(unified)
+
+    # Reuses the toggle-oriented short/full ticket store with the SAME
+    # text in both slots - this notification never renders a "See full
+    # details" toggle (only Delete), so there's no distinct short/full
+    # content to store; the ticket only needs to exist for the "x"
+    # (delete) callback to find something to pop.
+    ticket = _stash_business_ticket(context, body, body)
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🗑️ Delete", callback_data=f"u:x:{ticket}")]]
+    )
+
+    await context.bot.send_message(
+        chat_id=owner_chat_id,
+        text=body,
+        parse_mode="Markdown",
+        disable_web_page_preview=True,
         reply_markup=keyboard,
     )

@@ -33,25 +33,27 @@ import logging
 from google import genai
 from google.genai import types
 
-from bot.config import GEMINI_API_KEY, GEMINI_MODEL
+from bot.config import GEMINI_API_KEY, GEMINI_MODEL, SCAM_PATTERN_THRESHOLD
+from bot.url_checker.features.offline.vectors import nearest as vector_nearest
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are a security analyst who reviews Telegram messages for scam and "
     "phishing attempts. The message may come with SYSTEM-GATHERED EVIDENCE - "
-    "a keyword prescan and/or full link-safety findings (lexical patterns, "
+    "a keyword prescan, full link-safety findings (lexical patterns, "
     "network/redirect tracing, domain registration age, TLS certificate "
-    "age, VirusTotal, and similarity to known phishing/brand patterns) "
-    "collected by other tools before you. Treat that evidence as reliable "
-    "ground truth: do not contradict a link already found 'dangerous' or "
-    "'suspicious'. But a link's technical evidence looking clean does NOT "
-    "mean the message is safe - weigh how the surrounding text uses that "
-    "link too: urgency, impersonation, requests for money or credentials, "
-    "or instructions not to verify with the sender are strong scam signals "
-    "on their own. Weigh the message text and the evidence together and "
-    "produce ONE unified verdict, risk percentage, key reasons, and "
-    "recommendations for the message as a whole."
+    "age, VirusTotal, and similarity to known phishing/brand patterns), "
+    "and/or a VirusTotal file-scan result for an attached file - collected "
+    "by other tools before you. Treat that evidence as reliable ground "
+    "truth: do not contradict a link or file already found 'dangerous' or "
+    "'suspicious'. But a link or file's technical evidence looking clean "
+    "does NOT mean the message is safe - weigh how the surrounding text "
+    "uses it too: urgency, impersonation, requests for money or "
+    "credentials, or instructions not to verify with the sender are strong "
+    "scam signals on their own. Weigh the message text and all available "
+    "evidence together and produce ONE unified verdict, risk percentage, "
+    "key reasons, and recommendations for the message as a whole."
 )
 
 _RESPONSE_SCHEMA = {
@@ -67,7 +69,7 @@ _RESPONSE_SCHEMA = {
                     "text": {"type": "string"},
                     "source": {
                         "type": "string",
-                        "enum": ["message_text", "link_evidence", "keyword_match"],
+                        "enum": ["message_text", "link_evidence", "keyword_match", "file_evidence"],
                     },
                 },
                 "required": ["text", "source"],
@@ -81,7 +83,12 @@ _RESPONSE_SCHEMA = {
 _client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
-def _build_contents(text: str, keyword_result: dict, link_verdicts: list[dict]) -> str:
+def _build_contents(
+    text: str,
+    keyword_result: dict,
+    link_verdicts: list[dict],
+    file_verdict: dict | None,
+) -> str:
     evidence = {
         "keyword_prescan": keyword_result,
         "link_findings": [
@@ -94,6 +101,8 @@ def _build_contents(text: str, keyword_result: dict, link_verdicts: list[dict]) 
             for v in link_verdicts
         ],
     }
+    if file_verdict is not None:
+        evidence["file_finding"] = file_verdict
     return (
         "SYSTEM-GATHERED EVIDENCE (not written by the user; already verified - "
         "treat as ground truth, do not re-derive it):\n"
@@ -103,40 +112,116 @@ def _build_contents(text: str, keyword_result: dict, link_verdicts: list[dict]) 
     )
 
 
-def _grounded_fallback(reason: str, keyword_result: dict, link_verdicts: list[dict]) -> dict:
-    """No API key / call failed -> degrade to real local evidence, matching
-    llm_analyzer.py's and the prototype's fallback shape rather than a
-    bare error message."""
+async def _grounded_fallback(
+    reason: str,
+    text: str,
+    keyword_result: dict,
+    link_verdicts: list[dict],
+    file_verdict: dict | None = None,
+) -> dict:
+    """No API key / call failed -> degrade to real local evidence instead
+    of a bare error message. Uses the offline scam-message pattern
+    similarity (see features/offline/scam_patterns.py) as an extra local
+    signal alongside the keyword prescan, so a degraded-mode check is
+    meaningfully better than the crude keyword list alone - but ONLY to
+    add suspicion, never to clear a message (see SCAM_PATTERN_THRESHOLD).
+    """
     reasons = [{"text": reason, "source": "message_text"}]
+
     if keyword_result.get("suspicious"):
         reasons.append({
             "text": f"Matched suspicious keywords: {', '.join(keyword_result['matches'])}.",
             "source": "keyword_match",
         })
+
+    pattern_similarity = 0.0
+    if text:
+        # This runs inside the LAST-RESORT fallback (Gemini already
+        # failed) - a DB/network error here (Supabase unreachable, pool
+        # exhausted, etc.) must never propagate, or the user gets ZERO
+        # reply instead of a degraded one. Same defensive pattern as
+        # pipeline.py's _safe_nearest.
+        try:
+            pattern_hits = await vector_nearest(text, k=1, kinds=("scam_pattern",))
+        except Exception:                       # noqa: BLE001 - DB trouble must not kill the fallback
+            logger.exception("Offline scam-pattern lookup failed")
+            pattern_hits = []
+        if pattern_hits and pattern_hits[0][0] >= SCAM_PATTERN_THRESHOLD:
+            pattern_similarity, _kind, _key, category = pattern_hits[0]
+            reasons.append({
+                "text": f"Message text closely matches a known '{category}' scam script "
+                        f"(offline pattern match, {pattern_similarity:.2f} similarity).",
+                "source": "message_text",
+            })
+
     for v in link_verdicts:
         if v.get("level") != "safe":
             detail = v["reasons"][0] if v.get("reasons") else f"{v.get('host')} flagged {v.get('level')}"
             reasons.append({"text": f"{v.get('host')}: {detail}", "source": "link_evidence"})
 
-    worst = max((v.get("score", 0) for v in link_verdicts), default=0)
+    file_flagged = bool(file_verdict and file_verdict.get("malicious", 0) > 0)
+    if file_flagged:
+        reasons.append({
+            "text": f"VirusTotal: {file_verdict['malicious']} engine(s) flag the attached file as malicious.",
+            "source": "file_evidence",
+        })
+
+    # Derived from whatever evidence actually got appended above (index 0
+    # is always the base `reason` disclaimer, not evidence) - not
+    # hand-tracked, so a future evidence source can't add a reason and
+    # forget to also flag concern.
+    has_concern = len(reasons) > 1
+
+    worst_link_score = max((v.get("score", 0) for v in link_verdicts), default=0)
+    pattern_score = int(pattern_similarity * 100)
+    risk_percentage = None
+    if link_verdicts or file_verdict is not None or pattern_score:
+        # A confident offline pattern match must show up in the risk
+        # number too, not just the reasons list - otherwise a near-exact
+        # scam-script match with no link/file renders as "N/A Unknown
+        # Risk" right next to an "Uncertain" verdict, undercutting
+        # exactly the signal this fallback exists to surface.
+        risk_percentage = 100 if file_flagged else max(min(worst_link_score, 100), pattern_score)
+
+    if file_flagged:
+        verdict = "Scam"
+    elif has_concern:
+        verdict = "Uncertain"
+    else:
+        verdict = "Not a Scam"
+
+    reasons.append({
+        "text": "Full AI reasoning was unavailable for this check - this result uses "
+                "offline pattern matching only and may be less accurate than usual.",
+        "source": "message_text",
+    })
+
     return {
-        "verdict": "Uncertain",
-        "risk_percentage": min(worst, 100) if link_verdicts else None,
+        "verdict": verdict,
+        "risk_percentage": risk_percentage,
         "key_reasons": reasons,
         "recommendations": [],
     }
 
 
-async def analyze_unified(text: str, keyword_result: dict, link_verdicts: list[dict]) -> dict:
-    """One Gemini call reasoning over the message text AND every link's
-    full pipeline verdict together -> one verdict dict."""
+async def analyze_unified(
+    text: str,
+    keyword_result: dict,
+    link_verdicts: list[dict],
+    file_verdict: dict | None = None,
+) -> dict:
+    """One Gemini call reasoning over the message text, every link's full
+    pipeline verdict, and an optional file-scan result together -> one
+    verdict dict."""
     if not _client:
-        return _grounded_fallback("LLM analysis is not configured.", keyword_result, link_verdicts)
+        return await _grounded_fallback(
+            "LLM analysis is not configured.", text, keyword_result, link_verdicts, file_verdict
+        )
 
     try:
         response = await _client.aio.models.generate_content(
             model=GEMINI_MODEL,
-            contents=_build_contents(text, keyword_result, link_verdicts),
+            contents=_build_contents(text, keyword_result, link_verdicts, file_verdict),
             config=types.GenerateContentConfig(
                 system_instruction=_SYSTEM_PROMPT,
                 response_mime_type="application/json",
@@ -147,8 +232,8 @@ async def analyze_unified(text: str, keyword_result: dict, link_verdicts: list[d
         if data.get("risk_percentage") is not None:
             data["risk_percentage"] = max(0, min(100, int(data["risk_percentage"])))
         return data
-    except Exception as error:                      # noqa: BLE001 - must never break the reply path
+    except Exception:                                # noqa: BLE001 - must never break the reply path
         logger.exception("Unified context-engine analysis failed")
-        return _grounded_fallback(
-            "LLM analysis failed, please try again later.", keyword_result, link_verdicts
+        return await _grounded_fallback(
+            "LLM analysis failed, please try again later.", text, keyword_result, link_verdicts, file_verdict
         )

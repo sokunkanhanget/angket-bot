@@ -628,6 +628,109 @@ async def test_check_message_full_detects_malformed_protocol_in_the_raw_text(see
     assert any("malformed protocol" in r for r in verdicts[0]["reasons"])
 
 
+# --- exact-match verdict cache (mentor-flagged: "same" not "similar") -----
+
+def test_analyze_url_second_call_hits_cache_and_skips_network(seeded_vectors, monkeypatch):
+    calls = {"trace": 0}
+
+    async def counting_trace(url):
+        calls["trace"] += 1
+        return _FakeNet(reachable=True, status=200, tls_valid=True).result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", counting_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+    first = asyncio.run(pipeline.analyze_url("http://free-prize-winner.tk/claim"))
+    assert calls["trace"] == 1
+
+    second = asyncio.run(pipeline.analyze_url("http://free-prize-winner.tk/claim"))
+    assert calls["trace"] == 1  # no second live fetch - served from cache
+    assert second["score"] == first["score"]
+    assert second["reasons"] == first["reasons"]
+
+
+def test_analyze_url_cache_is_keyed_exactly_not_by_similarity(seeded_vectors, monkeypatch):
+    # The whole point of "same" not "similar": a lookalike domain must
+    # run its own full check, never inherit another URL's cached verdict.
+    calls = {"trace": 0}
+
+    async def counting_trace(url):
+        calls["trace"] += 1
+        return _FakeNet(reachable=True, status=200, tls_valid=True).result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", counting_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+    asyncio.run(pipeline.analyze_url("http://ababank-secure-login.tk/verify"))
+    assert calls["trace"] == 1
+
+    asyncio.run(pipeline.analyze_url("http://ababank-secure-login2.tk/verify"))
+    assert calls["trace"] == 2  # different URL - must NOT reuse the cache
+
+
+def test_analyze_url_official_brand_never_uses_the_cache(seeded_vectors, monkeypatch):
+    calls = {"trace": 0}
+
+    async def counting_trace(url):
+        calls["trace"] += 1
+        return _FakeNet(reachable=True, status=200, tls_valid=True,
+                         final_url="https://www.google.com/").result
+
+    async def fake_age(host):
+        return 10000
+
+    async def fake_resolve(host):
+        return ["8.8.8.8"]
+
+    monkeypatch.setattr(pipeline.network, "trace", counting_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+    asyncio.run(pipeline.analyze_url("https://www.google.com/"))
+    asyncio.run(pipeline.analyze_url("https://www.google.com/"))
+    assert calls["trace"] == 2  # official brand always re-checked live, never cached
+
+
+def test_analyze_url_message_context_signals_apply_fresh_on_a_cache_hit(seeded_vectors, monkeypatch):
+    # malformed_protocol/display_text must never get baked into the
+    # cached verdict - two different messages linking the same URL can
+    # have different framing.
+    async def fake_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=True).result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+
+    plain = asyncio.run(pipeline.analyze_url("http://free-prize-winner.tk/x"))
+    malformed = asyncio.run(pipeline.analyze_url(
+        "http://free-prize-winner.tk/x", malformed_protocol=True))
+
+    assert malformed["score"] == plain["score"] + 15
+    assert any("malformed protocol" in r for r in malformed["reasons"])
+    assert not any("malformed protocol" in r for r in plain["reasons"])
+
+
 # --- self-learning memory (Telegram links -> future reference) -----------
 
 def test_flagged_link_is_remembered_for_future(seeded_vectors, monkeypatch):

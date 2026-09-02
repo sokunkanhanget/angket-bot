@@ -23,7 +23,10 @@ The verdict dict keeps the exact shape url_handler already renders
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sqlite3
+import time
 from urllib.parse import urlsplit
 
 from bot.url_checker.features.online import network, threat_intel
@@ -39,7 +42,7 @@ from bot.url_checker.features.offline.lexical import (
     has_malformed_protocol,
     registered_domain,
 )
-from bot.config import VIRUSTOTAL_API_KEY
+from bot.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,70 @@ NEARDUP_THRESHOLD = 0.90       # MinHash similarity = same phishing kit
 MIN_PAGE_TEXT_FOR_NEARDUP = 300
 MAX_NETWORK_POINTS = 45        # cap for all network-derived signals combined
 MAX_URLS_PER_MESSAGE = 5       # input validation: protect quota & event loop from spam
+
+# Mentor-flagged: the exact same link forwarded by many different
+# Telegram users today triggers an independent live network.trace() per
+# user. This cache short-circuits that specific case - an EXACT string
+# match, not vector similarity (similarity is deliberately used for the
+# opposite purpose elsewhere: flagging a phishing lookalike as similar
+# to a real brand, which must never let it inherit that brand's cached
+# "safe" answer - see SEEN_BAD_SIM_THRESHOLD above).
+#
+# Deliberately much shorter than threat_intel.py's 7-day VT cache: this
+# is standing in for a live network/TLS fetch, which can go stale far
+# faster than VT's blacklist consensus (a compromised page can change
+# within the hour). Bounds staleness without a separate live-reverify
+# probe - see the plan notes for why that's out of scope for now.
+LINK_VERDICT_CACHE_TTL_SECONDS = 60 * 60  # 1 hour
+
+
+def _verdict_cache_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(SCAN_LOG_DB)
+    conn.execute(
+        """
+        create table if not exists link_verdict_cache(
+            url_id text primary key,
+            score integer not null,
+            reasons text not null,
+            detail text not null,
+            cached_at real not null
+        )
+        """
+    )
+    return conn
+
+
+def _verdict_cache_get(url_id: str) -> dict | None:
+    """The URL's INTRINSIC verdict (score/reasons/detail from lexical
+    through VT) if checked recently enough - excludes message-context
+    signals (malformed_protocol, anchor-mismatch), which are always
+    computed fresh per call since two different messages can link the
+    same URL with different display text or formatting."""
+    conn = _verdict_cache_connect()
+    try:
+        row = conn.execute(
+            "select score, reasons, detail, cached_at from link_verdict_cache where url_id = ?",
+            (url_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None or time.time() - row[3] > LINK_VERDICT_CACHE_TTL_SECONDS:
+        return None
+    score, reasons_json, detail_json, _ = row
+    return {"score": score, "reasons": json.loads(reasons_json), "detail": json.loads(detail_json)}
+
+
+def _verdict_cache_put(url_id: str, score: int, reasons: list[str], detail: list[str]) -> None:
+    conn = _verdict_cache_connect()
+    try:
+        conn.execute(
+            "insert or replace into link_verdict_cache(url_id, score, reasons, detail, cached_at) "
+            "values (?, ?, ?, ?, ?)",
+            (url_id, score, json.dumps(reasons), json.dumps(detail), time.time()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _web_urls(text: str) -> list[str]:
@@ -106,10 +173,246 @@ async def analyze_url(
     has_malformed_protocol's docstring).
     """
     verdict = check_url(raw_url)
-    score = verdict["score"]
-    reasons = list(verdict["reasons"])
-    detail: list[str] = []
+    host = verdict["host"]
+    if not host:
+        # Unparseable — nothing else to run.
+        return {**verdict, "detail": []}
 
+    normalized = raw_url if "://" in raw_url else f"http://{raw_url}"
+
+    # Whitelist gate: an exact official brand domain can never be
+    # pushed into "suspicious" by fuzzy signals (vector similarity,
+    # past seen-links). This is what kept google.com safe from its own
+    # http->www redirect noise. Also gates the verdict cache below - a
+    # mislabelled cache entry must never be able to poison an official
+    # domain either.
+    reg_domain = registered_domain(host)
+    is_official_brand = reg_domain in PROTECTED_BRANDS
+
+    # Exact-match verdict cache: skip re-deriving the URL's INTRINSIC
+    # verdict (lexical through VT) if checked recently. Keyed on the
+    # url AS THE USER SENT IT (before following any redirects) since
+    # the whole point is to skip the network fetch that would otherwise
+    # discover those redirects - see LINK_VERDICT_CACHE_TTL_SECONDS.
+    cached = None if is_official_brand else _verdict_cache_get(normalized.lower())
+
+    if cached is not None:
+        score = cached["score"]
+        reasons = list(cached["reasons"])
+        detail = list(cached["detail"])
+    else:
+        score = verdict["score"]
+        reasons = list(verdict["reasons"])
+        detail: list[str] = []
+
+        # Network + DNS + RDAP + TLS cert concurrently; vector search is local CPU.
+        net_task = asyncio.create_task(network.trace(normalized))
+        dns_task = asyncio.create_task(resolve_host(host))
+        age_task = asyncio.create_task(domain_age_days(host))
+        cert_task = asyncio.create_task(cert_issued_days_ago(host))
+
+        net, ips, age_days, cert_age_days = await asyncio.gather(
+            net_task, dns_task, age_task, cert_task, return_exceptions=True
+        )
+        if isinstance(net, Exception):
+            net = None
+        if isinstance(ips, Exception):
+            ips = None
+        if isinstance(age_days, Exception):
+            age_days = None
+        if isinstance(cert_age_days, Exception):
+            cert_age_days = None
+
+        # --- Vector search over stored brand/phish embeddings -------------
+        sim_hits = await _safe_nearest(normalized)
+        phish_sims = [s for s, kind, *_ in sim_hits if kind == "phish"]
+        brand_sims = [s for s, kind, key, label in sim_hits if kind == "brand"]
+        best_phish = max(phish_sims, default=0.0)
+        best_brand_key = max(brand_sims, default=0.0)
+
+        # Fuzzy n-gram similarity on short URLs is noisy (google.com sits
+        # close to "login.google.verify-user.ml"), so phish-pattern points
+        # are skipped entirely for official brand domains.
+        if not is_official_brand:
+            if best_phish >= PHISH_SIM_STRONG:
+                score += 40
+                reasons.append("Structurally near-identical to known phishing link patterns.")
+                detail.append(f"vector search: best phishing-pattern similarity {best_phish:.2f}")
+            elif best_phish >= PHISH_SIM_THRESHOLD:
+                score += 20
+                reasons.append("Resembles patterns seen in phishing links.")
+                detail.append(f"vector search: phishing-pattern similarity {best_phish:.2f}")
+
+        # --- DNS ----------------------------------------------------------
+        if ips is None:
+            score += 25
+            reasons.append("The host name does not resolve in DNS at all — nothing is really there.")
+        elif len(ips) <= 5:
+            detail.append(f"DNS resolves to: {', '.join(ips[:3])}")
+
+        # --- Domain registration age ---------------------------------------
+        age_scored = score_domain_age(age_days)
+        if age_scored:
+            score += age_scored[0]
+            reasons.append(age_scored[1])
+        elif age_days:
+            detail.append(f"Domain first registered {age_days}.")
+
+        # --- TLS certificate issuance age -----------------------------------
+        cert_scored = score_cert_age(cert_age_days)
+        if cert_scored:
+            score += cert_scored[0]
+            reasons.append(cert_scored[1])
+        elif cert_age_days:
+            detail.append(f"TLS certificate issued {cert_age_days} day(s) ago.")
+
+        # --- Network-derived signals ---------------------------------------
+        network_points = 0
+
+        def add_network(points: int, reason: str):
+            nonlocal network_points, score
+            if network_points + points > MAX_NETWORK_POINTS:
+                points = max(MAX_NETWORK_POINTS - network_points, 0)
+            network_points += points
+            score += points
+            reasons.append(reason)
+
+        if net is not None and net.get("error"):
+            # A REAL certificate failure (handshake rejected) is strong
+            # evidence; a plain-HTTP page is only worth the small padlock
+            # signal — Google itself serves http://www.google.com.
+            if net["tls_valid"] is False:
+                add_network(30, "TLS certificate is invalid — connections are not secure.")
+                detail.append(f"network: {net['error']}")
+            else:
+                add_network(15, "The server could not be reached (dead site or blocking bots).")
+                detail.append(f"network: {net['error']}")
+        elif net:
+            chain = net.get("redirect_chain") or []
+            final_url = net["final_url"]
+            final_host = network._host(final_url)
+
+            if chain:
+                hops = " → ".join(network._host(u) for _, u in chain[-4:] + [(0, final_url)])
+                detail.append(f"redirect chain ({len(chain)} hop(s)): {hops}")
+
+            if net.get("cross_domain_redirect"):
+                add_network(20, f"The link redirects to a different domain ({final_host}) — "
+                                f"the visible address was not the real destination.")
+
+                # Only a CROSS-DOMAIN redirect justifies re-scoring the
+                # landing URL. google.com -> www.google.com is normal and
+                # must not double-count signals.
+                rescore = check_url(final_url)
+                extra_points = min(rescore["score"], 30)
+                if extra_points > 0:
+                    score += extra_points
+                    reasons.append(f"After following redirects it lands on '{final_host}', "
+                                   f"which shows its own warning signs.")
+                detail.append(f"final destination: {final_host}")
+
+            if len(chain) >= 4:
+                add_network(10, f"Redirects through {len(chain)} hops before landing.")
+
+            if net.get("tls_valid") is False:
+                add_network(5, "The final page is served over plain HTTP — "
+                               "anything you submit there is not encrypted.")
+
+            if net["status"] and net["status"] >= 400:
+                add_network(10, f"Server answered HTTP {net['status']} (error page).")
+
+            # The landing page may impersonate even when the URL doesn't.
+            page_text = net.get("page_text") or ""
+            if page_text and not is_official_brand:
+                spoof = _brand_page_spoof(page_text, final_host, best_brand_key)
+                if spoof:
+                    score += 35
+                    reasons.append(spoof)
+
+            # Credential-theft pattern: a login form that visually sits on
+            # this page but actually submits the password to a different
+            # domain entirely. Gated the same as the brand-spoof check - an
+            # official brand's own page legitimately posting to its own
+            # infra isn't this pattern.
+            page_html = net.get("page_html") or ""
+            if page_html and not is_official_brand:
+                exfil_target = _credential_exfil_target(page_html, final_host)
+                if exfil_target:
+                    score += 40
+                    reasons.append(f"This page has a login form that submits your password to "
+                                    f"a different domain ('{exfil_target}') than the page itself "
+                                    f"— a classic credential-theft pattern.")
+                    detail.append(f"form action targets: {exfil_target}")
+
+        # --- Match against links we've already flagged from Telegram -------
+        # Gated by the brand whitelist so one mislabelled scan can never
+        # poison the memory for official domains.
+        seen_sim = 0.0
+        if not is_official_brand:
+            seen_sim = await _best_seen_bad_similarity(normalized)
+        if seen_sim >= SEEN_BAD_SIM_THRESHOLD:
+            score += 20
+            reasons.append("Closely resembles a link that was previously flagged "
+                           "as suspicious or dangerous.")
+            detail.append(f"similarity {seen_sim:.2f} to an earlier flagged link")
+
+        # --- LSH near-duplicate page check (any fetched page) --------------
+        # Gated on a minimum length: a bot-blocked/CAPTCHA/JS-only page
+        # (common on sites with real anti-bot defenses - Amazon, Google...)
+        # returns near-empty text after tag-stripping, and MinHash on
+        # near-empty text is degenerate - two DIFFERENT near-empty pages
+        # (e.g. both just "\n") hash to ~100% "similar" with zero actual
+        # content in common. Confirmed live: this false-flagged amazon.com
+        # as "near-identical" to an unrelated typosquat domain that had
+        # also returned near-empty content when it was scanned.
+        if net and net.get("page_text") and len(net["page_text"]) >= MIN_PAGE_TEXT_FOR_NEARDUP:
+            dup_host = network._host(net["final_url"])
+            dup = _safe_near_dup(dup_host, net["page_text"])
+            if dup and dup[1] >= NEARDUP_THRESHOLD:
+                other_host, similarity = dup
+                score += 25
+                reasons.append(f"Page content is near-identical to a page previously "
+                               f"seen on {other_host}.")
+                detail.append(f"LSH near-duplicate similarity {similarity:.2f} with {other_host}")
+
+        # --- Flow 3: VirusTotal threat intelligence ------------------------
+        # Quota-first: only spend a live API call when our own flows are
+        # already suspicious; clean links answer from cache or not at all.
+        # Official brand domains skip VT entirely — they never need it.
+        if not is_official_brand:
+            vt_target = net["final_url"] if isinstance(net, dict) and net.get("final_url") else normalized
+            vt_stats = await threat_intel.lookup(
+                vt_target, VIRUSTOTAL_API_KEY,
+                live=(score > 0),
+            )
+            if vt_stats:
+                vt_scored = threat_intel.score(vt_stats)
+                if vt_scored:
+                    score += vt_scored[0]
+                    reasons.append(vt_scored[1])
+                    detail.append(f"VirusTotal: {vt_stats['malicious']} malicious / "
+                                  f"{vt_stats['suspicious']} suspicious of "
+                                  f"{vt_stats['total']} engines")
+
+        # Intrinsic level (excludes message-context adjustments below) -
+        # used only to label this scan's own vector-memory entry, not
+        # returned to the caller.
+        intrinsic_level, _, _ = _verdict_labels(score)
+
+        # --- Remember this scan in the vector DB ---------------------------
+        # Every link detected on Telegram is stored as kind='seen' with its
+        # verdict level, so future lookalikes match against it. This must
+        # happen AFTER the similarity query above, or a link would match
+        # against itself.
+        await _remember(normalized, net, intrinsic_level)
+
+        if not is_official_brand:
+            _verdict_cache_put(normalized.lower(), score, reasons, detail)
+
+    # Message-context adjustments - always computed fresh regardless of
+    # cache hit/miss, since two different messages can link the same
+    # URL with different display text or formatting (see the cache
+    # docstring above for why these can't be baked into it).
     if malformed_protocol:
         score += 15
         reasons.append("Link is written with a malformed protocol (missing ':') "
@@ -121,218 +424,9 @@ async def analyze_url(
             score += mismatch[0]
             reasons.append(mismatch[1])
 
-    host = verdict["host"]
-    if not host:
-        # Unparseable — nothing else to run.
-        return {**verdict, "detail": detail}
-
-    normalized = raw_url if "://" in raw_url else f"http://{raw_url}"
-
-    # Whitelist gate: an exact official brand domain can never be
-    # pushed into "suspicious" by fuzzy signals (vector similarity,
-    # past seen-links). This is what kept google.com safe from its own
-    # http->www redirect noise.
-    reg_domain = registered_domain(host)
-    is_official_brand = reg_domain in PROTECTED_BRANDS
-
-    # Network + DNS + RDAP + TLS cert concurrently; vector search is local CPU.
-    net_task = asyncio.create_task(network.trace(normalized))
-    dns_task = asyncio.create_task(resolve_host(host))
-    age_task = asyncio.create_task(domain_age_days(host))
-    cert_task = asyncio.create_task(cert_issued_days_ago(host))
-
-    net, ips, age_days, cert_age_days = await asyncio.gather(
-        net_task, dns_task, age_task, cert_task, return_exceptions=True
-    )
-    if isinstance(net, Exception):
-        net = None
-    if isinstance(ips, Exception):
-        ips = None
-    if isinstance(age_days, Exception):
-        age_days = None
-    if isinstance(cert_age_days, Exception):
-        cert_age_days = None
-
-    # --- Vector search over stored brand/phish embeddings -------------
-    sim_hits = await _safe_nearest(normalized)
-    phish_sims = [s for s, kind, *_ in sim_hits if kind == "phish"]
-    brand_sims = [s for s, kind, key, label in sim_hits if kind == "brand"]
-    best_phish = max(phish_sims, default=0.0)
-    best_brand_key = max(brand_sims, default=0.0)
-
-    # Fuzzy n-gram similarity on short URLs is noisy (google.com sits
-    # close to "login.google.verify-user.ml"), so phish-pattern points
-    # are skipped entirely for official brand domains.
-    if not is_official_brand:
-        if best_phish >= PHISH_SIM_STRONG:
-            score += 40
-            reasons.append("Structurally near-identical to known phishing link patterns.")
-            detail.append(f"vector search: best phishing-pattern similarity {best_phish:.2f}")
-        elif best_phish >= PHISH_SIM_THRESHOLD:
-            score += 20
-            reasons.append("Resembles patterns seen in phishing links.")
-            detail.append(f"vector search: phishing-pattern similarity {best_phish:.2f}")
-
-    # --- DNS ----------------------------------------------------------
-    if ips is None:
-        score += 25
-        reasons.append("The host name does not resolve in DNS at all — nothing is really there.")
-    elif len(ips) <= 5:
-        detail.append(f"DNS resolves to: {', '.join(ips[:3])}")
-
-    # --- Domain registration age ---------------------------------------
-    age_scored = score_domain_age(age_days)
-    if age_scored:
-        score += age_scored[0]
-        reasons.append(age_scored[1])
-    elif age_days:
-        detail.append(f"Domain first registered {age_days}.")
-
-    # --- TLS certificate issuance age -----------------------------------
-    cert_scored = score_cert_age(cert_age_days)
-    if cert_scored:
-        score += cert_scored[0]
-        reasons.append(cert_scored[1])
-    elif cert_age_days:
-        detail.append(f"TLS certificate issued {cert_age_days} day(s) ago.")
-
-    # --- Network-derived signals ---------------------------------------
-    network_points = 0
-
-    def add_network(points: int, reason: str):
-        nonlocal network_points, score
-        if network_points + points > MAX_NETWORK_POINTS:
-            points = max(MAX_NETWORK_POINTS - network_points, 0)
-        network_points += points
-        score += points
-        reasons.append(reason)
-
-    if net is not None and net.get("error"):
-        # A REAL certificate failure (handshake rejected) is strong
-        # evidence; a plain-HTTP page is only worth the small padlock
-        # signal — Google itself serves http://www.google.com.
-        if net["tls_valid"] is False:
-            add_network(30, "TLS certificate is invalid — connections are not secure.")
-            detail.append(f"network: {net['error']}")
-        else:
-            add_network(15, "The server could not be reached (dead site or blocking bots).")
-            detail.append(f"network: {net['error']}")
-    elif net:
-        chain = net.get("redirect_chain") or []
-        final_url = net["final_url"]
-        final_host = network._host(final_url)
-
-        if chain:
-            hops = " → ".join(network._host(u) for _, u in chain[-4:] + [(0, final_url)])
-            detail.append(f"redirect chain ({len(chain)} hop(s)): {hops}")
-
-        if net.get("cross_domain_redirect"):
-            add_network(20, f"The link redirects to a different domain ({final_host}) — "
-                            f"the visible address was not the real destination.")
-
-            # Only a CROSS-DOMAIN redirect justifies re-scoring the
-            # landing URL. google.com -> www.google.com is normal and
-            # must not double-count signals.
-            rescore = check_url(final_url)
-            extra_points = min(rescore["score"], 30)
-            if extra_points > 0:
-                score += extra_points
-                reasons.append(f"After following redirects it lands on '{final_host}', "
-                               f"which shows its own warning signs.")
-            detail.append(f"final destination: {final_host}")
-
-        if len(chain) >= 4:
-            add_network(10, f"Redirects through {len(chain)} hops before landing.")
-
-        if net.get("tls_valid") is False:
-            add_network(5, "The final page is served over plain HTTP — "
-                           "anything you submit there is not encrypted.")
-
-        if net["status"] and net["status"] >= 400:
-            add_network(10, f"Server answered HTTP {net['status']} (error page).")
-
-        # The landing page may impersonate even when the URL doesn't.
-        page_text = net.get("page_text") or ""
-        if page_text and not is_official_brand:
-            spoof = _brand_page_spoof(page_text, final_host, best_brand_key)
-            if spoof:
-                score += 35
-                reasons.append(spoof)
-
-        # Credential-theft pattern: a login form that visually sits on
-        # this page but actually submits the password to a different
-        # domain entirely. Gated the same as the brand-spoof check - an
-        # official brand's own page legitimately posting to its own
-        # infra isn't this pattern.
-        page_html = net.get("page_html") or ""
-        if page_html and not is_official_brand:
-            exfil_target = _credential_exfil_target(page_html, final_host)
-            if exfil_target:
-                score += 40
-                reasons.append(f"This page has a login form that submits your password to "
-                                f"a different domain ('{exfil_target}') than the page itself "
-                                f"— a classic credential-theft pattern.")
-                detail.append(f"form action targets: {exfil_target}")
-
-    # --- Match against links we've already flagged from Telegram -------
-    # Gated by the brand whitelist so one mislabelled scan can never
-    # poison the memory for official domains.
-    seen_sim = 0.0
-    if not is_official_brand:
-        seen_sim = await _best_seen_bad_similarity(normalized)
-    if seen_sim >= SEEN_BAD_SIM_THRESHOLD:
-        score += 20
-        reasons.append("Closely resembles a link that was previously flagged "
-                       "as suspicious or dangerous.")
-        detail.append(f"similarity {seen_sim:.2f} to an earlier flagged link")
-
-    # --- LSH near-duplicate page check (any fetched page) --------------
-    # Gated on a minimum length: a bot-blocked/CAPTCHA/JS-only page
-    # (common on sites with real anti-bot defenses - Amazon, Google...)
-    # returns near-empty text after tag-stripping, and MinHash on
-    # near-empty text is degenerate - two DIFFERENT near-empty pages
-    # (e.g. both just "\n") hash to ~100% "similar" with zero actual
-    # content in common. Confirmed live: this false-flagged amazon.com
-    # as "near-identical" to an unrelated typosquat domain that had
-    # also returned near-empty content when it was scanned.
-    if net and net.get("page_text") and len(net["page_text"]) >= MIN_PAGE_TEXT_FOR_NEARDUP:
-        dup_host = network._host(net["final_url"])
-        dup = _safe_near_dup(dup_host, net["page_text"])
-        if dup and dup[1] >= NEARDUP_THRESHOLD:
-            other_host, similarity = dup
-            score += 25
-            reasons.append(f"Page content is near-identical to a page previously "
-                           f"seen on {other_host}.")
-            detail.append(f"LSH near-duplicate similarity {similarity:.2f} with {other_host}")
-
-    # --- Flow 3: VirusTotal threat intelligence ------------------------
-    # Quota-first: only spend a live API call when our own flows are
-    # already suspicious; clean links answer from cache or not at all.
-    # Official brand domains skip VT entirely — they never need it.
-    if not is_official_brand:
-        vt_target = net["final_url"] if isinstance(net, dict) and net.get("final_url") else normalized
-        vt_stats = await threat_intel.lookup(
-            vt_target, VIRUSTOTAL_API_KEY,
-            live=(score > 0),
-        )
-        if vt_stats:
-            vt_scored = threat_intel.score(vt_stats)
-            if vt_scored:
-                score += vt_scored[0]
-                reasons.append(vt_scored[1])
-                detail.append(f"VirusTotal: {vt_stats['malicious']} malicious / "
-                              f"{vt_stats['suspicious']} suspicious of "
-                              f"{vt_stats['total']} engines")
-
-    # Final level from the merged score.
+    # Final level from the fully merged score (intrinsic + this
+    # message's own context signals).
     level, emoji, label = _verdict_labels(score)
-
-    # --- Remember this scan in the vector DB ---------------------------
-    # Every link detected on Telegram is stored as kind='seen' with its
-    # verdict level, so future lookalinks match against it. This must
-    # happen AFTER the similarity query above, or a link would match
-    # against itself.
-    await _remember(normalized, net, level)
 
     logger.info("verdict %s (%d) for %s", level, score, host)
     return {

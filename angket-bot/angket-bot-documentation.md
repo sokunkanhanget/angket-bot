@@ -227,6 +227,17 @@ waiting on a decision before going live in the real bot:
 | Letting users vote a verdict as "wrong" | Tested and working, waiting on a decision about who's allowed to submit corrections |
 | A nicer, tabbed reply layout | Tested and working, just a design choice that hasn't been made yet |
 | Paid subscription via QR payment | Built and tested, on hold while the team decides on a payment provider |
+| "Ephemeral" group replies — the full verdict breakdown in a group chat, visible only to whoever asked for it | Tested and working, no decision made yet |
+| Richer, structured reply formatting (replaces hand-built text formatting, sidesteps a known formatting-escaping gap) | Tested and working, no decision made yet |
+| Reply buttons that show which action was taken (Delete/Ignore) instead of swapping out the whole message | Tested and working, no decision made yet |
+| "Guest mode" — the bot can reply to an @-mention in a group without the user ever having started a private chat with it first | Built, but needs a setting turned on in BotFather before it can even be tested live |
+| Typing `@AngketBot <link>` in any chat's message box for an instant preview | Built, but needs a setting turned on in BotFather before it can even be tested live |
+| Verdict Mini App: vibration feedback and remembering a user's collapsed/expanded preference between visits | The "remembering a preference" part is confirmed working; the vibration part only works on an actual phone, not in a browser, so it hasn't been tested there yet |
+
+> **Also on the radar, not started:** Telegram's newer "Managed Bots" feature
+> would let the bot read and act on *any* user's personal chats, not just
+> business accounts connected on purpose. That's a bigger step than anything
+> above, so no prototype has been built — it needs a team conversation first.
 
 ---
 

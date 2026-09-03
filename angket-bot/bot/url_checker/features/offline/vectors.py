@@ -125,7 +125,16 @@ async def _get_pool() -> AsyncConnectionPool:
     global _pool
     if _pool is None:
         _pool = AsyncConnectionPool(
-            SUPABASE_DB_URL, min_size=1, max_size=5, configure=_configure, open=False,
+            SUPABASE_DB_URL, min_size=1, max_size=5, configure=_configure,
+            # Supabase's Session pooler closes idle connections server-side
+            # well before this pool's own default max_idle (600s) - hit live
+            # as "server closed the connection unexpectedly" when a stale
+            # pooled connection got handed out unchecked. check_connection
+            # verifies a connection is actually alive on checkout and
+            # transparently reconnects if it isn't, instead of handing out
+            # a dead one and letting the query fail.
+            check=AsyncConnectionPool.check_connection,
+            open=False,
         )
         await _pool.open()
     return _pool

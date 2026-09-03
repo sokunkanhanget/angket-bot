@@ -75,11 +75,10 @@ def fake_vector_store(monkeypatch):
     monkeypatch.setattr(vectors, "nearest", store.nearest)
     monkeypatch.setattr(vectors, "seed", store.seed)
 
-    # context_engine.py imports `nearest` by name (`from ... import nearest
-    # as vector_nearest`), which does NOT pick up monkeypatching the
-    # vectors module attribute - patch that binding separately.
-    import bot.context_engine as context_engine
-    monkeypatch.setattr(context_engine, "vector_nearest", store.nearest)
+    # context_engine.py's scam-pattern lookup (nearest_scam_pattern, in
+    # scam_patterns.py) is a LOCAL in-memory search over the real
+    # SCAM_MESSAGE_PATTERNS data - it never touches url_vectors (fake or
+    # real) at all, so there's nothing to patch for it here.
 
     return store
 

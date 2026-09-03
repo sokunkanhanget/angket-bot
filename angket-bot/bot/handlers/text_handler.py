@@ -1,8 +1,10 @@
+import asyncio
 from html import escape
 
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from bot.analysis.file_scanner import download_and_hash, scan_vt_hash
 from bot.analysis.llm_analyzer import analyze_text_with_llm
 from bot.analysis.text_analyzer import analyze_text
 from bot.context_engine import analyze_unified
@@ -11,7 +13,7 @@ from bot.url_checker.features.offline.lexical import URL_REGEX
 from bot.url_checker.features.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.url_checker.message.handler import extract_text_link_entities, resolve_ticket
 from bot.url_checker.pipeline import check_message_full
-from bot.verdict_style import SOURCE_TAGS, VERDICT_STYLES, risk_style
+from bot.verdict_style import SOURCE_TAGS, risk_style, verdict_style
 
 BTN_MENU = "MENU"
 
@@ -89,69 +91,72 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["lang"] = lang
 
 
-_DISCLAIMER = (
-    "ⓘ Angket Bot may occasionally make mistakes.\n"
-    "Double-check important information before taking action."
-)
-
-
-def _format_list(items: list, prefix: str) -> str:
+def _format_list(items: list, prefix: str, lang: str = DEFAULT_LANG) -> str:
     if not items:
-        return f"{prefix} None provided"
+        return f"{prefix} {t(lang, 'none_provided')}"
     return "\n".join(f"{prefix} {escape(str(item))}" for item in items)
 
 
-def _summary(verdict: str | None, risk_percentage: int | None) -> str:
+def _summary(verdict: str | None, risk_percentage: int | None, lang: str = DEFAULT_LANG) -> str:
     if verdict == "Scam":
         if risk_percentage is not None and risk_percentage <= 60:
-            return "This message has warning signs. Verify it before taking action."
-        return "This message shows strong signs of being unsafe."
+            return t(lang, "summary_warning_signs")
+        return t(lang, "summary_strong_unsafe")
     if verdict == "Not a Scam":
         if risk_percentage is not None and risk_percentage > 30:
-            return "This message has warning signs. Verify it before taking action."
-        return "No strong scam indicators were detected in this message."
+            return t(lang, "summary_warning_signs")
+        return t(lang, "summary_no_indicators")
     if risk_percentage is not None and risk_percentage > 60:
-        return "This message shows strong signs of being unsafe."
+        return t(lang, "summary_strong_unsafe")
     if risk_percentage is not None and risk_percentage > 30:
-        return "This message has warning signs. Verify it before taking action."
-    return "No strong scam indicators were detected in this message."
+        return t(lang, "summary_warning_signs")
+    return t(lang, "summary_no_indicators")
 
 
 def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
-    verdict_icon, verdict_label = VERDICT_STYLES.get(
-        llm_result.get("verdict"), ("⚪", "UNABLE TO VERIFY")
-    )
-    risk_icon, risk_label = risk_style(llm_result.get("risk_percentage"))
+    """Group-chat reply - deliberately always English (lang=DEFAULT_LANG),
+    unlike format_unified_response below. Group chat's language wiring
+    and Gemini call are both out of scope for translation for now (see
+    bot/route.py) - this function's signature is otherwise identical to
+    format_unified_response on purpose, so it stays that way on purpose,
+    not by oversight."""
+    lang = DEFAULT_LANG
+    verdict_icon, verdict_label = verdict_style(llm_result.get("verdict"), lang)
+    risk_icon, risk_label = risk_style(llm_result.get("risk_percentage"), lang)
     risk_percentage = llm_result.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
     lines = [
-        f"{verdict_icon} <b>VERDICT: {escape(verdict_label)}</b>\n\n"
-        + _summary(llm_result.get("verdict"), risk_percentage),
+        f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n\n"
+        + _summary(llm_result.get("verdict"), risk_percentage, lang),
         f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
-        f"🔍 <b>KEY REASONS</b>\n{_format_list(llm_result.get('key_reasons', []), '•')}",
-        "💡 <b>WHAT YOU SHOULD DO</b>\n"
-        f"{_format_list(llm_result.get('recommendations', []), '✓')}",
-        f"──────────────────────────────────────────────\n{_DISCLAIMER}",
+        f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
+        f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
+        f"{_format_list(llm_result.get('recommendations', []), '✓', lang)}",
+        f"──────────────────────────────────────────────\n{t(lang, 'verdict_disclaimer')}",
     ]
 
     if keyword_result["suspicious"]:
         matches = escape(", ".join(keyword_result["matches"]))
-        lines.insert(3, f"⚠️ <b>KEYWORD MATCH:</b> <code>{matches}</code>")
+        lines.insert(3, f"⚠️ <b>{t(lang, 'keyword_match_label')}:</b> <code>{matches}</code>")
 
     return "\n\n".join(lines)
 
 
-def format_unified_response(unified: dict, keyword_result: dict) -> str:
+def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEFAULT_LANG) -> str:
     """Same visual shape as format_analysis_response, but key_reasons are
     {text, source} objects (context_engine.py's schema) instead of plain
     strings, so a reason that came from checking a link can be tagged 🔗
     - the "why" for a verdict a link-only or text-only check couldn't
-    have produced on its own."""
-    verdict_icon, verdict_label = VERDICT_STYLES.get(
-        unified.get("verdict"), ("⚪", "UNABLE TO VERIFY")
-    )
-    risk_icon, risk_label = risk_style(unified.get("risk_percentage"))
+    have produced on its own.
+
+    Unlike format_analysis_response, this one IS lang-aware: the fixed
+    labels/headers come from i18n.py, and the dynamic key_reasons/
+    recommendations text is expected to already be in the target
+    language (analyze_unified asks Gemini to respond in it directly -
+    see context_engine.py)."""
+    verdict_icon, verdict_label = verdict_style(unified.get("verdict"), lang)
+    risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
@@ -164,21 +169,21 @@ def format_unified_response(unified: dict, keyword_result: dict) -> str:
             reason_lines.append(f"• {escape(text)}{tag}")
         reasons_block = "\n".join(reason_lines)
     else:
-        reasons_block = "• None provided"
+        reasons_block = f"• {t(lang, 'none_provided')}"
 
     lines = [
-        f"{verdict_icon} <b>VERDICT: {escape(verdict_label)}</b>\n\n"
-        + _summary(unified.get("verdict"), risk_percentage),
+        f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n\n"
+        + _summary(unified.get("verdict"), risk_percentage, lang),
         f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
-        f"🔍 <b>KEY REASONS</b>\n{reasons_block}",
-        "💡 <b>WHAT YOU SHOULD DO</b>\n"
-        f"{_format_list(unified.get('recommendations', []), '✓')}",
-        f"──────────────────────────────────────────────\n{_DISCLAIMER}",
+        f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{reasons_block}",
+        f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
+        f"{_format_list(unified.get('recommendations', []), '✓', lang)}",
+        f"──────────────────────────────────────────────\n{t(lang, 'verdict_disclaimer')}",
     ]
 
     if keyword_result["suspicious"]:
         matches = escape(", ".join(keyword_result["matches"]))
-        lines.insert(3, f"⚠️ <b>KEYWORD MATCH:</b> <code>{matches}</code>")
+        lines.insert(3, f"⚠️ <b>{t(lang, 'keyword_match_label')}:</b> <code>{matches}</code>")
 
     return "\n\n".join(lines)
 
@@ -249,15 +254,41 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if is_plain_private:
         await ensure_vectors_seeded(context.bot_data)
 
+        # A private-chat document WITH a caption (e.g. "please open this
+        # invoice, urgent") used to be invisible to this unified check -
+        # handle_file (bot.py group 0) scans the file on its own VT-only
+        # report, with no idea the caption text is urgent/suspicious, and
+        # this function had no idea a file was even attached. Checking it
+        # here too (VT is 7-day cached, so this rarely re-hits the
+        # network) closes that gap without touching handle_file's own
+        # reply/Delete-Ignore buttons, which stay exactly as they are.
+        document = message.document
+
         hidden_links = extract_text_link_entities(message)
         has_links = bool(URL_REGEX.search(text)) or bool(hidden_links)
         status = None
-        if has_links:
-            status = await message.reply_text("🔍 Checking...", parse_mode="Markdown")
+        if has_links or document is not None:
+            status = await message.reply_text(t(lang, "checking_status"), parse_mode="Markdown")
 
-        link_verdicts = await check_message_full(text, hidden_links)
-        unified = await analyze_unified(text, keyword_result, link_verdicts)
-        reply_text = format_unified_response(unified, keyword_result)
+        async def _check_file():
+            sha256 = await download_and_hash(context, document.file_id)
+            return await scan_vt_hash(sha256)
+
+        # Concurrent, independent network chains - return_exceptions=True
+        # so a file-check failure can't discard an already-succeeded link
+        # result (same pattern handle_business_message already uses).
+        tasks = [check_message_full(text, hidden_links)]
+        if document is not None:
+            tasks.append(_check_file())
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        link_verdicts = results[0] if not isinstance(results[0], Exception) else []
+        file_verdict = None
+        if document is not None:
+            file_verdict = results[1] if not isinstance(results[1], Exception) else None
+
+        unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang)
+        reply_text = format_unified_response(unified, keyword_result, lang)
 
         if status is not None:
             await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)

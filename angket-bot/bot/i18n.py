@@ -102,6 +102,38 @@ TEXT = {
         "subscription": "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
         "file_deleted": "🗑️ Message deleted.",
         "file_scan_ignored": "🙈 Ignored. No action taken.",
+        # --- Verdict reply content (private DM / business chat only -
+        # group chat stays English, see bot/route.py's TEXT_FILTER scope
+        # notes) - the FIXED labels/headers around Gemini's own dynamic
+        # key_reasons/recommendations text. Gemini generates those in the
+        # target language directly (see context_engine.py's lang param);
+        # these are the surrounding static strings, translated once here
+        # instead of round-tripping through the model for a handful of
+        # fixed words every single call. -----------------------------
+        "checking_status": "🔍 Checking...",
+        "verdict_label": "VERDICT",
+        "key_reasons_header": "KEY REASONS",
+        "what_to_do_header": "WHAT YOU SHOULD DO",
+        "keyword_match_label": "KEYWORD MATCH",
+        "none_provided": "None provided",
+        "summary_warning_signs": "This message has warning signs. Verify it before taking action.",
+        "summary_strong_unsafe": "This message shows strong signs of being unsafe.",
+        "summary_no_indicators": "No strong scam indicators were detected in this message.",
+        "verdict_disclaimer": (
+            "ⓘ Angket Bot may occasionally make mistakes.\n"
+            "Double-check important information before taking action."
+        ),
+        "business_new_activity": "👀 New activity in your business chat",
+        "business_disclaimer": "ⓘ Bot can make mistakes. Please check carefully.",
+        "business_what_they_can_do_header": "What They Can Do",
+        "verdict_scam": "LIKELY A SCAM",
+        "verdict_not_a_scam": "SAFE / LEGITIMATE",
+        "verdict_uncertain": "SUSPICIOUS",
+        "verdict_unknown": "UNABLE TO VERIFY",
+        "risk_low": "Low Risk",
+        "risk_medium": "Medium Risk",
+        "risk_high": "High Risk",
+        "risk_unknown": "Unknown Risk",
     },
     "km": {
         "switch_language": "🌐 <b>ផ្លាស់ប្តូរភាសា</b>",
@@ -169,6 +201,34 @@ TEXT = {
         "subscription": "⭐ <b>ការជាវ</b>\n\nគម្រោងជាវនឹងមកដល់ឆាប់ៗនេះ។",
         "file_deleted": "🗑️ សារត្រូវបានលុប។",
         "file_scan_ignored": "🙈 មិនអើពើ។ គ្មានសកម្មភាពត្រូវបានធ្វើឡើយ។",
+        # NOTE: translated by Claude, not yet reviewed by a native Khmer
+        # speaker on the team - flag any wording that reads oddly before
+        # this goes live for real users, same caveat as this session's
+        # other new Khmer text (see the bge-m3 sandbox test messages).
+        "checking_status": "🔍 កំពុងពិនិត្យ...",
+        "verdict_label": "លទ្ធផល",
+        "key_reasons_header": "មូលហេតុសំខាន់ៗ",
+        "what_to_do_header": "អ្វីដែលគួរធ្វើ",
+        "keyword_match_label": "ពាក្យគន្លឹះដែលត្រូវគ្នា",
+        "none_provided": "មិនមានទិន្នន័យ",
+        "summary_warning_signs": "សារនេះមានសញ្ញាគួរឱ្យប្រុងប្រយ័ត្ន។ សូមផ្ទៀងផ្ទាត់មុននឹងធ្វើសកម្មភាព។",
+        "summary_strong_unsafe": "សារនេះបង្ហាញសញ្ញាខ្លាំងថាមិនមានសុវត្ថិភាព។",
+        "summary_no_indicators": "រកមិនឃើញសញ្ញាការឆបោកខ្លាំងក្នុងសារនេះទេ។",
+        "verdict_disclaimer": (
+            "ⓘ Angket Bot អាចមានកំហុសខ្លះជួនកាល។\n"
+            "សូមផ្ទៀងផ្ទាត់ព័ត៌មានសំខាន់ៗម្តងទៀត មុននឹងធ្វើសកម្មភាព។"
+        ),
+        "business_new_activity": "👀 សកម្មភាពថ្មីនៅក្នុងជជែកអាជីវកម្មរបស់អ្នក",
+        "business_disclaimer": "ⓘ Bot អាចមានកំហុសខ្លះ។ សូមពិនិត្យដោយប្រុងប្រយ័ត្ន។",
+        "business_what_they_can_do_header": "អ្វីដែលពួកគេអាចធ្វើបាន",
+        "verdict_scam": "ទំនងជាការឆបោក",
+        "verdict_not_a_scam": "សុវត្ថិភាព / ត្រឹមត្រូវ",
+        "verdict_uncertain": "គួរឱ្យសង្ស័យ",
+        "verdict_unknown": "មិនអាចផ្ទៀងផ្ទាត់បាន",
+        "risk_low": "ហានិភ័យទាប",
+        "risk_medium": "ហានិភ័យមធ្យម",
+        "risk_high": "ហានិភ័យខ្ពស់",
+        "risk_unknown": "ហានិភ័យមិនស្គាល់",
     },
 }
 

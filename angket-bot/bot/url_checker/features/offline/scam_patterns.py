@@ -3,7 +3,8 @@ bot/url_checker/features/offline/scam_patterns.py
 ====================================================
 Offline scam-MESSAGE pattern similarity - the deterministic fallback
 signal used when Gemini is unavailable (see bot/context_engine.py's
-_grounded_fallback).
+_grounded_fallback), AND (see nearest_scam_pattern below) a piece of
+evidence fed into the live Gemini call too.
 
 This is deliberately separate from vectors.py's existing "phish" pool:
 that pool is seeded with DOMAIN-shaped strings
@@ -74,3 +75,51 @@ async def seed() -> None:
         for i, text in enumerate(examples)
     ]
     await asyncio.gather(*tasks)
+
+
+# --- Local, in-memory search (no Supabase round trip) -------------------
+# The whole SCAM_MESSAGE_PATTERNS corpus is ~17 hand-written examples,
+# static at runtime (only changes when a developer edits this file and
+# re-seeds) - far too small to justify a real DB query every time it's
+# consulted. seed() above still pushes these into Supabase too, so the
+# SAME patterns remain visible to pipeline.py's own nearest() calls
+# (which query across kinds, including 'scam_pattern', for other
+# purposes) - this local index is an ADDITIONAL, faster path for the two
+# scam-message-specific callers (context_engine.py's live path and
+# fallback), not a replacement for the DB rows.
+#
+# Built once at import time, not lazily: embed() is pure computation, no
+# I/O, and 17 calls to it is sub-millisecond - there's no cold-start cost
+# worth deferring.
+
+def _build_local_index() -> list[tuple[str, str, dict[int, float]]]:
+    from bot.url_checker.features.offline.vectors import embed
+
+    return [
+        (f"{category}:{i}", category, embed(text))
+        for category, examples in SCAM_MESSAGE_PATTERNS.items()
+        for i, text in enumerate(examples)
+    ]
+
+
+_LOCAL_INDEX = _build_local_index()
+
+
+def nearest_scam_pattern(text: str, k: int = 1) -> list[tuple[float, str, str, str]]:
+    """Same return shape as vectors.nearest() - (similarity, kind, key,
+    label) tuples, sorted best-first - so callers don't need to know
+    this isn't the DB-backed search. Brute-force over ~17 rows is not
+    just fast, it's EXACT (the DB path uses pgvector's HNSW index, which
+    is itself an approximate search) - this trades nothing for the
+    speed, unlike a real accuracy-for-speed compromise would."""
+    from bot.url_checker.features.offline.vectors import cosine, embed
+
+    q = embed(text)
+    if not q:
+        return []
+    scored = [
+        (cosine(q, vec), "scam_pattern", key, category)
+        for key, category, vec in _LOCAL_INDEX
+    ]
+    scored.sort(key=lambda row: row[0], reverse=True)
+    return scored[:k]

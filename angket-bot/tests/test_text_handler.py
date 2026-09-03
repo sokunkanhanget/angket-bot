@@ -149,6 +149,7 @@ def _private_update(text):
     update = AsyncMock()
     update.message.text = text
     update.message.caption = None
+    update.message.document = None
     update.message.business_connection_id = None
     update.message.reply_text = AsyncMock()
     update.effective_message = update.message
@@ -189,6 +190,44 @@ async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link(
     reply = update.message.reply_text.call_args[0][0]
     assert "VERDICT: LIKELY A SCAM" in reply
     assert "Promises free money" in reply
+
+
+@pytest.mark.asyncio
+async def test_handle_text_checks_attached_file_in_plain_private_chat():
+    # Regression: a private-chat document WITH a caption used to be
+    # invisible to this unified check - handle_file (bot.py group 0)
+    # scans the file on its own VT-only report, with no idea the caption
+    # text is urgent/suspicious, and analyze_unified had no idea a file
+    # was even attached. This only checks that the file verdict reaches
+    # analyze_unified - handle_file's own separate reply/buttons for the
+    # file itself are untouched by this fix.
+    update = _private_update(None)
+    update.message.caption = "please review this invoice urgently"
+    update.message.document = AsyncMock()
+    update.message.document.file_id = "file123"
+    context = _private_context()
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(
+        "bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])
+    ), patch(
+        "bot.handlers.text_handler.download_and_hash", AsyncMock(return_value="deadbeef")
+    ), patch(
+        "bot.handlers.text_handler.scan_vt_hash",
+        AsyncMock(return_value={"found": True, "malicious": 5, "suspicious": 0, "total": 70}),
+    ), patch(
+        "bot.handlers.text_handler.analyze_unified", AsyncMock(return_value={
+            "verdict": "Scam",
+            "risk_percentage": 100,
+            "key_reasons": [{"text": "Attached file is malicious", "source": "file_evidence"}],
+            "recommendations": ["Do not open the file"],
+        }),
+    ) as mock_unified:
+        await handle_text(update, context)
+
+    mock_unified.assert_awaited_once()
+    text_arg, _keyword_result, _link_verdicts, file_verdict_arg, *_lang_arg = mock_unified.call_args[0]
+    assert text_arg == "please review this invoice urgently"
+    assert file_verdict_arg == {"found": True, "malicious": 5, "suspicious": 0, "total": 70}
 
 
 @pytest.mark.asyncio

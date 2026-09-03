@@ -56,12 +56,13 @@ from telegram.ext import ContextTypes
 from bot.analysis.file_scanner import download_and_hash, scan_vt_hash
 from bot.analysis.text_analyzer import analyze_text
 from bot.context_engine import analyze_unified
+from bot.i18n import DEFAULT_LANG, t
 from bot.url_checker.pipeline import (
     check_message_full,
     format_verdict_full,
     _risk_percent_and_label,
 )
-from bot.verdict_style import SOURCE_TAGS, VERDICT_STYLES, risk_style
+from bot.verdict_style import SOURCE_TAGS, risk_style, verdict_style
 from bot.analysis.utils import log_url_scan
 from bot.url_checker.features.offline.vectors import ensure_seeded as ensure_vectors_seeded
 
@@ -96,8 +97,8 @@ def _tickets(context: ContextTypes.DEFAULT_TYPE) -> dict:
 
 def _prune_expired(tickets: dict) -> None:
     now = time.time()
-    for t in [t for t, v in tickets.items() if now - v["ts"] > TICKET_TTL_SECONDS]:
-        tickets.pop(t, None)
+    for ticket_id in [k for k, v in tickets.items() if now - v["ts"] > TICKET_TTL_SECONDS]:
+        tickets.pop(ticket_id, None)
 
 
 def _stash_ticket(context: ContextTypes.DEFAULT_TYPE, full_text: str) -> str:
@@ -232,6 +233,22 @@ async def _owner_chat_id(context: ContextTypes.DEFAULT_TYPE, business_connection
         return None
     cache[business_connection_id] = conn.user_chat_id
     return conn.user_chat_id
+
+
+def _owner_lang(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: int) -> str:
+    """The business-owner-DM notification is read only by the OWNER, never
+    the customer - so it must translate based on the OWNER's language
+    preference, not whatever context.user_data the current (customer's)
+    update happens to carry. A private chat_id equals that user's own
+    user_id in Telegram, and PTB keeps one shared user_data store keyed
+    by user_id across every chat that user touches (Application.user_data,
+    a read-only Mapping - not context.user_data, which is scoped to the
+    CURRENT update's effective_user). If the owner has ever run /start
+    and switched language in their own private chat with the bot, it's
+    already sitting under this same key - no new state needed. Falls back
+    to English if they never have."""
+    owner_data = context.application.user_data.get(owner_chat_id) or {}
+    return owner_data.get("lang", DEFAULT_LANG)
 
 
 async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -404,34 +421,33 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
 # message gets checked automatically and privately reported to them.
 # ---------------------------------------------------------------------------
 
-def _format_unified_business_text(unified: dict) -> str:
+def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG) -> str:
     """Markdown rendering of an analyze_unified() verdict for the business
     owner-DM notification - same shape as text_handler.py's
     format_unified_response, but Markdown instead of HTML to match every
-    other business notification in this file."""
-    verdict_icon, verdict_label = VERDICT_STYLES.get(
-        unified.get("verdict"), ("⚪", "UNABLE TO VERIFY")
-    )
-    risk_icon, risk_label = risk_style(unified.get("risk_percentage"))
+    other business notification in this file. `lang` here is the OWNER's
+    language (see _owner_lang), not the customer's."""
+    verdict_icon, verdict_label = verdict_style(unified.get("verdict"), lang)
+    risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
     reason_lines = [
         f"- {r.get('text', '')}{SOURCE_TAGS.get(r.get('source'), '')}"
         for r in (unified.get("key_reasons") or [])
-    ] or ["- None provided"]
+    ] or [f"- {t(lang, 'none_provided')}"]
 
     lines = [
-        f"{verdict_icon} *VERDICT: {verdict_label}*",
+        f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
         f"{risk_icon} *{percentage}  {risk_label.upper()}*",
         "",
-        "*Key Reasons*",
+        f"*{t(lang, 'key_reasons_header')}*",
         "\n".join(reason_lines),
     ]
     recs = unified.get("recommendations") or []
     if recs:
-        lines += ["", "*What They Can Do*", "\n".join(f"- {r}" for r in recs)]
-    lines += ["", "ⓘ Bot can make mistakes. Please check carefully."]
+        lines += ["", f"*{t(lang, 'business_what_they_can_do_header')}*", "\n".join(f"- {r}" for r in recs)]
+    lines += ["", t(lang, "business_disclaimer")]
     return "\n".join(lines)
 
 
@@ -503,7 +519,11 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     for v in link_verdicts:
         log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
 
-    unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict)
+    # The OWNER reads this notification, not the customer who sent the
+    # message - translate based on their language preference, not the
+    # customer's (see _owner_lang's docstring for why those can differ).
+    owner_lang = _owner_lang(context, owner_chat_id)
+    unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, owner_lang)
 
     # A link or file is always worth telling the owner about (matches
     # handle_url/handle_file's "report every finding, even 'safe'"
@@ -516,8 +536,8 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     if not link_verdicts and file_verdict is None and unified.get("verdict") == "Not a Scam":
         return
 
-    header = f"👀 *New activity in your business chat*\n\n{_sender_header(sender, message.date)}\n\n"
-    body = header + _format_unified_business_text(unified)
+    header = f"{t(owner_lang, 'business_new_activity')}\n\n{_sender_header(sender, message.date)}\n\n"
+    body = header + _format_unified_business_text(unified, owner_lang)
 
     # Reuses the toggle-oriented short/full ticket store with the SAME
     # text in both slots - this notification never renders a "See full

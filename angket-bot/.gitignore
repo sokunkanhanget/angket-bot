@@ -7,6 +7,8 @@ __pycache__/
 .pytest_cache
 .pytest_cache/
 *.doc
+*_files/
 *test.md
 .claude
 session-summary/
+next-gen-test/

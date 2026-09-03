@@ -289,3 +289,63 @@ async def test_a_failed_file_check_does_not_discard_an_already_successful_link_c
     args = mock_unified.call_args.args
     assert args[2] == real_link_verdict
     assert args[3] is None
+
+
+@pytest.mark.asyncio
+async def test_notification_uses_the_owners_language_not_the_customers():
+    # The owner reads this notification, never the customer who sent the
+    # message - must translate based on the OWNER's stored language
+    # preference (Application.user_data, keyed by their own user_id/
+    # chat_id), not context.user_data for the current (customer's) update.
+    update = _business_update(text="URGENT: send $800 now, don't call")
+    context = _context()
+    owner_chat_id = 555
+    # The owner previously ran /start and switched to Khmer in their own
+    # private chat with the bot - that's exactly what text_handler.py's
+    # start()/handle_text() would have written into this same store.
+    context.application.user_data = {owner_chat_id: {"lang": "km"}}
+
+    with patch("bot.url_checker.message.handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.url_checker.message.handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.url_checker.message.handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.url_checker.message.handler._owner_chat_id", AsyncMock(return_value=owner_chat_id)), \
+         patch("bot.url_checker.message.handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam",
+             "risk_percentage": 95,
+             "key_reasons": [{"text": "សំណើសុំប្រាក់បន្ទាន់", "source": "message_text"}],
+             "recommendations": [],
+         })) as mock_unified:
+        await handle_business_message(update, context)
+
+    # The Khmer verdict label must render, not the English one.
+    body = context.bot.send_message.call_args.kwargs["text"]
+    assert "ទំនងជាការឆបោក" in body
+    assert "LIKELY A SCAM" not in body
+    # And analyze_unified itself must have been asked to respond in Khmer.
+    assert mock_unified.call_args.args[4] == "km"
+
+
+@pytest.mark.asyncio
+async def test_notification_defaults_to_english_when_owner_has_no_stored_language():
+    # The owner has never run /start directly - Application.user_data has
+    # no entry for them at all. Must default cleanly to English, not
+    # crash on a missing dict key.
+    update = _business_update(text="URGENT: send $800 now, don't call")
+    context = _context()
+    context.application.user_data = {}  # owner never interacted with the bot directly
+
+    with patch("bot.url_checker.message.handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.url_checker.message.handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.url_checker.message.handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.url_checker.message.handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.url_checker.message.handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam",
+             "risk_percentage": 95,
+             "key_reasons": [{"text": "Urgent money request", "source": "message_text"}],
+             "recommendations": [],
+         })) as mock_unified:
+        await handle_business_message(update, context)
+
+    body = context.bot.send_message.call_args.kwargs["text"]
+    assert "LIKELY A SCAM" in body
+    assert mock_unified.call_args.args[4] == "en"

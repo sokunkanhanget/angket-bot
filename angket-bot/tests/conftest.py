@@ -75,11 +75,10 @@ def fake_vector_store(monkeypatch):
     monkeypatch.setattr(vectors, "nearest", store.nearest)
     monkeypatch.setattr(vectors, "seed", store.seed)
 
-    # context_engine.py imports `nearest` by name (`from ... import nearest
-    # as vector_nearest`), which does NOT pick up monkeypatching the
-    # vectors module attribute - patch that binding separately.
-    import bot.context_engine as context_engine
-    monkeypatch.setattr(context_engine, "vector_nearest", store.nearest)
+    # context_engine.py's scam-pattern lookup (nearest_scam_pattern, in
+    # scam_patterns.py) is a LOCAL in-memory search over the real
+    # SCAM_MESSAGE_PATTERNS data - it never touches url_vectors (fake or
+    # real) at all, so there's nothing to patch for it here.
 
     return store
 
@@ -89,13 +88,18 @@ async def seeded_vectors(fake_vector_store, tmp_path, monkeypatch):
     """Same name/shape tests already use - now backed by the in-memory
     fake instead of a real SQLite tmp file for url_vectors specifically,
     already seeded. Still isolates the SQLite-backed pieces that DIDN'T
-    move (MinHash page dedup, domain-age cache) to a tmp file, exactly
-    like the old fixture did - only the url_vectors table's backend
-    changed, not whether SQLite-touching tests should hit the real
-    scan_logs.db."""
+    move (MinHash page dedup, domain-age cache, and pipeline.py's
+    exact-match link-verdict cache) to a tmp file, exactly like the old
+    fixture did - only the url_vectors table's backend changed, not
+    whether SQLite-touching tests should hit the real scan_logs.db.
+    Without patching pipeline.SCAN_LOG_DB too, an earlier test in the
+    same run could cache a URL's verdict for real, and a later test
+    reusing that same URL would get a stale cache hit instead of
+    exercising the code it meant to test."""
     db = str(tmp_path / "test_scan.db")
     monkeypatch.setattr(vectors, "SCAN_LOG_DB", db)
     monkeypatch.setattr("bot.url_checker.features.online.domain_info.SCAN_LOG_DB", db)
+    monkeypatch.setattr("bot.url_checker.pipeline.SCAN_LOG_DB", db)
 
     await fake_vector_store.seed()
     return fake_vector_store

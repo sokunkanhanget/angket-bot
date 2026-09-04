@@ -284,7 +284,10 @@ async def test_analyze_unified_falls_back_on_malformed_json(fake_vector_store, m
 
     result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
 
-    assert any("offline pattern matching only" in r["text"] for r in result["key_reasons"])
+    # ai_unavailable tells the caller's formatter to show one fixed,
+    # translated notice (bot/i18n.py's ai_unavailable_notice) instead of
+    # expecting AI-authored reasons text - see format_unified_response.
+    assert result["ai_unavailable"] is True
 
 
 @pytest.mark.asyncio
@@ -293,7 +296,7 @@ async def test_analyze_unified_falls_back_when_api_raises(fake_vector_store, mon
 
     result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
 
-    assert any("offline pattern matching only" in r["text"] for r in result["key_reasons"])
+    assert result["ai_unavailable"] is True
 
 
 # --- evidence-reconciliation safety net -------------------------------

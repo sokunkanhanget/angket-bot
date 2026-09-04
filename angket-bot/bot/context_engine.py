@@ -166,8 +166,15 @@ async def _grounded_fallback(
     signal alongside the keyword prescan, so a degraded-mode check is
     meaningfully better than the crude keyword list alone - but ONLY to
     add suspicion, never to clear a message (see SCAM_PATTERN_THRESHOLD).
+
+    `reason` is a diagnostic string for logs only (why the live call
+    wasn't used) - it never reaches the user. The caller instead shows
+    a single, properly translated `ai_unavailable_notice` (see
+    text_handler.py's format_unified_response), so a degraded reply in
+    Khmer doesn't mix in raw English boilerplate.
     """
-    reasons = [{"text": reason, "source": "message_text"}]
+    logger.info("Falling back to offline detection: %s", reason)
+    reasons: list[dict] = []
 
     if keyword_result.get("suspicious"):
         reasons.append({
@@ -203,11 +210,10 @@ async def _grounded_fallback(
             "source": "file_evidence",
         })
 
-    # Derived from whatever evidence actually got appended above (index 0
-    # is always the base `reason` disclaimer, not evidence) - not
+    # Derived from whatever evidence actually got appended above - not
     # hand-tracked, so a future evidence source can't add a reason and
     # forget to also flag concern.
-    has_concern = len(reasons) > 1
+    has_concern = len(reasons) > 0
 
     worst_link_score = max((v.get("score", 0) for v in link_verdicts), default=0)
     pattern_score = int(pattern_similarity * 100)
@@ -227,17 +233,15 @@ async def _grounded_fallback(
     else:
         verdict = "Not a Scam"
 
-    reasons.append({
-        "text": "Full AI reasoning was unavailable for this check - this result uses "
-                "offline pattern matching only and may be less accurate than usual.",
-        "source": "message_text",
-    })
-
     return {
         "verdict": verdict,
         "risk_percentage": risk_percentage,
         "key_reasons": reasons,
         "recommendations": [],
+        # Tells the caller's formatter to show one clean, properly
+        # translated notice instead of expecting AI-authored reasons/
+        # recommendations text (there are none - this IS the no-AI path).
+        "ai_unavailable": True,
     }
 
 
@@ -324,8 +328,10 @@ async def analyze_unified(
     pipeline verdict, and an optional file-scan result together -> one
     verdict dict. `lang` only affects the live Gemini path's dynamic
     key_reasons/recommendations text (see _system_prompt) - the fallback
-    below stays English-only; it's the already-degraded path (no live AI
-    at all), and the fixed labels around whatever it returns are still
+    below has no such text to translate (it's the already-degraded path,
+    no live AI at all), it just sets `ai_unavailable: True` so the
+    caller's formatter shows one fixed, translated notice instead. The
+    fixed labels around whatever either path returns are always
     translated separately by the caller (verdict_style.py/i18n.py)."""
     # Only surfaced to the model once it clears the same calibrated
     # SCAM_PATTERN_THRESHOLD the fallback already trusts - a low,

@@ -426,11 +426,26 @@ def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG) -> st
     owner-DM notification - same shape as text_handler.py's
     format_unified_response, but Markdown instead of HTML to match every
     other business notification in this file. `lang` here is the OWNER's
-    language (see _owner_lang), not the customer's."""
+    language (see _owner_lang), not the customer's.
+
+    unified["ai_unavailable"] means there's no AI-authored reasons/
+    recommendations text to show - see format_unified_response's
+    docstring for why this replaces the Key Reasons/What They Can Do
+    sections with one fixed, translated notice instead."""
     verdict_icon, verdict_label = verdict_style(unified.get("verdict"), lang)
     risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
+
+    if unified.get("ai_unavailable"):
+        return "\n".join([
+            f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
+            f"{risk_icon} *{percentage}  {risk_label.upper()}*",
+            "",
+            f"⚠️ {t(lang, 'ai_unavailable_notice')}",
+            "",
+            t(lang, "business_disclaimer"),
+        ])
 
     reason_lines = [
         f"- {r.get('text', '')}{SOURCE_TAGS.get(r.get('source'), '')}"

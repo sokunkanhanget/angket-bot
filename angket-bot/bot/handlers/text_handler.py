@@ -154,11 +154,35 @@ def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEF
     labels/headers come from i18n.py, and the dynamic key_reasons/
     recommendations text is expected to already be in the target
     language (analyze_unified asks Gemini to respond in it directly -
-    see context_engine.py)."""
+    see context_engine.py).
+
+    unified["ai_unavailable"] (set by context_engine.py's
+    _grounded_fallback) means there's no AI-authored reasons/
+    recommendations text to show at all - the Key Reasons/What To Do
+    sections are replaced with one fixed, translated notice instead of
+    a body that would otherwise mix raw English boilerplate into an
+    otherwise-Khmer reply, or a "None provided" What To Do section."""
     verdict_icon, verdict_label = verdict_style(unified.get("verdict"), lang)
     risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
+
+    header = (
+        f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n\n"
+        + _summary(unified.get("verdict"), risk_percentage, lang)
+    )
+    risk_block = f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>"
+
+    if unified.get("ai_unavailable"):
+        lines = [
+            header,
+            f"{risk_block}\n\n⚠️ {escape(t(lang, 'ai_unavailable_notice'))}",
+            f"──────────────────────────────────────────────\n{t(lang, 'verdict_disclaimer')}",
+        ]
+        if keyword_result["suspicious"]:
+            matches = escape(", ".join(keyword_result["matches"]))
+            lines.insert(2, f"⚠️ <b>{t(lang, 'keyword_match_label')}:</b> <code>{matches}</code>")
+        return "\n\n".join(lines)
 
     reason_items = unified.get("key_reasons") or []
     if reason_items:
@@ -172,9 +196,8 @@ def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEF
         reasons_block = f"• {t(lang, 'none_provided')}"
 
     lines = [
-        f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n\n"
-        + _summary(unified.get("verdict"), risk_percentage, lang),
-        f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
+        header,
+        f"{risk_block}\n\n"
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{reasons_block}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(unified.get('recommendations', []), '✓', lang)}",

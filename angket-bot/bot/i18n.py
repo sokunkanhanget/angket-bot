@@ -116,6 +116,10 @@ TEXT = {
         "what_to_do_header": "WHAT YOU SHOULD DO",
         "keyword_match_label": "KEYWORD MATCH",
         "none_provided": "None provided",
+        "ai_unavailable_notice": (
+            "AI reasoning was unavailable for this check - this result uses "
+            "offline pattern matching only and may be less accurate than usual."
+        ),
         "summary_warning_signs": "This message has warning signs. Verify it before taking action.",
         "summary_strong_unsafe": "This message shows strong signs of being unsafe.",
         "summary_no_indicators": "No strong scam indicators were detected in this message.",
@@ -211,6 +215,11 @@ TEXT = {
         "what_to_do_header": "អ្វីដែលគួរធ្វើ",
         "keyword_match_label": "ពាក្យគន្លឹះដែលត្រូវគ្នា",
         "none_provided": "មិនមានទិន្នន័យ",
+        "ai_unavailable_notice": (
+            "ការវិភាគ AI មិនអាចប្រើប្រាស់បានទេសម្រាប់ការត្រួតពិនិត្យនេះ — "
+            "លទ្ធផលនេះផ្អែកលើការផ្គូផ្គងលំនាំក្រៅបណ្តាញប៉ុណ្ណោះ "
+            "ហើយអាចមានភាពត្រឹមត្រូវតិចជាងធម្មតា។"
+        ),
         "summary_warning_signs": "សារនេះមានសញ្ញាគួរឱ្យប្រុងប្រយ័ត្ន។ សូមផ្ទៀងផ្ទាត់មុននឹងធ្វើសកម្មភាព។",
         "summary_strong_unsafe": "សារនេះបង្ហាញសញ្ញាខ្លាំងថាមិនមានសុវត្ថិភាព។",
         "summary_no_indicators": "រកមិនឃើញសញ្ញាការឆបោកខ្លាំងក្នុងសារនេះទេ។",

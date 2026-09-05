@@ -1,60 +1,23 @@
+"""
+bot/detectors/file/scanner.py
+================================
+Orchestrator: merges the offline filename-disguise check with the
+online VirusTotal hash lookup into one verdict, same role pipeline.py
+plays for url/offline + url/online. Re-exports check_filename and
+scan_vt_hash so every existing caller (handlers, the run-angket-bot
+driver, tests) keeps working unchanged after the offline/online split -
+a pure file-organization change, not an API change.
+"""
+
+from __future__ import annotations
+
 import hashlib
 import io
 
-import vt
 from telegram.ext import ContextTypes
 
-from bot.config import VIRUSTOTAL_API_KEY
-
-# Executable/script extensions - the highest-risk disguise target: a
-# real attack ("invoice.pdf.exe") hides one of these behind a document-
-# looking name so an unsuspecting user believes it's safe to open.
-EXECUTABLE_EXTENSIONS = {
-    "exe", "scr", "bat", "cmd", "com", "pif", "vbs", "vbe", "js", "jse",
-    "wsf", "wsh", "msi", "ps1", "jar", "hta", "reg", "lnk", "apk",
-}
-
-# Archive/compression extensions - a lower-severity case: hiding a
-# document behind an archive isn't inherently an attack (a legitimately
-# compressed export exists), but this bot's hash check only ever sees
-# the OUTER file - it can't look inside an archive, so the real content
-# stays unverified either way.
-ARCHIVE_EXTENSIONS = {"zip", "rar", "7z", "gz", "bz2", "xz", "z", "tar", "tgz"}
-
-# Extensions this check treats as "looks like a normal document/media
-# file" - the disguise target an attacker wants the user to believe
-# they're opening. Only a SECOND extension chained after one of these is
-# meaningful; a lone ".exe" is just an executable, not a disguise.
-DOCUMENT_LIKE_EXTENSIONS = {
-    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv",
-    "jpg", "jpeg", "png", "gif", "mp3", "mp4",
-}
-
-
-def check_filename(file_name: str) -> tuple[int, str] | None:
-    """Flags the classic double-extension disguise ("invoice.pdf.exe",
-    "Document.pdf.z"): a document-looking extension followed by a
-    second, real extension that determines how the file actually
-    behaves. Only fires when the INNER extension looks like an ordinary
-    document/media type - two unrelated extensions on a file that isn't
-    trying to look safe (e.g. "archive.tar.gz") isn't this pattern.
-    """
-    name = (file_name or "").lower()
-    parts = name.rsplit(".", 2)
-    if len(parts) < 3:
-        return None
-    _, inner_ext, outer_ext = parts
-    if inner_ext not in DOCUMENT_LIKE_EXTENSIONS:
-        return None
-    if outer_ext in EXECUTABLE_EXTENSIONS:
-        return (50, f"File name disguises an executable ('.{outer_ext}') behind a "
-                    f"'.{inner_ext}' extension — a classic malware trick "
-                    f"(e.g. 'invoice.pdf.exe').")
-    if outer_ext in ARCHIVE_EXTENSIONS:
-        return (20, f"File name hides a '.{inner_ext}' file inside a '.{outer_ext}' "
-                    f"archive — this bot cannot see inside archives, so the real "
-                    f"content is unverified.")
-    return None
+from bot.detectors.file.offline.filename_check import check_filename
+from bot.detectors.file.online.virustotal import scan_vt_hash
 
 
 async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:
@@ -66,42 +29,6 @@ async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str) ->
     buf = io.BytesIO()
     await file_info.download_to_memory(buf)
     return hashlib.sha256(buf.getvalue()).hexdigest()
-
-
-async def scan_vt_hash(file_hash: str) -> dict:
-    async with vt.Client(VIRUSTOTAL_API_KEY) as client:
-        try:
-            file_obj = await client.get_object_async(f"/files/{file_hash}")
-            stats = file_obj.last_analysis_stats
-            results = getattr(file_obj, "last_analysis_results", {})
-
-            def get_engine_status(engine_name: str) -> str:
-                engine_data = results.get(engine_name, {})
-                category = engine_data.get("category", "undetected")
-                result = engine_data.get("result")
-                if category == "malicious":
-                    return f"Detected ({result})"
-                if category == "suspicious":
-                    return f"Suspicious ({result})"
-                return "Clean"
-
-            return {
-                "found": True,
-                "malicious": stats.get("malicious", 0),
-                "suspicious": stats.get("suspicious", 0),
-                "harmless": stats.get("harmless", 0),
-                "undetected": stats.get("undetected", 0),
-                "total": sum(stats.values()),
-                "top_engines": {
-                    "Microsoft": get_engine_status("Microsoft"),
-                    "Kaspersky": get_engine_status("Kaspersky"),
-                    "BitDefender": get_engine_status("BitDefender"),
-                },
-            }
-        except vt.APIError as error:
-            if error.code == "NotFoundError":
-                return {"found": False, "error": "NotFound"}
-            return {"found": False, "error": str(error)}
 
 
 async def scan_file(file_hash: str, file_name: str) -> dict:

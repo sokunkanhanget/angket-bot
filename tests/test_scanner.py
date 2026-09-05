@@ -1,10 +1,11 @@
 """
 tests/test_scanner.py
 =======================
-Direct unit coverage for bot/detectors/file/scanner.py's filename-
-disguise check and the merged scan_file() entry point - previously this
-module had zero direct tests, only ever exercised indirectly through
-handler tests that mock it out entirely.
+Direct unit coverage for bot/detectors/file's filename-disguise check
+(offline/filename_check.py) and the merged scan_file() entry point
+(scanner.py, which orchestrates the offline filename check + the online
+VirusTotal lookup) - previously this had zero direct tests, only ever
+exercised indirectly through handler tests that mock it out entirely.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -12,7 +13,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from bot.detectors.file import scanner
-from bot.detectors.file.scanner import check_filename, scan_file
+from bot.detectors.file.offline.filename_check import check_filename
+from bot.detectors.file.scanner import scan_file
 
 
 # --- check_filename ---------------------------------------------------

@@ -36,7 +36,7 @@ from google.genai import types
 
 from bot.config import GEMINI_API_KEY, GEMINI_MODEL, SCAM_PATTERN_THRESHOLD
 from bot.i18n import DEFAULT_LANG
-from bot.detectors.text.scam_patterns import nearest_scam_pattern
+from bot.detectors.text.offline.scam_patterns import nearest_scam_pattern
 
 logger = logging.getLogger(__name__)
 

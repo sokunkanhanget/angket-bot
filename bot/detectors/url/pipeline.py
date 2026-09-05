@@ -24,10 +24,17 @@ Whole feature (originally `bot/url_checker/`, restructured into
 rest of the codebase's domain-first reorg):
 
     pipeline.py (this file)   Orchestrator: merges all signals into a verdict
-    offline/                  No network access - deterministic, instant
-        lexical.py               Flow 1: pure-stdlib URL text analysis (scoring)
-        vectors.py                Flow 2b: embeddings, cosine k-NN, MinHash LSH
-    online/                   Real network calls - slower, can fail/degrade
+    offline/                  Not "no network" (see below) - fast, deterministic
+                              per-call, no THIRD-PARTY reputation/threat-intel API
+        lexical.py               Flow 1: pure-stdlib URL text analysis (scoring) - genuinely no network
+        vectors.py                Flow 2b: embeddings, cosine k-NN, MinHash LSH -
+                                   embed()/cosine() are pure, but nearest()/
+                                   upsert_vector() are real Supabase network calls
+                                   (moved off SQLite - see vectors.py's own
+                                   docstring); kept under offline/ because it's
+                                   the primary per-message detection path, same
+                                   distinction text/offline/scam_patterns.py uses
+    online/                   Real THIRD-PARTY API calls - slower, can fail/degrade
         network.py                Flow 2a: async redirect/TLS/page fetching
         domain_info.py             Flow 2a: DNS resolution + RDAP domain age
         cert_info.py                TLS certificate issuance age
@@ -38,8 +45,9 @@ text_handler.py/file_handler.py - not in this package, per the
 domain-detection-vs-Telegram-wiring split the whole codebase follows
 now. scam_patterns.py (offline scam-MESSAGE pattern similarity, as
 opposed to this package's URL-pattern signals) lives in
-../text/scam_patterns.py - it shares vectors.py's embedding machinery
-but is text-domain, not URL-domain.
+../text/offline/scam_patterns.py - it shares vectors.py's embedding
+machinery but is text-domain, not URL-domain, and follows the same
+offline/online split text/ and file/ now both use too.
 
 Shared infrastructure (SCAN_LOG_DB helpers) intentionally lives in
 bot/storage/scan_log.py so every detector logs to the same database.
@@ -109,6 +117,11 @@ LINK_VERDICT_CACHE_TTL_SECONDS = 60 * 60  # 1 hour
 
 def _verdict_cache_connect() -> sqlite3.Connection:
     conn = sqlite3.connect(SCAN_LOG_DB)
+    # See bot/storage/scan_log.py's init_db() for why: this file is
+    # shared by several unrelated caches/logs, and WAL mode lets
+    # concurrent access to different tables proceed without blocking
+    # each other. Set defensively here too in case this connects first.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
         create table if not exists link_verdict_cache(
@@ -543,6 +556,15 @@ def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) ->
     low = page_text.lower()
     for domain, label in PROTECTED_BRANDS.items():
         brand = domain.split(".")[0]
+        # Same length guard lexical.py's own buried-brand-name check
+        # already uses (len(brand_name) >= 4): a short/single-letter
+        # brand name (e.g. "x" from x.com) is a substring of countless
+        # ordinary English words ("example", "text", "next") - without
+        # this, adding a brand like "X (Twitter)" made almost any real
+        # page's text falsely "impersonate" it. Confirmed live:
+        # example.com's placeholder page tripped this before the guard.
+        if len(brand) < 4:
+            continue
         if low.count(brand) >= BRAND_PAGE_SPOOF_MIN and registered_domain(final_host) != domain:
             return (f"The page presents itself as {label}, but it lives on "
                     f"'{registered_domain(final_host)}' — not the official {label} domain.")

@@ -16,53 +16,28 @@ import re
 from collections import Counter
 from urllib.parse import urlsplit
 
+# Known brand domains, abused TLDs, shortener services, scam-typical
+# words, and multi-level suffixes now live in reference_data.py - pure
+# data, split out so this file stays focused on scoring logic. Imported
+# (not just referenced) here so every existing caller across the
+# codebase (`from bot.detectors.url.offline.lexical import
+# PROTECTED_BRANDS`, etc.) keeps working unchanged.
+from bot.detectors.url.offline.reference_data import (
+    ABUSED_TLDS,
+    MULTI_LEVEL_SUFFIXES,
+    PROTECTED_BRANDS,
+    SUSPICIOUS_URL_WORDS,
+    URL_SHORTENERS,
+)
 
-# --- Reference data --------------------------------------------------
-
-PROTECTED_BRANDS = {
-    "ababank.com": "ABA Bank",
-    "acledabank.com.kh": "ACLEDA Bank",
-    "wingmoney.com": "Wing",
-    "truemoney.com.kh": "TrueMoney",
-    "pipay.com": "Pi Pay",
-    "cellcard.com.kh": "Cellcard",
-    "smart.com.kh": "Smart Axiata",
-    "facebook.com": "Facebook",
-    "instagram.com": "Instagram",
-    "telegram.org": "Telegram",
-    "google.com": "Google",
-    "gmail.com": "Gmail",
-    "microsoft.com": "Microsoft",
-    "apple.com": "Apple",
-    "paypal.com": "PayPal",
-    "binance.com": "Binance",
-    "whatsapp.com": "WhatsApp",
-    "netflix.com": "Netflix",
-}
-
-ABUSED_TLDS = {"tk", "ml", "ga", "cf", "gq"}
-
-URL_SHORTENERS = {
-    "bit.ly", "tinyurl.com", "goo.gl", "ow.ly", "t.co", "is.gd",
-    "buff.ly", "cutt.ly", "rebrand.ly", "shorturl.at", "rb.gy",
-    "shorte.st", "adf.ly", "bc.vc",
-}
-
-SUSPICIOUS_URL_WORDS = {
-    "login", "signin", "verify", "verification", "secure", "account",
-    "update", "confirm", "wallet", "bonus", "free", "gift", "prize",
-    "claim", "winner", "reward", "otp", "password", "unlock", "suspend",
-    "recover",
-}
+# --- Tuning constants --------------------------------------------------
+# Kept here, not in reference_data.py: these are calibration parameters
+# for domain_entropy()'s own algorithm below, not independent facts
+# about the world - they belong next to the logic they tune.
 
 ENTROPY_MIN_LENGTH = 8    # shorter labels are too small to measure meaningfully
 ENTROPY_MIN_DIGITS = 2    # real brand/dictionary names almost never mix digits mid-name
 ENTROPY_THRESHOLD = 3.0   # bits/char - calibrated against synthetic random labels; see domain_entropy
-
-MULTI_LEVEL_SUFFIXES = {
-    "com.kh", "gov.kh", "edu.kh", "net.kh", "org.kh", "co.kh",
-    "com.au", "co.uk", "org.uk", "gov.uk", "com.sg",
-}
 
 # The (?:[a-zA-Z0-9._%+-]+@)? group captures a userinfo@ prefix when
 # present (e.g. "real-bank.com@evil.tk") - without it, extract_urls()

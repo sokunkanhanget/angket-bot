@@ -12,7 +12,7 @@ via tests/conftest.py's fake vector store instead.
 
 import pytest
 
-from bot.detectors.text import scam_patterns
+from bot.detectors.text.offline import scam_patterns
 from bot.detectors.url.offline import vectors
 from bot.detectors.url.offline.lexical import PROTECTED_BRANDS
 
@@ -57,7 +57,7 @@ def test_seed_fingerprint_changes_when_scam_pattern_data_changes(monkeypatch):
     before = vectors._seed_fingerprint()
 
     monkeypatch.setattr(
-        "bot.detectors.text.scam_patterns.SCAM_MESSAGE_PATTERNS",
+        "bot.detectors.text.offline.scam_patterns.SCAM_MESSAGE_PATTERNS",
         {**scam_patterns.SCAM_MESSAGE_PATTERNS, "new_category": ["a brand new scam script"]},
     )
     after = vectors._seed_fingerprint()

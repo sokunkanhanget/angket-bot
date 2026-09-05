@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
-from bot.detectors.text import llm as llm_analyzer
+from bot.detectors.text.online import llm as llm_analyzer
 
 
 def test_analyze_text_with_llm_without_api_key():

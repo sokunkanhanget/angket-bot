@@ -5,8 +5,8 @@ from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.scanner import download_and_hash, scan_file
-from bot.detectors.text.llm import analyze_text_with_llm
-from bot.detectors.text.keyword import analyze_text
+from bot.detectors.text.online.llm import analyze_text_with_llm
+from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine import analyze_unified
 from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
 from bot.detectors.url.offline.lexical import URL_REGEX

@@ -53,7 +53,7 @@ class _FakeVectorStore:
         # instead of a hand-duplicated copy of PROTECTED_BRANDS/
         # PHISH_PATTERNS/SCAM_MESSAGE_PATTERNS - so this fake can't
         # silently drift from what production actually seeds.
-        from bot.detectors.text import scam_patterns
+        from bot.detectors.text.offline import scam_patterns
 
         for kind, key, text, label in vectors._brand_and_phish_rows() + scam_patterns._seed_rows():
             await self.upsert_vector(kind, key, text, label)

@@ -7,7 +7,7 @@ SCAM_MESSAGE_PATTERNS corpus is ~17 static rows, too small to justify a
 Supabase round trip every time it's consulted.
 """
 
-from bot.detectors.text.scam_patterns import (
+from bot.detectors.text.offline.scam_patterns import (
     SCAM_MESSAGE_PATTERNS,
     nearest_scam_pattern,
 )

@@ -88,6 +88,37 @@ async def test_unknown_signature_still_offers_a_virustotal_link():
     assert keyboard.inline_keyboard[0][0].text == label("en", "view_on_virustotal")
 
 
+@pytest.mark.asyncio
+async def test_scan_failure_replies_gracefully_instead_of_crashing():
+    # Regression: handle_file had no exception handling around
+    # download_and_hash/scan_file at all - a genuine VirusTotal outage
+    # (a raw network exception, not a vt.APIError scan_vt_hash already
+    # catches) would propagate uncaught and crash the handler, leaving
+    # the user with NO reply whatsoever.
+    update, context, sent = _file_update()
+
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="d" * 64)), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(side_effect=ConnectionError("VT unreachable"))), \
+         patch("bot.handlers.file_handler.log_scan") as mock_log:
+        await handle_file(update, context)
+
+    sent.edit_text.assert_awaited_once_with(t("en", "file_scan_failed"))
+    mock_log.assert_not_called()  # nothing to log - the scan never completed
+
+
+@pytest.mark.asyncio
+async def test_download_failure_also_replies_gracefully():
+    update, context, sent = _file_update(lang="km")
+
+    with patch("bot.handlers.file_handler.download_and_hash",
+               AsyncMock(side_effect=TimeoutError("Telegram download timed out"))), \
+         patch("bot.handlers.file_handler.log_scan") as mock_log:
+        await handle_file(update, context)
+
+    sent.edit_text.assert_awaited_once_with(t("km", "file_scan_failed"))
+    mock_log.assert_not_called()
+
+
 def _callback_update(data: str, lang: str | None = None):
     update = MagicMock()
     update.callback_query.data = data

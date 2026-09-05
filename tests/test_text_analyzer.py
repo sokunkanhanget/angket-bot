@@ -1,4 +1,4 @@
-from bot.detectors.text.keyword import analyze_text
+from bot.detectors.text.offline.keyword import analyze_text
 
 
 def test_analyze_text_finds_suspicious_keyword():

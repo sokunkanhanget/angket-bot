@@ -254,7 +254,13 @@ async def nearest(text: str, k: int = 3, kinds: tuple[str, ...] | None = None):
 # --- SQLite connection (MinHash page dedup only, from here down) -------
 
 def _connect() -> sqlite3.Connection:
-    return sqlite3.connect(SCAN_LOG_DB)
+    conn = sqlite3.connect(SCAN_LOG_DB)
+    # See bot/storage/scan_log.py's init_db() for why: this file is
+    # shared by several unrelated caches/logs, and WAL mode lets
+    # concurrent access to different tables proceed without blocking
+    # each other. Set defensively here too in case this connects first.
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
 
 
 # --- MinHash-LSH for near-duplicate pages (unchanged, SQLite) ----------
@@ -379,7 +385,7 @@ def _seed_fingerprint() -> str:
     reference data" apart from "seeded before this data last changed in
     code". A bare row COUNT can't tell those two apart if a label or
     pattern's text changes without the row count itself changing."""
-    from bot.detectors.text.scam_patterns import _seed_rows as _scam_pattern_rows
+    from bot.detectors.text.offline.scam_patterns import _seed_rows as _scam_pattern_rows
 
     payload = json.dumps(sorted(_brand_and_phish_rows() + _scam_pattern_rows()))
     return hashlib.sha256(payload.encode()).hexdigest()
@@ -416,7 +422,7 @@ async def seed() -> None:
     PROTECTED_BRANDS/PHISH_PATTERNS/SCAM_MESSAGE_PATTERNS - re-uploading
     the same 144+ rows on every single bot restart forever was real,
     measured, unnecessary cost (~28s cold, every time)."""
-    from bot.detectors.text import scam_patterns
+    from bot.detectors.text.offline import scam_patterns
 
     fingerprint = _seed_fingerprint()
     pool = await _get_pool()

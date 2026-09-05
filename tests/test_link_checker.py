@@ -494,6 +494,38 @@ def test_analyze_url_does_not_flag_brand_spoof_below_the_mention_threshold(seede
     assert not any("not the official" in r for r in verdict["reasons"])
 
 
+def test_brand_page_spoof_ignores_short_brand_names():
+    # Regression: PROTECTED_BRANDS' "x.com" derives the single-letter
+    # brand keyword "x" (domain.split(".")[0]) - a raw substring count
+    # of "x" trips on ordinary English text ("example", "text", "next")
+    # with no real impersonation involved. Confirmed live: example.com's
+    # own generic placeholder page tripped this before the length guard
+    # (lexical.py's own analogous buried-brand-name check already has
+    # the same `len(brand_name) >= 4` guard - this pins pipeline.py's
+    # version to match it).
+    ordinary_text = "For example, the next text box has extra context and taxable expenses."
+    assert ordinary_text.lower().count("x") >= 3  # sanity: this really would have tripped pre-fix
+
+    result = pipeline._brand_page_spoof(ordinary_text, "totally-unrelated-domain.tk", 0.0)
+
+    assert result is None
+
+
+def test_brand_page_spoof_still_fires_for_normal_length_brand_names():
+    # Same fix must not silently break real detection for ordinary
+    # (non-single-letter) brand names - ABA Bank mentioned 3+ times
+    # while hosted elsewhere must still be flagged.
+    result = pipeline._brand_page_spoof(
+        "Welcome to AbaBank online banking. AbaBank keeps your money safe. "
+        "Log in to your AbaBank account now.",
+        "totally-unrelated-domain.tk",
+        0.0,
+    )
+
+    assert result is not None
+    assert "ABA Bank" in result and "not the official" in result
+
+
 def test_analyze_url_caps_stacked_network_signals_at_max_network_points(seeded_vectors, monkeypatch):
     # All four network-derived signals add_network() can currently apply
     # sum to EXACTLY MAX_NETWORK_POINTS (20+10+5+10=45) - today's code has

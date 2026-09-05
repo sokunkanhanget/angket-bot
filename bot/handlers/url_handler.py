@@ -58,7 +58,7 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.scanner import download_and_hash, scan_file
-from bot.detectors.text.keyword import analyze_text
+from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine import analyze_unified
 from bot.i18n import DEFAULT_LANG, t
 from bot.detectors.url.pipeline import (

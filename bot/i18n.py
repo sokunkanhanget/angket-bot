@@ -102,6 +102,10 @@ TEXT = {
         "subscription": "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
         "file_deleted": "🗑️ Message deleted.",
         "file_scan_ignored": "🙈 Ignored. No action taken.",
+        "file_scan_failed": (
+            "⚠️ Could not finish scanning this file right now (the download or "
+            "the virus-check service failed). Please try again in a moment."
+        ),
         # --- Verdict reply content (private DM / business chat only -
         # group chat stays English, see bot/route.py's TEXT_FILTER scope
         # notes) - the FIXED labels/headers around Gemini's own dynamic
@@ -205,6 +209,10 @@ TEXT = {
         "subscription": "⭐ <b>ការជាវ</b>\n\nគម្រោងជាវនឹងមកដល់ឆាប់ៗនេះ។",
         "file_deleted": "🗑️ សារត្រូវបានលុប។",
         "file_scan_ignored": "🙈 មិនអើពើ។ គ្មានសកម្មភាពត្រូវបានធ្វើឡើយ។",
+        "file_scan_failed": (
+            "⚠️ មិនអាចបញ្ចប់ការពិនិត្យឯកសារនេះបានទេនាពេលនេះ "
+            "(ការទាញយក ឬសេវាកម្មពិនិត្យមេរោគបានបរាជ័យ)។ សូមព្យាយាមម្តងទៀតក្នុងពេលបន្តិចទៀត។"
+        ),
         # NOTE: translated by Claude, not yet reviewed by a native Khmer
         # speaker on the team - flag any wording that reads oddly before
         # this goes live for real users, same caveat as this session's

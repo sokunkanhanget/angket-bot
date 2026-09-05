@@ -1,3 +1,5 @@
+import logging
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
@@ -7,6 +9,8 @@ from bot.storage.scan_log import log_scan
 from bot.handlers.text_handler import get_user_lang
 from bot.i18n import label, t
 from bot.verdict_style import risk_style
+
+logger = logging.getLogger(__name__)
 
 
 def _virustotal_button(lang: str, sha256: str) -> InlineKeyboardButton:
@@ -39,8 +43,14 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode="Markdown",
     )
 
-    sha256 = await download_and_hash(context, document.file_id)
-    result = await scan_file(sha256, file_name)
+    try:
+        sha256 = await download_and_hash(context, document.file_id)
+        result = await scan_file(sha256, file_name)
+    except Exception:                          # noqa: BLE001 - a download/VT failure must still get a reply, not silence
+        logger.exception("File scan failed for %s", file_name)
+        await message.edit_text(t(lang, "file_scan_failed"))
+        return
+
     filename_warning = result.get("filename_warning")
     warning_block = f"\n⚠️ **{filename_warning}**\n" if filename_warning else ""
 

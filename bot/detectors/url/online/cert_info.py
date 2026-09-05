@@ -34,6 +34,11 @@ CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(SCAN_LOG_DB)
+    # See bot/storage/scan_log.py's init_db() for why: this file is
+    # shared by several unrelated caches/logs, and WAL mode lets
+    # concurrent access to different tables proceed without blocking
+    # each other. Set defensively here too in case this connects first.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
         create table if not exists cert_info(

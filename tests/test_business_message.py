@@ -157,7 +157,7 @@ async def test_attached_file_is_scanned_and_always_notifies():
     with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": False, "matches": []}), \
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
-         patch("bot.handlers.url_handler.scan_vt_hash", AsyncMock(return_value={
+         patch("bot.handlers.url_handler.scan_file", AsyncMock(return_value={
              "found": True, "malicious": 0, "suspicious": 0, "total": 70,
          })), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \

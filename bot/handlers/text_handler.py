@@ -4,7 +4,7 @@ from html import escape
 from telegram import ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from bot.detectors.file.scanner import download_and_hash, scan_vt_hash
+from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.detectors.text.llm import analyze_text_with_llm
 from bot.detectors.text.keyword import analyze_text
 from bot.context_engine import analyze_unified
@@ -295,7 +295,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         async def _check_file():
             sha256 = await download_and_hash(context, document.file_id)
-            return await scan_vt_hash(sha256)
+            return await scan_file(sha256, document.file_name or "")
 
         # Concurrent, independent network chains - return_exceptions=True
         # so a file-check failure can't discard an already-succeeded link

@@ -371,10 +371,15 @@ async def analyze_url(
 
         # --- Match against links we've already flagged from Telegram -------
         # Gated by the brand whitelist so one mislabelled scan can never
-        # poison the memory for official domains.
+        # poison the memory for official domains. Reuses sim_hits (already
+        # fetched above for brand/phish) instead of a second _safe_nearest
+        # round-trip for the identical (text, kinds) query - found duplicating
+        # a Supabase pgvector lookup on every single URL scan.
         seen_sim = 0.0
         if not is_official_brand:
-            seen_sim = await _best_seen_bad_similarity(normalized)
+            for sim, kind, _key, label in sim_hits:
+                if kind == "seen" and label in ("suspicious", "dangerous"):
+                    seen_sim = max(seen_sim, sim)
         if seen_sim >= SEEN_BAD_SIM_THRESHOLD:
             score += 20
             reasons.append("Closely resembles a link that was previously flagged "
@@ -463,16 +468,6 @@ async def analyze_url(
         "reasons": reasons,
         "detail": detail,
     }
-
-
-async def _best_seen_bad_similarity(text: str) -> float:
-    """Highest cosine similarity to any link we previously flagged as
-    suspicious/dangerous (kind='seen' rows carry their old verdict)."""
-    best = 0.0
-    for sim, kind, _key, label in await _safe_nearest(text):
-        if kind == "seen" and label in ("suspicious", "dangerous"):
-            best = max(best, sim)
-    return best
 
 
 async def _remember(normalized: str, net, level: str) -> None:

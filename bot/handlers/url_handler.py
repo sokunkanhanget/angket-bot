@@ -57,7 +57,7 @@ from telegram import MessageEntity, Update, InlineKeyboardButton, InlineKeyboard
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from bot.detectors.file.scanner import download_and_hash, scan_vt_hash
+from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.detectors.text.keyword import analyze_text
 from bot.context_engine import analyze_unified
 from bot.i18n import DEFAULT_LANG, t
@@ -466,7 +466,7 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
 
     async def _check_file() -> dict:
         sha256 = await download_and_hash(context, document.file_id)
-        return await scan_vt_hash(sha256)
+        return await scan_file(sha256, document.file_name or "")
 
     # A message can have both a link (in caption/entities) and a file at
     # once - the two checks are fully independent network chains, so run

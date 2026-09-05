@@ -2,7 +2,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from bot.detectors.file.scanner import download_and_hash, scan_vt_hash
+from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.storage.scan_log import log_scan
 from bot.handlers.text_handler import get_user_lang
 from bot.i18n import label, t
@@ -40,7 +40,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
     sha256 = await download_and_hash(context, document.file_id)
-    result = await scan_vt_hash(sha256)
+    result = await scan_file(sha256, file_name)
+    filename_warning = result.get("filename_warning")
+    warning_block = f"\n⚠️ **{filename_warning}**\n" if filename_warning else ""
 
     if result["found"]:
         malicious = result["malicious"]
@@ -55,7 +57,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         reply = (
             f"{header}\n\n"
-            f"📄 **File:** `{file_name}`\n\n"
+            f"📄 **File:** `{file_name}`\n"
+            f"{warning_block}\n"
             f"{risk_icon} **{risk_percentage}%  {risk_label.upper()}**\n\n"
             f"🔎 **Summary:**\n```\n"
             f"Malicious: {malicious}\n"
@@ -75,6 +78,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         reply = (
             f"⚪ **UNKNOWN FILE SIGNATURE**\n\n"
             f"📄 **File:** `{file_name}`\n"
+            f"{warning_block}"
             f"🧬 **SHA-256:** `{sha256}`\n\n"
             "This file signature was not found on VirusTotal."
         )

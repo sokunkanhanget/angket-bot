@@ -51,8 +51,15 @@ _SYSTEM_PROMPT = (
     "offer, authority impersonation), and/or a VirusTotal file-scan "
     "result for an attached file - collected by other tools before you. "
     "Treat that evidence as reliable ground truth: do not contradict a "
-    "link or file already found dangerous or suspicious. But a link or "
-    "file's technical evidence looking clean does NOT mean the message "
+    "link or file already found dangerous or suspicious. Symmetrically, "
+    "a link's system-computed level already reflects the net weight of "
+    "its own listed reasons - if a link's level is 'safe', do not "
+    "re-litigate or amplify its individual technical reasons (e.g. "
+    "certificate age, missing HTTPS) into an independent scam signal on "
+    "your own; those were already weighed into that safe verdict, and a "
+    "site being one day old or served over plain HTTP is routine for "
+    "plenty of real sites, not proof of impersonation by itself. But a "
+    "link or file's technical evidence looking clean does NOT mean the message "
     "is safe - weigh how the surrounding text uses it too: urgency, "
     "impersonation, requests for money or credentials, or instructions "
     "not to verify with the sender are strong scam signals on their own, "
@@ -210,6 +217,8 @@ async def _grounded_fallback(
             "text": f"VirusTotal: {file_verdict['malicious']} engine(s) flag the attached file as malicious.",
             "source": "file_evidence",
         })
+    if file_verdict and file_verdict.get("filename_warning"):
+        reasons.append({"text": file_verdict["filename_warning"], "source": "file_evidence"})
 
     # Derived from whatever evidence actually got appended above - not
     # hand-tracked, so a future evidence source can't add a reason and

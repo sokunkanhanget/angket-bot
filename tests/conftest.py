@@ -23,6 +23,7 @@ import pytest
 import pytest_asyncio
 
 from bot.detectors.url.offline import vectors
+from bot.storage import scan_log
 
 
 class _FakeVectorStore:
@@ -103,3 +104,38 @@ async def seeded_vectors(fake_vector_store, tmp_path, monkeypatch):
 
     await fake_vector_store.seed()
     return fake_vector_store
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolated_scan_log_db(tmp_path_factory):
+    """bot.storage.scan_log does its own `from bot.config import SCAN_LOG_DB`,
+    binding a SEPARATE module-level name from the copies pipeline.py/
+    domain_info.py/cert_info.py/vectors.py each bind the same way - so
+    seeded_vectors patching THOSE never touches this one. Nothing else in
+    the suite isolates it, so any test whose code path reaches
+    log_scan()/log_url_scan() (e.g. handle_business_message, once a link or
+    file verdict comes back) falls through to whatever real scan_logs.db
+    happens to sit in the repo root/cwd - which may be missing the
+    url_scan_logs table entirely (exactly the "no such table" failure this
+    fixture exists to prevent), or worse, silently write real rows into a
+    developer's local db. autouse so every test gets an isolated db with
+    both tables already created via init_db()/init_url_db(), matching the
+    isolate-and-initialize pattern used for every sibling SQLite-backed
+    piece in this file - whether or not a given test explicitly asks for
+    it.
+
+    Session-scoped (not per-test): init_db()/init_url_db() are idempotent
+    `CREATE TABLE IF NOT EXISTS` calls and no test in the suite asserts on
+    scan-log row counts or otherwise depends on the tables starting empty
+    per test, so re-running the same init 191 times bought nothing but
+    ~4s of real sqlite3.connect()-to-a-new-file overhead. Plain attribute
+    assignment instead of monkeypatch since monkeypatch itself is
+    function-scoped and can't back a session-scoped fixture; there's
+    nothing to restore since no other real value should ever fill this
+    slot inside a test run.
+    """
+    db = str(tmp_path_factory.mktemp("scan_log") / "test_scan_log.db")
+    scan_log.SCAN_LOG_DB = db
+    scan_log.init_db()
+    scan_log.init_url_db()
+    return db

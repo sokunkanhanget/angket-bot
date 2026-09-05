@@ -3,7 +3,7 @@ tests/test_file_handler.py
 ============================
 Tests for handle_file's scan-result buttons (Delete/Ignore/View on
 VirusTotal - ported from panha's branch, adapted onto this codebase's
-shared download_and_hash/scan_vt_hash/i18n/verdict_style) and
+shared download_and_hash/scan_file/i18n/verdict_style) and
 handle_scan_action_callback (the Delete/Ignore tap handler). No test
 file existed for the direct (non-Business) file-scan path before this.
 """
@@ -37,7 +37,7 @@ async def test_clean_scan_shows_only_the_virustotal_button():
     update, context, sent = _file_update()
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="a" * 64)), \
-         patch("bot.handlers.file_handler.scan_vt_hash", AsyncMock(return_value={
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
              "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
              "undetected": 5, "total": 75,
              "top_engines": {"Microsoft": "Clean", "Kaspersky": "Clean", "BitDefender": "Clean"},
@@ -56,7 +56,7 @@ async def test_malicious_scan_shows_delete_ignore_and_virustotal_buttons():
     update, context, sent = _file_update(lang="km")
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="b" * 64)), \
-         patch("bot.handlers.file_handler.scan_vt_hash", AsyncMock(return_value={
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
              "found": True, "malicious": 40, "suspicious": 2, "harmless": 20,
              "undetected": 13, "total": 75,
              "top_engines": {"Microsoft": "Trojan", "Kaspersky": "Trojan", "BitDefender": "Trojan"},
@@ -79,7 +79,7 @@ async def test_unknown_signature_still_offers_a_virustotal_link():
     update, context, sent = _file_update()
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="c" * 64)), \
-         patch("bot.handlers.file_handler.scan_vt_hash", AsyncMock(return_value={"found": False})), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={"found": False})), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
 

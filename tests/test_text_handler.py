@@ -212,7 +212,7 @@ async def test_handle_text_checks_attached_file_in_plain_private_chat():
     ), patch(
         "bot.handlers.text_handler.download_and_hash", AsyncMock(return_value="deadbeef")
     ), patch(
-        "bot.handlers.text_handler.scan_vt_hash",
+        "bot.handlers.text_handler.scan_file",
         AsyncMock(return_value={"found": True, "malicious": 5, "suspicious": 0, "total": 70}),
     ), patch(
         "bot.handlers.text_handler.analyze_unified", AsyncMock(return_value={

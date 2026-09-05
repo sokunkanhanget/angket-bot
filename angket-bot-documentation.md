@@ -170,6 +170,17 @@ the message or dismiss the warning. In a business chat, files are checked as
 part of the same combined check described in Section 4, instead of a
 separate reply.
 
+**Filename disguise check.** VirusTotal only recognizes a file if that exact
+file has been seen before somewhere in the world — a brand-new or slightly
+modified malicious file won't match anything, even though it's genuinely
+dangerous. As an extra, independent signal, the bot also looks at the
+filename itself for the classic disguise trick of hiding a dangerous file
+type behind a safe-looking one — e.g. `invoice.pdf.exe` (an executable
+pretending to be a PDF) or `Document.pdf.z` (a document hidden inside an
+archive the bot can't see into). This works even when VirusTotal has never
+seen the file before, since it doesn't depend on the file's contents at
+all — just its name.
+
 ## 6. Two Languages: English and Khmer
 
 The bot's menus and buttons are available in both English and Khmer.
@@ -240,7 +251,7 @@ bot/
 
 ## 8. Testing
 
-The project has 191 automated tests covering all of the above, and they run
+The project has 206 automated tests covering all of the above, and they run
 in a few seconds without needing real internet access or a real database.
 To run them:
 
@@ -276,14 +287,35 @@ mix up:
 
 **1. Real startup** — happens once, when the bot process itself launches,
 before it's ready to receive any Telegram messages. Measured live on a real
-run:
+run (2026-09-05, re-measured after this session's changes — see note below):
 
 | Phase | Time |
 |---|---|
-| Loading all the Python code (including setting up the connection to Gemini) | 1.899s |
-| Setting up the local database tables | 0.001s |
-| Building the Telegram connection | 0.326s |
-| **Total time to start polling** | **~2.23s** |
+| Loading all the Python code (including setting up the connection to Gemini) | ~2.9s |
+| Setting up the local database tables | 0.0015s |
+| Building the Telegram connection | 0.65s |
+| **Total time to start polling** | **~3.6s** |
+
+That first line breaks down further into where the time actually goes,
+since it's by far the biggest piece:
+
+| Sub-step | Time |
+|---|---|
+| Loading Google's Gemini toolkit itself | ~1.05s |
+| Setting up the Gemini connection used for the combined text+link+file check | ~0.84s |
+| Setting up a *second*, separate Gemini connection used for the older text-only check | ~0.78s |
+| Loading the Telegram toolkit | ~0.20s |
+
+> **Note on these numbers vs. earlier measurements:** an earlier session
+> measured ~2.23s total, ~1.9s of which was the Python-code-loading step.
+> Re-measured now, that same step alone takes ~2.9s, and building the
+> Telegram connection roughly doubled too (0.33s → 0.65s). None of this
+> session's code changes touch how Gemini or Telegram get set up, so this
+> looks like the Gemini toolkit itself (or general machine/network
+> conditions) having gotten slower since the last measurement, not a
+> regression from any specific feature. Worth a fresh re-measurement again
+> next time this section is revisited, rather than trusting either number
+> as a permanent fact.
 
 **2. First-message cost** — a separate, smaller delay that happens once
 per bot restart, but only when the *first* real Telegram message arrives,
@@ -294,6 +326,28 @@ slowing down every single startup whether or not the vector-similarity
 features end up being used. This is logged separately (search the bot's
 logs for `[first-message]`) so it's never confused with the real startup
 time above.
+
+**Found and fixed this session: this used to be far more expensive than it
+needed to be.** The reference-data load was writing all ~145 brand/
+phishing-pattern/scam-pattern rows one at a time (144 concurrent writes
+funneled through a connection pool that only allows 5 at once), *and* it
+did this unconditionally on every single restart, even though this data
+almost never actually changes. Measured live: this used to take about
+**28 seconds** on a cold restart, occasionally worse — one run hit the
+connection pool's 30-second timeout and failed outright when Supabase was
+briefly unreachable (handled safely, but still a bad first impression).
+
+Two fixes, both verified live against the real database:
+
+| Scenario | Before | After |
+|---|---|---|
+| First restart ever, or right after the brand/pattern list changes in code | ~28s | **~5.6s** (all the rows are now written in one batch instead of 145 separate round trips) |
+| Every restart after that (the common case — nothing changed) | ~28s | **~3.4s** (a quick check confirms Supabase already has today's data and skips writing it again entirely) |
+
+The remaining ~3.4s on an ordinary restart is mostly just the cost of
+opening a fresh connection to Supabase at all (needed even to ask "is
+anything different?") — there isn't much further room to cut here without
+changing when that connection gets opened in the first place.
 
 ## 10. Built but not turned on yet
 

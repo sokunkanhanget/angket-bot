@@ -34,8 +34,6 @@ templates for domains.
 
 from __future__ import annotations
 
-import asyncio
-
 SCAM_MESSAGE_PATTERNS: dict[str, list[str]] = {
     "family_emergency": [
         "Mom, I lost my phone, this is my friend's number. I'm in trouble and need money right now, please don't call, just trust me.",
@@ -71,17 +69,23 @@ SCAM_MESSAGE_PATTERNS: dict[str, list[str]] = {
 }
 
 
-async def seed() -> None:
-    """Idempotently load scam-message pattern vectors (kind='scam_pattern'),
-    as concurrent upserts rather than one at a time."""
-    from bot.detectors.url.offline.vectors import upsert_vector
-
-    tasks = [
-        upsert_vector("scam_pattern", f"{category}:{i}", text, category)
+def _seed_rows() -> list[tuple[str, str, str, str | None]]:
+    """The (kind, key, text, label) rows seed() writes - pure, no DB
+    access, so vectors.py's fingerprint check (and tests) can use the
+    exact same row set without needing a real connection."""
+    return [
+        ("scam_pattern", f"{category}:{i}", text, category)
         for category, examples in SCAM_MESSAGE_PATTERNS.items()
         for i, text in enumerate(examples)
     ]
-    await asyncio.gather(*tasks)
+
+
+async def seed() -> None:
+    """Idempotently load scam-message pattern vectors (kind='scam_pattern')
+    as ONE batched write instead of one round trip per example."""
+    from bot.detectors.url.offline.vectors import upsert_vectors_batch
+
+    await upsert_vectors_batch(_seed_rows())
 
 
 # --- Local, in-memory search (no Supabase round trip) -------------------

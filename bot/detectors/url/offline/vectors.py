@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -158,7 +159,9 @@ async def _get_pool() -> AsyncConnectionPool:
 
 async def upsert_vector(kind: str, key: str, text: str, label: str | None = None) -> None:
     """Store/refresh the embedding of one URL, brand profile, or scam
-    pattern."""
+    pattern. One-at-a-time, live-scan storage (a URL just checked, a
+    correction just made) - for bulk reference-data loading see
+    upsert_vectors_batch(), which seed() uses instead."""
     vec = _densify(embed(text))
     pool = await _get_pool()
     async with pool.connection() as conn:
@@ -170,6 +173,41 @@ async def upsert_vector(kind: str, key: str, text: str, label: str | None = None
             set label = excluded.label, embedding = excluded.embedding, added_at = now()
             """,
             (kind, key.lower(), label, vec),
+        )
+
+
+async def upsert_vectors_batch(rows: list[tuple[str, str, str, str | None]]) -> None:
+    """Bulk version of upsert_vector: embeds and writes many (kind, key,
+    text, label) rows in ONE round trip instead of one per row.
+
+    seed()'s reference-data load used to fire 144+ individual
+    upsert_vector() calls concurrently via asyncio.gather - but the pool
+    caps out at 5 connections, so those queued into ~29 serialized
+    batches. Measured live: ~28 seconds on a cold restart. Embedding
+    computation is pure local CPU (no network), so there's no reason it
+    can't all happen before a single INSERT - only the actual database
+    write needs the round trip, and Postgres has no trouble with a
+    multi-row VALUES list (144 rows x 4 params is nowhere near its
+    65535-parameter limit).
+    """
+    if not rows:
+        return
+    values_sql = []
+    params: list = []
+    for kind, key, text, label in rows:
+        vec = _densify(embed(text))
+        values_sql.append("(%s, %s, %s, %s::vector)")
+        params.extend([kind, key.lower(), label, vec])
+    pool = await _get_pool()
+    async with pool.connection() as conn:
+        await conn.execute(
+            f"""
+            insert into url_vectors (kind, key, label, embedding)
+            values {", ".join(values_sql)}
+            on conflict (kind, key) do update
+            set label = excluded.label, embedding = excluded.embedding, added_at = now()
+            """,
+            params,
         )
 
 
@@ -300,29 +338,99 @@ PHISH_PATTERNS = [
 ]
 
 
-async def seed() -> None:
-    """Idempotently load brand vectors + synthetic phishing patterns +
-    offline scam-message patterns (see scam_patterns.py) - as concurrent
-    upserts, not one at a time. The pool supports up to 5 connections;
-    awaiting dozens of round trips to Supabase sequentially would
-    needlessly block whichever handler happens to trigger the very
-    first seed() call."""
+def _brand_and_phish_rows() -> list[tuple[str, str, str, str | None]]:
+    """The (kind, key, text, label) rows seed() writes for brand/phishing-
+    pattern reference data. Split out as a pure function (no DB access)
+    so the exact row set can be unit-tested and hashed for the
+    fingerprint check below without needing a real connection - and so
+    tests/conftest.py's fake vector store can build its own seed data
+    from this SAME source instead of a hand-duplicated copy."""
     from bot.detectors.url.offline.lexical import PROTECTED_BRANDS
-    from bot.detectors.text import scam_patterns
 
-    brand_tasks = [
-        upsert_vector("brand", domain, domain, label)
+    brand_rows = [
+        ("brand", domain, domain, label)
         for domain, label in PROTECTED_BRANDS.items()
     ]
-    phish_tasks = [
-        upsert_vector(
+    phish_rows = [
+        (
             "phish", pattern.format(brand=domain.split(".")[0]),
             pattern.format(brand=domain.split(".")[0]), f"{label} impersonation pattern",
         )
         for domain, label in PROTECTED_BRANDS.items()
         for pattern in PHISH_PATTERNS
     ]
-    await asyncio.gather(*brand_tasks, *phish_tasks, scam_patterns.seed())
+    return brand_rows + phish_rows
+
+
+# A sentinel row (never a real brand/phish/seen/scam_pattern kind, so it
+# can never be picked up by nearest()'s kind-filtered queries - see
+# pipeline.py's _safe_nearest, the only real caller, which always passes
+# an explicit kinds= tuple) storing a hash of the current reference-data
+# seed set. Reused as a plain row in the existing url_vectors table
+# instead of a new table, since it needs no schema beyond what's already
+# there - `embedding` just gets a harmless all-zero placeholder.
+_SEED_META_KIND = "_seed_meta"
+_SEED_FINGERPRINT_KEY = "reference_data"
+
+
+def _seed_fingerprint() -> str:
+    """Stable hash over the current brand/phishing-pattern/scam-pattern
+    seed data, so seed() can tell "Supabase already has today's
+    reference data" apart from "seeded before this data last changed in
+    code". A bare row COUNT can't tell those two apart if a label or
+    pattern's text changes without the row count itself changing."""
+    from bot.detectors.text.scam_patterns import _seed_rows as _scam_pattern_rows
+
+    payload = json.dumps(sorted(_brand_and_phish_rows() + _scam_pattern_rows()))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+async def _stored_seed_fingerprint(conn) -> str | None:
+    cur = await conn.execute(
+        "select label from url_vectors where kind = %s and key = %s",
+        (_SEED_META_KIND, _SEED_FINGERPRINT_KEY),
+    )
+    row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def _mark_seeded(conn, fingerprint: str) -> None:
+    await conn.execute(
+        """
+        insert into url_vectors (kind, key, label, embedding)
+        values (%s, %s, %s, %s::vector)
+        on conflict (kind, key) do update
+        set label = excluded.label, added_at = now()
+        """,
+        (_SEED_META_KIND, _SEED_FINGERPRINT_KEY, fingerprint, [0.0] * DIM),
+    )
+
+
+async def seed() -> None:
+    """Idempotently load brand vectors + synthetic phishing patterns +
+    offline scam-message patterns (see scam_patterns.py) - as ONE
+    batched write per source instead of 144+ individual upserts (see
+    upsert_vectors_batch), and skipped ENTIRELY if Supabase already has
+    this exact reference data (see _seed_fingerprint). This reference
+    data is static Python source, only changing when a developer edits
+    PROTECTED_BRANDS/PHISH_PATTERNS/SCAM_MESSAGE_PATTERNS - re-uploading
+    the same 144+ rows on every single bot restart forever was real,
+    measured, unnecessary cost (~28s cold, every time)."""
+    from bot.detectors.text import scam_patterns
+
+    fingerprint = _seed_fingerprint()
+    pool = await _get_pool()
+    async with pool.connection() as conn:
+        if await _stored_seed_fingerprint(conn) == fingerprint:
+            return  # already seeded with today's data - nothing to do
+
+    await asyncio.gather(
+        upsert_vectors_batch(_brand_and_phish_rows()),
+        scam_patterns.seed(),
+    )
+
+    async with pool.connection() as conn:
+        await _mark_seeded(conn, fingerprint)
 
 
 async def ensure_seeded(bot_data: dict) -> None:

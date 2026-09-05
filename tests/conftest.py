@@ -48,21 +48,15 @@ class _FakeVectorStore:
         return scored[:k]
 
     async def seed(self) -> None:
-        from bot.detectors.url.offline.lexical import PROTECTED_BRANDS
+        # Sourced from the SAME row-building helpers the real seed()
+        # uses (vectors._brand_and_phish_rows / scam_patterns._seed_rows)
+        # instead of a hand-duplicated copy of PROTECTED_BRANDS/
+        # PHISH_PATTERNS/SCAM_MESSAGE_PATTERNS - so this fake can't
+        # silently drift from what production actually seeds.
         from bot.detectors.text import scam_patterns
 
-        for domain, label in PROTECTED_BRANDS.items():
-            await self.upsert_vector("brand", domain, domain, label)
-
-        for domain, label in PROTECTED_BRANDS.items():
-            brand = domain.split(".")[0]
-            for pattern in vectors.PHISH_PATTERNS:
-                fake = pattern.format(brand=brand)
-                await self.upsert_vector("phish", fake, fake, f"{label} impersonation pattern")
-
-        for category, examples in scam_patterns.SCAM_MESSAGE_PATTERNS.items():
-            for i, t in enumerate(examples):
-                await self.upsert_vector("scam_pattern", f"{category}:{i}", t, category)
+        for kind, key, text, label in vectors._brand_and_phish_rows() + scam_patterns._seed_rows():
+            await self.upsert_vector(kind, key, text, label)
 
 
 @pytest.fixture

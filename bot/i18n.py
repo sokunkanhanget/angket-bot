@@ -126,7 +126,7 @@ TEXT = {
         # these are the surrounding static strings, translated once here
         # instead of round-tripping through the model for a handful of
         # fixed words every single call. -----------------------------
-        "checking_status": "🔍 Checking...",
+        "checking_status": "🔍 Checking",
         "verdict_label": "VERDICT",
         "key_reasons_header": "KEY REASONS",
         "what_to_do_header": "WHAT YOU SHOULD DO",
@@ -241,7 +241,7 @@ TEXT = {
         # speaker on the team - flag any wording that reads oddly before
         # this goes live for real users, same caveat as this session's
         # other new Khmer text (see the bge-m3 sandbox test messages).
-        "checking_status": "🔍 កំពុងពិនិត្យ...",
+        "checking_status": "🔍 កំពុងពិនិត្យ",
         "verdict_label": "លទ្ធផល",
         "key_reasons_header": "មូលហេតុសំខាន់ៗ",
         "what_to_do_header": "អ្វីដែលគួរធ្វើ",

@@ -34,7 +34,7 @@ def test_format_analysis_response_uses_high_risk_style():
     assert "💡 <b>WHAT YOU SHOULD DO</b>" in response
     assert "• Uses an unrealistic offer &lt;now&gt;" in response
     assert "ⓘ Angket Bot may occasionally make mistakes." in response
-    assert "────────────────────" in response
+    assert "────────────────────" not in response
     assert "1. Verdict" not in response
 
 
@@ -170,10 +170,15 @@ def _private_context():
 async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link():
     # Plain private chat, no link: context-engineering path still fires
     # (unconditionally, per bot/context_engine.py), just with zero link
-    # evidence - no "Checking..." status message needed since there's
-    # nothing to network-trace.
+    # evidence. A "Checking" status is still shown and then edited into
+    # the verdict - analyze_unified (Gemini + bge-m3) is just as slow
+    # here as the link/file path, so staying silent made the bot look
+    # unresponsive on exactly this path (the real bug this test now guards).
     update = _private_update("free bitcoin now, click nowhere")
     context = _private_context()
+
+    status_message = AsyncMock()
+    update.message.reply_text = AsyncMock(return_value=status_message)
 
     with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(
         "bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])
@@ -189,8 +194,9 @@ async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link(
         await handle_text(update, context)
 
     mock_unified.assert_awaited_once()
-    update.message.reply_text.assert_awaited_once()
-    reply = update.message.reply_text.call_args[0][0]
+    update.message.reply_text.assert_awaited_once_with("🔍 Checking", parse_mode="Markdown")
+    status_message.edit_text.assert_awaited_once()
+    reply = status_message.edit_text.call_args[0][0]
     assert "VERDICT: LIKELY A SCAM" in reply
     assert "Promises free money" in reply
 
@@ -278,7 +284,7 @@ async def test_handle_text_shows_status_and_edits_it_when_a_link_is_present():
     ):
         await handle_text(update, context)
 
-    update.message.reply_text.assert_awaited_once_with("🔍 Checking...", parse_mode="Markdown")
+    update.message.reply_text.assert_awaited_once_with("🔍 Checking", parse_mode="Markdown")
     status_message.edit_text.assert_awaited_once()
     edited_text = status_message.edit_text.call_args[0][0]
     assert "🔗" in edited_text  # link-sourced reason tagged

@@ -126,6 +126,39 @@ _RESPONSE_SCHEMA = {
 
 _client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
+# A risk_percentage this high reads to a user as near-certainty. That's
+# only defensible when backed by independently-confirmed evidence (a
+# real VirusTotal detection) - not when it's Gemini's own reading of a
+# page (e.g. "this impersonates Telegram") or an offline similarity
+# heuristic (lexical/domain-age/vector-pattern match), however
+# confident that reasoning sounds. A wrong 95% is a much bigger
+# trust/liability hit than a wrong 80% - confirmed live: broryat.tech
+# scored 60 on the offline pipeline (no HTTPS + young domain + a brand-
+# impersonation keyword match, none of it VT-confirmed) but Gemini's
+# own holistic read pushed it to 95%, which overclaims certainty the
+# evidence doesn't actually back. Applied uniformly to both the live
+# Gemini path (_reconcile_with_evidence) and the offline fallback
+# (_grounded_fallback) so the same policy holds regardless of which
+# path produced the number.
+UNCORROBORATED_RISK_CAP = 80
+
+
+def _has_confirmed_evidence(link_verdicts: list[dict], file_verdict: dict | None) -> bool:
+    """True only for evidence an independent third party actually
+    verified - a real VirusTotal detection on the link or the file.
+    Deliberately excludes offline pipeline evidence (lexical patterns,
+    domain/TLS age, vector-similarity brand/phish/seen matches) and
+    scam-script pattern similarity - those are heuristics this bot
+    computed itself, not outside confirmation, however strongly they
+    point the same direction."""
+    if file_verdict and file_verdict.get("malicious", 0) > 0:
+        return True
+    return any(
+        "VirusTotal" in reason
+        for v in link_verdicts
+        for reason in (v.get("reasons") or [])
+    )
+
 
 def _build_contents(
     text: str,
@@ -237,6 +270,8 @@ async def _grounded_fallback(
         # Risk" right next to an "Uncertain" verdict, undercutting
         # exactly the signal this fallback exists to surface.
         risk_percentage = 100 if file_flagged else max(min(worst_link_score, 100), pattern_score)
+        if not _has_confirmed_evidence(link_verdicts, file_verdict):
+            risk_percentage = min(risk_percentage, UNCORROBORATED_RISK_CAP)
 
     if file_flagged:
         verdict = "Scam"
@@ -325,6 +360,15 @@ def _reconcile_with_evidence(
                 "source": "message_text",
             })
         data["key_reasons"] = reasons
+
+    # Final, uniform policy step regardless of which branch above (or
+    # neither) produced this number: a risk_percentage this high must be
+    # backed by independently-confirmed evidence, not just Gemini's own
+    # reasoning or an offline similarity heuristic - see
+    # UNCORROBORATED_RISK_CAP's docstring. Runs last so it also catches
+    # Gemini's own risk_percentage when neither override branch fired.
+    if isinstance(data.get("risk_percentage"), int) and not _has_confirmed_evidence(link_verdicts, file_verdict):
+        data["risk_percentage"] = min(data["risk_percentage"], UNCORROBORATED_RISK_CAP)
 
     return data
 

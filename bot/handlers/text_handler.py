@@ -9,7 +9,6 @@ from bot.detectors.text.online.llm import analyze_text_with_llm
 from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine import analyze_unified
 from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
-from bot.detectors.url.offline.lexical import URL_REGEX
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.handlers.url_handler import extract_text_link_entities, resolve_ticket
 from bot.storage import subscription
@@ -114,6 +113,36 @@ def _summary(verdict: str | None, risk_percentage: int | None, lang: str = DEFAU
     return t(lang, "summary_no_indicators")
 
 
+_CHECKING_ANIMATION_FRAMES = ["", " .", " . .", " . . ."]
+_CHECKING_ANIMATION_INTERVAL_SECONDS = 1.2
+
+
+async def _animate_checking_status(status_message, lang: str) -> None:
+    """Cycles the status message's trailing dots (" .", " . .", " . . .",
+    then back to none) while the real analyze_unified()/check_message_full()
+    work is still in flight - a plain scam text with no link or file
+    attached used to get no visible progress indicator at all, so a slow
+    Gemini/bge-m3 call just looked like the bot had gone silent. Runs
+    until cancelled by the caller once the real result is ready; catching
+    CancelledError here (instead of letting it propagate) means the
+    caller's `await` on this task afterwards returns normally instead of
+    raising."""
+    i = 0
+    try:
+        while True:
+            await asyncio.sleep(_CHECKING_ANIMATION_INTERVAL_SECONDS)
+            i = (i + 1) % len(_CHECKING_ANIMATION_FRAMES)
+            try:
+                await status_message.edit_text(
+                    f"{t(lang, 'checking_status')}{_CHECKING_ANIMATION_FRAMES[i]}",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass  # transient edit failure (e.g. rate limit) - just skip this frame
+    except asyncio.CancelledError:
+        pass
+
+
 def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
     """Group-chat reply - deliberately always English (lang=DEFAULT_LANG),
     unlike format_unified_response below. Group chat's language wiring
@@ -134,7 +163,7 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(llm_result.get('recommendations', []), '✓', lang)}",
-        f"──────────────────────────────────────────────\n{t(lang, 'verdict_disclaimer')}",
+        t(lang, 'verdict_disclaimer'),
     ]
 
     if keyword_result["suspicious"]:
@@ -178,7 +207,7 @@ def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEF
         lines = [
             header,
             f"{risk_block}\n\n⚠️ {escape(t(lang, 'ai_unavailable_notice'))}",
-            f"──────────────────────────────────────────────\n{t(lang, 'verdict_disclaimer')}",
+            t(lang, 'verdict_disclaimer'),
         ]
         if keyword_result["suspicious"]:
             matches = escape(", ".join(keyword_result["matches"]))
@@ -202,7 +231,7 @@ def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEF
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{reasons_block}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(unified.get('recommendations', []), '✓', lang)}",
-        f"──────────────────────────────────────────────\n{t(lang, 'verdict_disclaimer')}",
+        t(lang, 'verdict_disclaimer'),
     ]
 
     if keyword_result["suspicious"]:
@@ -297,10 +326,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         document = message.document
 
         hidden_links = extract_text_link_entities(message)
-        has_links = bool(URL_REGEX.search(text)) or bool(hidden_links)
-        status = None
-        if has_links or document is not None:
-            status = await message.reply_text(t(lang, "checking_status"), parse_mode="Markdown")
+
+        # Always shown now - a text-only message (no link, no file) still
+        # goes through the same analyze_unified() call (Gemini + bge-m3),
+        # which is just as slow as the link/file path; leaving it silent
+        # made the bot look unresponsive on exactly that path.
+        status = await message.reply_text(t(lang, "checking_status"), parse_mode="Markdown")
+        animation_task = asyncio.create_task(_animate_checking_status(status, lang))
 
         async def _check_file():
             sha256 = await download_and_hash(context, document.file_id)
@@ -324,10 +356,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if user_id is not None:
             subscription.record_link_or_message_scan(user_id)
 
-        if status is not None:
-            await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)
-        else:
-            await message.reply_text(reply_text, parse_mode="HTML", reply_markup=main_menu_keyboard)
+        animation_task.cancel()
+        await animation_task
+
+        await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)
         return
 
     # Group/supergroup chat: unchanged text-only reasoning - any link in

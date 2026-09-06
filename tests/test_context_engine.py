@@ -75,6 +75,30 @@ async def test_grounded_fallback_includes_keyword_and_link_evidence(fake_vector_
 
 
 @pytest.mark.asyncio
+async def test_grounded_fallback_caps_uncorroborated_link_risk(fake_vector_store):
+    # Same UNCORROBORATED_RISK_CAP policy as the live-Gemini path
+    # (_reconcile_with_evidence) applies here too - a purely offline
+    # heuristic score (no VT confirmation) must not read as near-certain.
+    keyword_result = {"suspicious": False, "matches": []}
+    link_verdicts = [{"host": "free-prize-winner.tk", "level": "dangerous", "score": 95, "reasons": []}]
+
+    result = await _grounded_fallback("x", "", keyword_result, link_verdicts)
+
+    assert result["risk_percentage"] == ce.UNCORROBORATED_RISK_CAP
+
+
+@pytest.mark.asyncio
+async def test_grounded_fallback_does_not_cap_when_virustotal_confirms_the_link(fake_vector_store):
+    keyword_result = {"suspicious": False, "matches": []}
+    link_verdicts = [{"host": "evil.tk", "level": "dangerous", "score": 95,
+                       "reasons": ["2 security engines on VirusTotal flag this link as malicious."]}]
+
+    result = await _grounded_fallback("x", "", keyword_result, link_verdicts)
+
+    assert result["risk_percentage"] == 95
+
+
+@pytest.mark.asyncio
 async def test_grounded_fallback_returns_not_a_scam_when_nothing_found(fake_vector_store):
     # No keyword match, no link, no file, no scam-pattern hit - the
     # fallback must confidently say "Not a Scam" rather than a vague
@@ -209,9 +233,12 @@ async def test_grounded_fallback_survives_pathological_text():
 
 @pytest.mark.asyncio
 async def test_analyze_unified_returns_parsed_response_on_success(monkeypatch):
+    # risk_percentage kept below UNCORROBORATED_RISK_CAP on purpose - this
+    # test is about parsing passthrough, not the cap policy (see the
+    # dedicated test_reconcile_caps_* tests below for that).
     fake_response = {
         "verdict": "Scam",
-        "risk_percentage": 92,
+        "risk_percentage": 75,
         "key_reasons": [{"text": "Urgent request for money.", "source": "message_text"}],
         "recommendations": ["Do not send money."],
     }
@@ -220,7 +247,7 @@ async def test_analyze_unified_returns_parsed_response_on_success(monkeypatch):
     result = await analyze_unified("send money now", {"suspicious": False, "matches": []}, [])
 
     assert result["verdict"] == "Scam"
-    assert result["risk_percentage"] == 92
+    assert result["risk_percentage"] == 75
     assert result["key_reasons"] == fake_response["key_reasons"]
 
 
@@ -263,14 +290,18 @@ async def test_analyze_unified_omits_scam_pattern_evidence_below_threshold(monke
 @pytest.mark.asyncio
 async def test_analyze_unified_clamps_out_of_range_risk_percentage(monkeypatch):
     # Schema says "integer" but doesn't itself bound 0-100 - the model
-    # could still return something out of range.
+    # could still return something out of range. A VT-confirmed link is
+    # included so this test isn't also exercising UNCORROBORATED_RISK_CAP
+    # (covered separately below) - it's purely about the 0-100 clamp.
     fake_response = {
         "verdict": "Scam", "risk_percentage": 150,
         "key_reasons": [], "recommendations": [],
     }
     monkeypatch.setattr(ce, "_client", _FakeClient(response_text=json.dumps(fake_response)))
+    link_verdicts = [{"host": "evil.tk", "level": "dangerous", "score": 90,
+                       "reasons": ["2 security engines on VirusTotal flag this link as malicious."]}]
 
-    result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
+    result = await analyze_unified("x", {"suspicious": False, "matches": []}, link_verdicts)
 
     assert result["risk_percentage"] == 100
 
@@ -363,7 +394,31 @@ def test_reconcile_leaves_a_correct_verdict_untouched():
 def test_reconcile_does_not_downgrade_a_verdict_the_model_raised_on_its_own():
     # The model may have reasoned about surrounding text this function
     # knows nothing about (e.g. a text-only scam with a merely
-    # low-score/safe link) - only ever escalates, never downgrades.
+    # low-score/safe link) - only ever escalates, never downgrades TO
+    # MATCH WEAKER EVIDENCE. A VT-confirmed file is included so this
+    # stays clear of UNCORROBORATED_RISK_CAP (a deliberate, different
+    # kind of reduction - see the dedicated cap test below) and purely
+    # tests the non-downgrade behavior.
+    data = {
+        "verdict": "Scam", "risk_percentage": 90,
+        "key_reasons": [{"text": "Classic family-emergency scam wording.", "source": "message_text"}],
+        "recommendations": [],
+    }
+    link_verdicts = [{"host": "example.com", "level": "safe", "score": 0, "reasons": []}]
+    file_verdict = {"found": True, "malicious": 2, "suspicious": 0, "total": 70}
+
+    result = _reconcile_with_evidence(data, link_verdicts, file_verdict)
+
+    assert result["verdict"] == "Scam"
+    assert result["risk_percentage"] == 90
+
+
+def test_reconcile_caps_uncorroborated_risk_even_when_the_model_raised_it_itself():
+    # The one deliberate exception to "never downgrades": a risk this
+    # high must be backed by independently-confirmed evidence (real
+    # VirusTotal detection), not just Gemini's own reading of the text -
+    # see UNCORROBORATED_RISK_CAP's docstring. Same scenario as the
+    # non-downgrade test above, minus the VT-confirmed file.
     data = {
         "verdict": "Scam", "risk_percentage": 90,
         "key_reasons": [{"text": "Classic family-emergency scam wording.", "source": "message_text"}],
@@ -373,8 +428,21 @@ def test_reconcile_does_not_downgrade_a_verdict_the_model_raised_on_its_own():
 
     result = _reconcile_with_evidence(data, link_verdicts, None)
 
-    assert result["verdict"] == "Scam"
-    assert result["risk_percentage"] == 90
+    assert result["verdict"] == "Scam"  # verdict itself is untouched, only the number is capped
+    assert result["risk_percentage"] == ce.UNCORROBORATED_RISK_CAP
+
+
+def test_reconcile_does_not_cap_risk_when_virustotal_confirms_the_link():
+    # The cap must not fire once there IS independent confirmation - a
+    # real VT hit on the link is exactly the evidence that justifies a
+    # high-confidence number.
+    data = {"verdict": "Scam", "risk_percentage": 95, "key_reasons": [], "recommendations": []}
+    link_verdicts = [{"host": "evil.tk", "level": "dangerous", "score": 90,
+                       "reasons": ["2 security engines on VirusTotal flag this link as malicious."]}]
+
+    result = _reconcile_with_evidence(data, link_verdicts, None)
+
+    assert result["risk_percentage"] == 95
 
 
 def test_reconcile_does_not_further_escalate_an_already_uncertain_verdict():
@@ -410,17 +478,19 @@ def test_reconcile_escalates_on_a_merely_suspicious_link_not_just_dangerous():
 def test_reconcile_risk_aggregation_picks_the_worst_of_several_links():
     # worst_link_score = max(...) - a message with one safe link and one
     # dangerous link must escalate to the dangerous one's score, not an
-    # average and not just the first item in the list.
+    # average and not just the first item in the list. Score kept below
+    # UNCORROBORATED_RISK_CAP since neither link is VT-confirmed here -
+    # this test is purely about max-not-average aggregation.
     data = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
     link_verdicts = [
         {"host": "example.com", "level": "safe", "score": 5, "reasons": []},
-        {"host": "free-prize-winner.tk", "level": "dangerous", "score": 90, "reasons": []},
+        {"host": "free-prize-winner.tk", "level": "dangerous", "score": 75, "reasons": []},
     ]
 
     result = _reconcile_with_evidence(data, link_verdicts, None)
 
     assert result["verdict"] == "Uncertain"
-    assert result["risk_percentage"] == 90
+    assert result["risk_percentage"] == 75
 
 
 @pytest.mark.asyncio

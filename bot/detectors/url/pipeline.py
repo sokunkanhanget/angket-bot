@@ -86,6 +86,24 @@ PHISH_SIM_THRESHOLD = 0.55     # cosine vs known-phish pattern worth flagging
 PHISH_SIM_STRONG = 0.80        # near-certain impersonation
 SEEN_BAD_SIM_THRESHOLD = 0.75  # cosine vs a link we previously flagged
 BRAND_PAGE_SPOOF_MIN = 3       # brand name occurrences in page text before we call it a spoof claim
+# The domain string itself must ALSO structurally resemble a real brand's
+# domain before keyword frequency counts as impersonation evidence - see
+# _brand_page_spoof's docstring for the confirmed false positive
+# (broryat.tech, a legitimate anti-scam Telegram bot's own site, scored
+# 0.152 here - nowhere near this bar) that motivated wiring this back up.
+# Reuses PHISH_SIM_THRESHOLD's value since it's the same hashed-embedding
+# scheme and scale, not a separately-calibrated number.
+BRAND_SIM_THRESHOLD = PHISH_SIM_THRESHOLD
+# Language a real login/account-portal page uses to present itself AS
+# the brand - a page merely discussing the brand as a topic (a news
+# article, a security-awareness tool, a review) has no reason to use
+# this framing. The second (independent) signal _brand_page_spoof can
+# use instead of domain resemblance - see its docstring.
+BRAND_SPOOF_PORTAL_PHRASES = (
+    "log in", "log into", "sign in", "signin", "welcome to",
+    "verify your account", "your account", "online banking",
+    "official website", "reset your password", "confirm your account",
+)
 NEARDUP_THRESHOLD = 0.90       # MinHash similarity = same phishing kit
 # Below this, MinHash is unreliable - not just literal empty pages, but
 # generic bot-challenge/interstitial pages (Cloudflare "Checking your
@@ -546,17 +564,40 @@ def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) ->
     """Page *claims* to be a bank/brand but sits on an unrelated domain —
     the semantic-impersonation case vector search alone can't prove.
 
-    NOTE: `best_brand_sim` is threaded in by the caller (a real
-    similarity score against known brand vectors) but never read here —
-    found during a repo-wide audit. Reads like a similarity gate that
-    was meant to reduce false positives (currently this fires purely on
-    a raw brand-keyword count with no similarity threshold at all) and
-    got dropped in a past refactor. Not changing the behavior here since
-    guessing the intended threshold could silently weaken a real
-    detection either direction — flagging for a maintainer to confirm
-    intent before this parameter is either wired up or removed.
+    Brand-keyword frequency alone isn't enough evidence (see
+    BRAND_PAGE_SPOOF_MIN's history) - confirmed live: broryat.tech (a
+    legitimate anti-scam Telegram bot's own site) mentions "Telegram" 17
+    times because its whole product IS a Telegram bot, and got flagged
+    as "impersonating Telegram" from count alone. Needs one more signal
+    that the page is presenting ITSELF as the brand, not just talking
+    ABOUT it - either of:
+
+      1. The domain string itself structurally resembles the brand's
+         real domain (best_brand_sim >= BRAND_SIM_THRESHOLD) - a
+         typosquat. (broryat.tech scored 0.152 against telegram.org -
+         nowhere close.)
+      2. The page uses portal/login-style framing ("welcome to",
+         "log in", "your account", ...) - language a real login/account
+         page uses, that a page merely discussing the brand as a topic
+         has no reason to.
+
+    Deliberately EITHER, not both required: real phishing doesn't always
+    use a typosquat domain - plenty of real cases sit on a throwaway or
+    compromised domain with zero resemblance to the brand string,
+    relying purely on page content to fool the victim (see
+    test_analyze_url_flags_brand_page_spoof's "totally-unrelated-domain.tk"
+    fake-ABA-login-page case, which requiring domain resemblance too
+    would have silently stopped catching).
+
+    Coarse gate, not per-brand: best_brand_sim is the single best
+    similarity across ALL known brands in this URL's top-4 vector hits
+    (see _safe_nearest), not specifically the brand being keyword-counted
+    in the loop below - accepted simplification, a low aggregate score
+    already shows the domain doesn't look like ANY known brand.
     """
     low = page_text.lower()
+    if best_brand_sim < BRAND_SIM_THRESHOLD and not any(phrase in low for phrase in BRAND_SPOOF_PORTAL_PHRASES):
+        return None
     for domain, label in PROTECTED_BRANDS.items():
         brand = domain.split(".")[0]
         # Same length guard lexical.py's own buried-brand-name check

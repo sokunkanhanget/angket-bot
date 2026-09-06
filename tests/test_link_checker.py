@@ -526,6 +526,43 @@ def test_brand_page_spoof_still_fires_for_normal_length_brand_names():
     assert "ABA Bank" in result and "not the official" in result
 
 
+def test_brand_page_spoof_ignores_topical_mentions_with_no_portal_language():
+    # Real false positive, confirmed live: broryat.tech is a legitimate
+    # anti-scam Telegram bot's own site - it mentions "Telegram" many
+    # times because its whole product IS a Telegram bot, with zero
+    # domain resemblance to telegram.org (real similarity: 0.152, well
+    # below BRAND_SIM_THRESHOLD) and no login/account-portal framing at
+    # all. Brand-keyword count alone must not be enough once there's no
+    # corroborating signal that the page presents itself AS the brand.
+    real_world_text = (
+        "Broryat | AI Bot protecting you from online scams. Beware on Telegram! "
+        "Just send Broryat a suspicious link, message, or file on Telegram and it "
+        "analyzes the risk for you. Scan links and files shared on Telegram using "
+        "VirusTotal. Connect Broryat via Telegram Chat Automation to monitor your "
+        "private chat. Search for the official Bot, open Telegram and look for "
+        "@broryat_bot to get started."
+    )
+    assert real_world_text.lower().count("telegram") >= 3  # sanity: clears BRAND_PAGE_SPOOF_MIN
+
+    result = pipeline._brand_page_spoof(real_world_text, "broryat.tech", 0.152)
+
+    assert result is None
+
+
+def test_brand_page_spoof_fires_on_domain_resemblance_even_without_portal_language():
+    # The other half of the two-signal design: a real typosquat domain
+    # (high best_brand_sim) must still be enough on its own, even if the
+    # page text happens to lack obvious login/portal phrasing.
+    result = pipeline._brand_page_spoof(
+        "Telegram Telegram Telegram - the fastest messaging app, join millions of users today.",
+        "telegram-app.tk",
+        pipeline.BRAND_SIM_THRESHOLD,
+    )
+
+    assert result is not None
+    assert "Telegram" in result and "not the official" in result
+
+
 def test_analyze_url_caps_stacked_network_signals_at_max_network_points(seeded_vectors, monkeypatch):
     # All four network-derived signals add_network() can currently apply
     # sum to EXACTLY MAX_NETWORK_POINTS (20+10+5+10=45) - today's code has

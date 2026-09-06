@@ -350,14 +350,38 @@ def test_reconcile_escalates_to_scam_when_gemini_misses_a_malicious_file():
 
 
 def test_reconcile_escalates_to_uncertain_when_gemini_misses_a_dangerous_link():
+    # Escalation now requires a CONFIRMED (VirusTotal) flagged link, not
+    # just any non-safe level - see test_reconcile_does_not_escalate_on_a_
+    # heuristic_only_flagged_link below for the other half of this tier.
     data = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
-    link_verdicts = [{"host": "free-prize-winner.tk", "level": "dangerous", "score": 80, "reasons": []}]
+    link_verdicts = [{"host": "free-prize-winner.tk", "level": "dangerous", "score": 80,
+                       "reasons": ["5 security engines on VirusTotal flag this link as malicious."]}]
 
     result = _reconcile_with_evidence(data, link_verdicts, None)
 
     assert result["verdict"] == "Uncertain"
     assert result["risk_percentage"] == 80
     assert any(r["source"] == "link_evidence" and "Overridden" in r["text"] for r in result["key_reasons"])
+
+
+def test_reconcile_does_not_escalate_on_a_heuristic_only_flagged_link():
+    # The other half of the tier: a heuristic-only finding (no VirusTotal
+    # confirmation) is exactly what the system prompt now tells Gemini it
+    # MAY apply judgment to. If Gemini deliberately weighed the message's
+    # positive context and called it "Not a Scam" anyway, this safety net
+    # must not immediately reverse that - only a CONFIRMED finding (or a
+    # scam-script pattern match) forces the override. Confirmed live: the
+    # broryat.tech false positive (a heuristic brand-keyword match on a
+    # legitimate site) is exactly the case this must no longer clobber.
+    data = {"verdict": "Not a Scam", "risk_percentage": 20, "key_reasons": [], "recommendations": []}
+    link_verdicts = [{"host": "broryat.tech", "level": "suspicious", "score": 60,
+                       "reasons": ["Domain registered 58 days ago - still very young."]}]
+
+    result = _reconcile_with_evidence(data, link_verdicts, None)
+
+    assert result["verdict"] == "Not a Scam"
+    assert result["risk_percentage"] == 20
+    assert result["key_reasons"] == []
 
 
 def test_reconcile_escalates_when_gemini_misses_a_near_exact_scam_script():
@@ -465,9 +489,11 @@ def test_reconcile_escalates_on_a_merely_suspicious_link_not_just_dangerous():
     # Every other link-escalation test uses level="dangerous" - the real
     # condition is `level != "safe"`, which "suspicious" must also
     # satisfy. Pins that the check isn't accidentally narrowed to only
-    # the most severe level.
+    # the most severe level. VT-confirmed so this stays clear of the new
+    # confirmed-only escalation tier (see the heuristic-only test above).
     data = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
-    link_verdicts = [{"host": "sketchy-deal.tk", "level": "suspicious", "score": 45, "reasons": []}]
+    link_verdicts = [{"host": "sketchy-deal.tk", "level": "suspicious", "score": 45,
+                       "reasons": ["1 security engine on VirusTotal flags this link as malicious."]}]
 
     result = _reconcile_with_evidence(data, link_verdicts, None)
 
@@ -478,13 +504,15 @@ def test_reconcile_escalates_on_a_merely_suspicious_link_not_just_dangerous():
 def test_reconcile_risk_aggregation_picks_the_worst_of_several_links():
     # worst_link_score = max(...) - a message with one safe link and one
     # dangerous link must escalate to the dangerous one's score, not an
-    # average and not just the first item in the list. Score kept below
-    # UNCORROBORATED_RISK_CAP since neither link is VT-confirmed here -
-    # this test is purely about max-not-average aggregation.
+    # average and not just the first item in the list. The dangerous link
+    # is VT-confirmed so the escalation actually fires (the confirmed-only
+    # tier - see test_reconcile_does_not_escalate_on_a_heuristic_only_
+    # flagged_link) - this test is purely about max-not-average aggregation.
     data = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
     link_verdicts = [
         {"host": "example.com", "level": "safe", "score": 5, "reasons": []},
-        {"host": "free-prize-winner.tk", "level": "dangerous", "score": 75, "reasons": []},
+        {"host": "free-prize-winner.tk", "level": "dangerous", "score": 75,
+         "reasons": ["2 security engines on VirusTotal flag this link as malicious."]},
     ]
 
     result = _reconcile_with_evidence(data, link_verdicts, None)

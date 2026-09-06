@@ -52,8 +52,27 @@ _SYSTEM_PROMPT = (
     "emergency, lottery, account verification, romance, investment, job "
     "offer, authority impersonation), and/or a VirusTotal file-scan "
     "result for an attached file - collected by other tools before you. "
-    "Treat that evidence as reliable ground truth: do not contradict a "
-    "link or file already found dangerous or suspicious. Symmetrically, "
+    "This evidence is a MIX of two tiers, and you must weigh them "
+    "differently. CONFIRMED evidence - a VirusTotal detection on a link, "
+    "or a VirusTotal malicious result on a file - must never be "
+    "contradicted, downgraded, or explained away: if it says malicious, "
+    "the verdict is Scam regardless of how innocent the message reads. "
+    "HEURISTIC evidence is everything the bot computed itself (lexical "
+    "URL patterns, domain and TLS certificate age, brand-keyword page "
+    "matches, phishing/brand/seen vector similarity). Each link finding "
+    "carries a \"confirmed\" flag; a finding with \"confirmed\": false is "
+    "a strong but fallible signal that can be wrong. A brand-new domain, "
+    "a fresh certificate, plain HTTP, or a page that merely names a bank "
+    "are routine for legitimate sites and are not proof of a scam by "
+    "themselves. You MAY apply judgment to a heuristic-only finding: "
+    "when the message and its context give a POSITIVE reason to believe "
+    "the link is legitimate (a known company's own site, no fraudulent "
+    "claims, no request for money or credentials, no pressure to act), "
+    "you may treat a heuristic-only 'suspicious' finding as a prompt to "
+    "verify rather than proof of a scam, and lower the risk accordingly. "
+    "Do NOT clear a heuristic finding merely because the wording is "
+    "smooth - downgrade only on a real, stated reason to trust the "
+    "destination, never on the absence of red flags alone. Symmetrically, "
     "a link's system-computed level already reflects the net weight of "
     "its own listed reasons - if a link's level is 'safe', do not "
     "re-litigate or amplify its individual technical reasons (e.g. "
@@ -175,6 +194,12 @@ def _build_contents(
                 "level": v.get("level"),
                 "score": v.get("score"),
                 "reasons": v.get("reasons"),
+                # Same rule as _has_confirmed_evidence - an independent
+                # third party (VirusTotal) actually verified this finding,
+                # vs. everything else here being a heuristic the bot
+                # computed itself. The system prompt explains how to
+                # weigh the two differently.
+                "confirmed": any("VirusTotal" in r for r in (v.get("reasons") or [])),
             }
             for v in link_verdicts
         ],
@@ -188,8 +213,9 @@ def _build_contents(
             "similarity": round(similarity, 3),
         }
     return (
-        "SYSTEM-GATHERED EVIDENCE (not written by the user; already verified - "
-        "treat as ground truth, do not re-derive it):\n"
+        "SYSTEM-GATHERED EVIDENCE (not written by the user; already gathered - "
+        "do not re-derive it. Each link finding carries a \"confirmed\" flag - "
+        "see the system prompt for how to weigh confirmed vs heuristic evidence):\n"
         f"{json.dumps(evidence, ensure_ascii=False)}\n\n"
         "USER MESSAGE TO ANALYZE:\n"
         f"{text}"
@@ -313,10 +339,25 @@ def _reconcile_with_evidence(
     Only ever escalates (weakens a false "safe" claim), never downgrades
     a verdict the model raised on its own - the model may have reasoned
     about surrounding text this function knows nothing about.
+
+    The "Not a Scam" -> "Uncertain" escalation below is tiered the same
+    way the system prompt now is: it only force-fires on a CONFIRMED
+    (VirusTotal) flagged link, not a heuristic-only one. A heuristic
+    finding (lexical/domain-age/brand-keyword/vector-similarity) can be
+    wrong - see UNCORROBORATED_RISK_CAP's docstring for the broryat.tech
+    false positive that motivated this - so once the system prompt
+    explicitly allows Gemini to weigh a heuristic-only finding against
+    real, positive context and deliberately call it "Not a Scam", this
+    safety net must not immediately reverse that judgment call. A
+    CONFIRMED (VirusTotal) finding is never allowed to be reasoned away
+    this way, matching the file-malicious override just above.
     """
     file_flagged = bool(file_verdict and file_verdict.get("malicious", 0) > 0)
     worst_link_score = max((v.get("score", 0) for v in link_verdicts), default=0)
-    link_flagged = any(v.get("level") != "safe" for v in link_verdicts)
+    confirmed_link_flagged = any(
+        v.get("level") != "safe" and any("VirusTotal" in r for r in (v.get("reasons") or []))
+        for v in link_verdicts
+    )
     pattern_similarity, pattern_category = pattern_match or (0.0, None)
     pattern_flagged = pattern_similarity >= SCAM_PATTERN_THRESHOLD
 
@@ -337,16 +378,16 @@ def _reconcile_with_evidence(
             "source": "file_evidence",
         })
         data["key_reasons"] = reasons
-    elif verdict == "Not a Scam" and (link_flagged or pattern_flagged):
+    elif verdict == "Not a Scam" and (confirmed_link_flagged or pattern_flagged):
         logger.warning(
             "context_engine: Gemini returned verdict='Not a Scam' despite "
-            "link_flagged=%s pattern_flagged=%s (pattern=%r sim=%.2f) - "
+            "confirmed_link_flagged=%s pattern_flagged=%s (pattern=%r sim=%.2f) - "
             "overriding to Uncertain",
-            link_flagged, pattern_flagged, pattern_category, pattern_similarity,
+            confirmed_link_flagged, pattern_flagged, pattern_category, pattern_similarity,
         )
         data["verdict"] = "Uncertain"
         data["risk_percentage"] = max(risk or 0, min(worst_link_score, 100), int(pattern_similarity * 100))
-        if link_flagged:
+        if confirmed_link_flagged:
             reasons.append({
                 "text": "Overridden: at least one link in this message was independently "
                         "flagged suspicious or dangerous, regardless of the message text.",

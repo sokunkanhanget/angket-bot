@@ -76,6 +76,7 @@ from bot.detectors.url.offline.lexical import (
     registered_domain,
 )
 from bot.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
+from bot.storage import health_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -508,7 +509,9 @@ async def _safe_nearest(text: str):
     # seen match, silently zeroing the similarity score below.
     try:
         return await vectors.nearest(text, k=4, kinds=("brand", "phish", "seen"))
-    except Exception:                          # noqa: BLE001 - DB trouble must not kill checks
+    except Exception as error:                 # noqa: BLE001 - DB trouble must not kill checks
+        health_alerts.record_failure("Supabase", str(error))
+        await health_alerts.maybe_alert("Supabase", str(error))
         return []
 
 

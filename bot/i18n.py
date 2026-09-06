@@ -106,6 +106,18 @@ TEXT = {
             "⚠️ Could not finish scanning this file right now (the download or "
             "the virus-check service failed). Please try again in a moment."
         ),
+        "daily_file_limit_reached": (
+            "🚫 You've reached today's free file-scan limit ({limit} files/day). "
+            "It resets tomorrow, or upgrade for a higher daily limit."
+        ),
+        "daily_scan_limit_reached": (
+            "🚫 You've reached today's free link/message-scan limit ({limit}/day). "
+            "It resets tomorrow, or upgrade for a higher daily limit."
+        ),
+        "live_detect_trial_ended": (
+            "⏰ Your 7-day free trial of Live Detect (automatic scanning in your "
+            "business chats) has ended. Upgrade to keep it active."
+        ),
         # --- Verdict reply content (private DM / business chat only -
         # group chat stays English, see bot/route.py's TEXT_FILTER scope
         # notes) - the FIXED labels/headers around Gemini's own dynamic
@@ -212,6 +224,18 @@ TEXT = {
         "file_scan_failed": (
             "⚠️ មិនអាចបញ្ចប់ការពិនិត្យឯកសារនេះបានទេនាពេលនេះ "
             "(ការទាញយក ឬសេវាកម្មពិនិត្យមេរោគបានបរាជ័យ)។ សូមព្យាយាមម្តងទៀតក្នុងពេលបន្តិចទៀត។"
+        ),
+        "daily_file_limit_reached": (
+            "🚫 អ្នកបានឈានដល់ដែនកំណត់ការពិនិត្យឯកសារឥតគិតថ្លៃប្រចាំថ្ងៃ ({limit} ឯកសារ/ថ្ងៃ)។ "
+            "វានឹងកំណត់ឡើងវិញនៅថ្ងៃស្អែក ឬអាប់ក្រេដដើម្បីទទួលបានដែនកំណត់ខ្ពស់ជាងនេះ។"
+        ),
+        "daily_scan_limit_reached": (
+            "🚫 អ្នកបានឈានដល់ដែនកំណត់ការពិនិត្យតំណ/សារឥតគិតថ្លៃប្រចាំថ្ងៃ ({limit}/ថ្ងៃ)។ "
+            "វានឹងកំណត់ឡើងវិញនៅថ្ងៃស្អែក ឬអាប់ក្រេដដើម្បីទទួលបានដែនកំណត់ខ្ពស់ជាងនេះ។"
+        ),
+        "live_detect_trial_ended": (
+            "⏰ រយៈពេលសាកល្បងឥតគិតថ្លៃ ៧ ថ្ងៃរបស់ Live Detect "
+            "(ការពិនិត្យស្វ័យប្រវត្តិក្នុងជជែកអាជីវកម្មរបស់អ្នក) បានបញ្ចប់ហើយ។ សូមអាប់ក្រេដដើម្បីបន្ត។"
         ),
         # NOTE: translated by Claude, not yet reviewed by a native Khmer
         # speaker on the team - flag any wording that reads oddly before

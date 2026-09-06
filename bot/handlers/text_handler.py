@@ -12,6 +12,7 @@ from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
 from bot.detectors.url.offline.lexical import URL_REGEX
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.handlers.url_handler import extract_text_link_entities, resolve_ticket
+from bot.storage import subscription
 from bot.detectors.url.pipeline import check_message_full
 from bot.verdict_style import SOURCE_TAGS, risk_style, verdict_style
 
@@ -259,6 +260,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    user_id = update.effective_user.id if update.effective_user else None
+    if user_id is not None and not subscription.can_scan_link_or_message(user_id):
+        await message.reply_text(
+            t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+            reply_markup=main_menu_keyboard,
+        )
+        return
+
     keyword_result = analyze_text(text)
 
     # Plain private DM: reason over text AND any link together in one
@@ -310,8 +319,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if document is not None:
             file_verdict = results[1] if not isinstance(results[1], Exception) else None
 
-        unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang)
+        unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
         reply_text = format_unified_response(unified, keyword_result, lang)
+        if user_id is not None:
+            subscription.record_link_or_message_scan(user_id)
 
         if status is not None:
             await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)
@@ -322,7 +333,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Group/supergroup chat: unchanged text-only reasoning - any link in
     # the message is still checked separately by url_checker's own
     # handle_url flow.
-    llm_result = await analyze_text_with_llm(text)
+    llm_result = await analyze_text_with_llm(text, user_id)
+    if user_id is not None:
+        subscription.record_link_or_message_scan(user_id)
 
     await message.reply_text(
         format_analysis_response(llm_result, keyword_result),

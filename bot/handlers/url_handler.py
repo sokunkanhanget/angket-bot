@@ -69,6 +69,7 @@ from bot.detectors.url.pipeline import (
 from bot.verdict_style import SOURCE_TAGS, risk_style, verdict_style
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
+from bot.storage import subscription
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +309,22 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Network tracing can take a few seconds — show progress first
     # (normal chats only; business flow stays invisible).
     is_business = bool(message.business_connection_id)
+
+    # Business-chat scans are gated by the Live Detect trial, not the
+    # sender's daily quota - the sender there is a CUSTOMER messaging
+    # the business, not the subscriber whose plan this is. A normal
+    # chat's sender IS the subscriber, so their own daily quota applies.
+    sender = update.effective_user
+    if not is_business and sender is not None and not subscription.can_scan_link_or_message(sender.id):
+        # Inlined rather than importing text_handler.get_user_lang - that
+        # module already imports FROM this one (extract_text_link_entities/
+        # resolve_ticket), so the reverse import would be circular.
+        lang = str(context.user_data.get("lang", DEFAULT_LANG))
+        await message.reply_text(
+            t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
+        )
+        return
+
     status = None if is_business else await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
 
     hidden_links = extract_text_link_entities(message)
@@ -316,6 +333,9 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if status is not None:
             await status.delete()
         return  # this handler only speaks up when there's actually a link
+
+    if not is_business and sender is not None:
+        subscription.record_link_or_message_scan(sender.id)
 
     await _reply_with_verdicts(update, context, message, verdicts, status, is_business)
 
@@ -458,6 +478,20 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     owner_chat_id = await _owner_chat_id(context, message.business_connection_id)
     if owner_chat_id is None:
         return  # can't resolve the owner right now - nothing safe to do
+
+    # Live Detect (this automation) is a 7-day Freemium trial, then
+    # gated behind the paid tier. ensure_trial_started is idempotent -
+    # only the FIRST business message from a given owner actually starts
+    # their clock. NOTE: this notifies the owner on EVERY message once
+    # expired, not just once - simple for now, but could get spammy for
+    # a business receiving many messages after expiry; worth revisiting
+    # if that turns out to be a real annoyance.
+    subscription.ensure_trial_started(owner_chat_id)
+    if not subscription.live_detect_allowed(owner_chat_id):
+        await context.bot.send_message(
+            chat_id=owner_chat_id, text=t(_owner_lang(context, owner_chat_id), "live_detect_trial_ended")
+        )
+        return
 
     await ensure_vectors_seeded(context.bot_data)
 

@@ -5,6 +5,8 @@ from google import genai
 from google.genai import types
 
 from bot.config import GEMINI_API_KEY, GEMINI_MODEL
+from bot.storage import subscription
+from bot.storage import health_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +112,16 @@ def _unavailable(reason: str, error: str) -> dict:
     }
 
 
-async def analyze_text_with_llm(text: str) -> dict:
+async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
+    """`user_id`: when given, gates on the Freemium daily token budget
+    and records real usage afterward - see context_engine.py's
+    analyze_unified for the same pattern applied to the private-DM/
+    business-chat path. None skips both, same reasoning as there."""
     if not _client:
         return _unavailable("LLM analysis is not configured.", "missing_api_key")
+
+    if user_id is not None and not subscription.has_token_budget(user_id):
+        return _unavailable("Daily AI token budget exhausted.", "token_budget_exhausted")
 
     try:
         response = await _client.aio.models.generate_content(
@@ -124,6 +133,8 @@ async def analyze_text_with_llm(text: str) -> dict:
                 response_schema=_RESPONSE_SCHEMA,
             ),
         )
+        if user_id is not None and response.usage_metadata is not None:
+            subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
         data = json.loads(response.text)
         risk_percentage = max(0, min(100, int(data.get("risk_percentage", 0))))
         return {
@@ -135,6 +146,8 @@ async def analyze_text_with_llm(text: str) -> dict:
         }
     except Exception as error:
         logger.exception("Gemini text analysis failed")
+        health_alerts.record_failure("Gemini", str(error))
+        await health_alerts.maybe_alert("Gemini", str(error))
         return _unavailable(
             "LLM analysis failed, please try again later.", str(error)
         )

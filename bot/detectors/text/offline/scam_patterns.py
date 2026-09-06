@@ -34,6 +34,11 @@ templates for domains.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
 SCAM_MESSAGE_PATTERNS: dict[str, list[str]] = {
     "family_emergency": [
         "Mom, I lost my phone, this is my friend's number. I'm in trouble and need money right now, please don't call, just trust me.",
@@ -134,3 +139,79 @@ def nearest_scam_pattern(text: str, k: int = 1) -> list[tuple[float, str, str, s
     ]
     scored.sort(key=lambda row: row[0], reverse=True)
     return scored[:k]
+
+
+# --- bge-m3 (real, Khmer-capable embeddings) - live, with safe fallback --
+# Gated by USE_BGE_M3_EMBEDDINGS (bot/config.py, default off - no
+# production hosting is arranged yet, this depends on whatever Ollama
+# instance OLLAMA_URL points at, which today means a local dev machine,
+# not a reliable always-on server). ALWAYS falls back to the hashed
+# scheme above on any failure (flag off, Ollama unreachable, a partial
+# embedding failure) - callers get a usable result either way, never an
+# exception, matching every other optional-backend pattern in this
+# codebase (VirusTotal, Gemini).
+
+_bge_m3_index: list[tuple[list[float], str, str]] | None = None
+_bge_m3_index_lock = asyncio.Lock()
+
+
+async def _ensure_bge_m3_index() -> bool:
+    """Builds the bge-m3 embedding index for the same SCAM_MESSAGE_PATTERNS
+    corpus the hashed _LOCAL_INDEX already covers, once, lazily (unlike
+    the hashed index, this needs real Ollama round trips, so it's NOT
+    built at import time). Returns True once the index is ready to use,
+    False if it couldn't be built (Ollama unreachable) - a lock guards
+    against two concurrent callers both trying to build it at once on
+    the very first call."""
+    global _bge_m3_index
+    if _bge_m3_index is not None:
+        return True
+
+    from bot.detectors.text.online.bge_m3_embed import embed_bge_m3
+
+    async with _bge_m3_index_lock:
+        if _bge_m3_index is not None:  # someone else built it while we waited
+            return True
+
+        rows = _seed_rows()
+        embeddings = await asyncio.gather(*(embed_bge_m3(text) for _, _, text, _ in rows))
+        if any(e is None for e in embeddings):
+            logger.warning("[bge-m3] index build failed (Ollama unreachable?) - "
+                            "falling back to the hashed scheme")
+            return False
+
+        _bge_m3_index = [(emb, key, category) for emb, (_, key, _, category) in zip(embeddings, rows)]
+        logger.info("[bge-m3] index built: %d scam-pattern examples", len(_bge_m3_index))
+        return True
+
+
+async def nearest_scam_pattern_live(text: str, k: int = 1) -> tuple[list[tuple[float, str, str, str]], bool]:
+    """The real entry point for context_engine.py - prefers bge-m3 when
+    enabled and reachable (genuinely Khmer-capable, unlike the hashed
+    scheme - see bot/detectors/text/online/bge_m3_embed.py's module
+    docstring for the measured gap), transparently falls back to the
+    existing synchronous nearest_scam_pattern() otherwise.
+
+    Returns (hits, used_bge_m3) - the second value matters because
+    bge-m3 and the hashed scheme have DIFFERENT natural similarity
+    scales (bge-m3 runs measurably hotter - confirmed live, genuinely
+    benign text can score 0.59 - so the caller must compare against
+    BGE_M3_PATTERN_THRESHOLD, not SCAM_PATTERN_THRESHOLD, when this is
+    True). Found the hard way: an early version of this wiring reused
+    the hashed scheme's threshold for both paths, which would have
+    false-positived on ordinary benign messages once bge-m3 was live."""
+    from bot.config import USE_BGE_M3_EMBEDDINGS
+    from bot.detectors.text.online.bge_m3_embed import cosine_similarity, embed_bge_m3
+
+    if USE_BGE_M3_EMBEDDINGS and await _ensure_bge_m3_index():
+        query_embedding = await embed_bge_m3(text)
+        if query_embedding is not None:
+            scored = [
+                (cosine_similarity(query_embedding, emb), "scam_pattern", key, category)
+                for emb, key, category in _bge_m3_index
+            ]
+            scored.sort(key=lambda row: row[0], reverse=True)
+            return scored[:k], True
+        logger.warning("[bge-m3] query embedding failed - falling back to the hashed scheme for this call")
+
+    return nearest_scam_pattern(text, k), False

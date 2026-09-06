@@ -14,6 +14,7 @@ import pytest
 
 from bot.handlers.file_handler import handle_file, handle_scan_action_callback
 from bot.i18n import label, t
+from bot.storage import subscription
 
 
 def _file_update(lang: str | None = None, file_name: str = "invoice.pdf"):
@@ -117,6 +118,41 @@ async def test_download_failure_also_replies_gracefully():
 
     sent.edit_text.assert_awaited_once_with(t("km", "file_scan_failed"))
     mock_log.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_daily_file_limit_blocks_scanning_once_reached():
+    update, context, sent = _file_update()
+    uid = update.effective_user.id
+    for _ in range(subscription.FREEMIUM_DAILY_FILES):
+        subscription.record_file_scan(uid)
+
+    with patch("bot.handlers.file_handler.download_and_hash") as mock_download, \
+         patch("bot.handlers.file_handler.scan_file") as mock_scan:
+        await handle_file(update, context)
+
+    mock_download.assert_not_called()  # never even started - blocked before any real work
+    mock_scan.assert_not_called()
+    update.message.reply_text.assert_awaited_once_with(
+        t("en", "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_scan_does_not_consume_the_daily_quota():
+    # Fair to the user: a download/VT failure shouldn't burn one of
+    # their limited daily scans.
+    update, context, sent = _file_update()
+    uid = update.effective_user.id
+
+    with patch("bot.handlers.file_handler.download_and_hash",
+               AsyncMock(side_effect=ConnectionError("VT unreachable"))), \
+         patch("bot.handlers.file_handler.log_scan"):
+        await handle_file(update, context)
+
+    assert subscription.can_scan_file(uid)  # quota untouched by the failure
+    summary = subscription.usage_summary(uid)
+    assert summary["files_used"] == 0
 
 
 def _callback_update(data: str, lang: str | None = None):

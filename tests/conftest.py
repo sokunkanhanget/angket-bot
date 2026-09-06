@@ -24,6 +24,7 @@ import pytest_asyncio
 
 from bot.detectors.url.offline import vectors
 from bot.storage import scan_log
+from bot.storage import subscription
 
 
 class _FakeVectorStore:
@@ -132,4 +133,34 @@ def isolated_scan_log_db(tmp_path_factory):
     scan_log.SCAN_LOG_DB = db
     scan_log.init_db()
     scan_log.init_url_db()
+    # subscription.py binds SCAN_LOG_DB the same separate way - same
+    # isolation gap this fixture already exists to close for scan_log.py.
+    subscription.SCAN_LOG_DB = db
     return db
+
+
+@pytest.fixture(scope="session")
+def _subscription_reset_conn(isolated_scan_log_db):
+    """One connection, opened once and reused for the whole session -
+    a fresh sqlite3.connect() per test (231 of them) measurably regressed
+    suite time (~5s -> ~12s) the same way a per-test scan_log connection
+    already did once this session, fixed the same way: keep one
+    connection alive and reuse it, since the actual isolation only needs
+    the cheap DELETEs below, not a fresh connection each time."""
+    conn = subscription._connect()
+    yield conn
+    conn.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_subscription_usage(_subscription_reset_conn):
+    """Per-test (unlike the session-scoped fixture above): many existing
+    handler tests reuse the same hardcoded fake user id (e.g.
+    test_file_handler.py's _file_update() always defaults to id=7)
+    across several tests in the same file. Since daily_usage/trial_status
+    live in the same session-scoped db, an earlier test's real recorded
+    usage (record_file_scan, etc.) would otherwise carry over and trip a
+    later, unrelated test's rate-limit check unexpectedly."""
+    _subscription_reset_conn.execute("delete from daily_usage")
+    _subscription_reset_conn.execute("delete from trial_status")
+    _subscription_reset_conn.commit()

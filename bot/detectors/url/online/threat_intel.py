@@ -39,6 +39,7 @@ import time
 import httpx
 
 from bot.config import SCAN_LOG_DB
+from bot.storage import health_alerts
 
 API_BASE = "https://www.virustotal.com/api/v3"
 LOOKUP_TIMEOUT = 8.0
@@ -172,13 +173,22 @@ async def lookup(url: str, api_key: str | None, live: bool = True) -> dict | Non
                         f"{API_BASE}/urls/{url_id}",
                         headers={"x-apikey": api_key},
                     )
-    except Exception:                          # noqa: BLE001 - network is best-effort
+    except Exception as error:                 # noqa: BLE001 - network is best-effort
+        health_alerts.record_failure("VirusTotal", str(error))
+        await health_alerts.maybe_alert("VirusTotal", str(error))
         return None
 
     if response.status_code != 200:
         # 404 = VT never saw this URL; 401 = bad key; 429 = rate limit.
         # All mean "no data right now"; do NOT cache misses so a retry
-        # can happen after the rate-limit window.
+        # can happen after the rate-limit window. 429 specifically is
+        # worth tracking as a real failure pattern (not 404, which is
+        # just "unknown URL", a routine/expected result) - a run of 429s
+        # means the quota is actually exhausted, exactly the "nobody
+        # notices for days" scenario this alerting exists to catch.
+        if response.status_code == 429:
+            health_alerts.record_failure("VirusTotal", "rate limited (429) - quota likely exhausted")
+            await health_alerts.maybe_alert("VirusTotal", "rate limited (429) - quota likely exhausted")
         return None
 
     try:

@@ -6,6 +6,7 @@ from telegram.ext import ContextTypes
 
 from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.storage.scan_log import log_scan
+from bot.storage import subscription
 from bot.handlers.text_handler import get_user_lang
 from bot.i18n import label, t
 from bot.verdict_style import risk_style
@@ -38,6 +39,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     file_name = document.file_name or "unknown_file"
     user_id = update.effective_user.id
     lang = get_user_lang(context)
+
+    if not subscription.can_scan_file(user_id):
+        await update.message.reply_text(
+            t(lang, "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES)
+        )
+        return
+
     message = await update.message.reply_text(
         f"📥 *Scanning `{file_name}`...*",
         parse_mode="Markdown",
@@ -50,6 +58,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.exception("File scan failed for %s", file_name)
         await message.edit_text(t(lang, "file_scan_failed"))
         return
+
+    subscription.record_file_scan(user_id)
 
     filename_warning = result.get("filename_warning")
     warning_block = f"\n⚠️ **{filename_warning}**\n" if filename_warning else ""

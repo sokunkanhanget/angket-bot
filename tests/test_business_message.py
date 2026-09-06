@@ -13,6 +13,7 @@ import pytest
 
 import bot.context_engine as context_engine
 from bot.handlers.url_handler import handle_business_message
+from bot.storage import subscription
 
 
 def _business_update(text=None, has_document=False):
@@ -349,3 +350,56 @@ async def test_notification_defaults_to_english_when_owner_has_no_stored_languag
     body = context.bot.send_message.call_args.kwargs["text"]
     assert "LIKELY A SCAM" in body
     assert mock_unified.call_args.args[4] == "en"
+
+
+@pytest.mark.asyncio
+async def test_live_detect_trial_expiry_blocks_automation_and_notifies_owner():
+    # Once the owner's 7-day Live Detect trial has expired (and they're
+    # not on the paid tier - is_paid_user() always False for now), the
+    # automation must not run at all - the owner gets ONE notice instead
+    # of a real scam-check reasoning over the customer's message.
+    update = _business_update(text="URGENT: send $800 now, don't call")
+    context = _context()
+    context.application.user_data = {}
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.url_handler.check_message_full") as mock_check, \
+         patch("bot.handlers.url_handler.analyze_unified") as mock_unified, \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch.object(subscription, "live_detect_allowed", return_value=False):
+        await handle_business_message(update, context)
+
+    # The cheap, local, offline keyword check runs regardless (no real
+    # cost) - what matters is that the EXPENSIVE work (network trace,
+    # vector search, the real Gemini call) never happens once expired.
+    mock_check.assert_not_called()
+    mock_unified.assert_not_called()
+    context.bot.send_message.assert_awaited_once()
+    call = context.bot.send_message.call_args
+    assert call.kwargs["chat_id"] == 555
+    assert "trial" in call.kwargs["text"].lower() or "Live Detect" in call.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_live_detect_within_trial_runs_normally():
+    # Sanity check for the opposite branch - an active trial must not
+    # block anything (already implicitly covered by every other test in
+    # this file passing, but this pins it explicitly against a
+    # `live_detect_allowed` mock instead of relying on the real 7-day
+    # clock never having started for id 555 in other tests).
+    update = _business_update(text="URGENT: send $800 now, don't call")
+    context = _context()
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch.object(subscription, "live_detect_allowed", return_value=True), \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam", "risk_percentage": 95,
+             "key_reasons": [{"text": "Urgent money request", "source": "message_text"}],
+             "recommendations": [],
+         })) as mock_unified:
+        await handle_business_message(update, context)
+
+    mock_unified.assert_awaited_once()

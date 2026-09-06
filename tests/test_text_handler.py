@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from bot.i18n import key_for_label, label
+from bot.i18n import key_for_label, label, t
 from bot.handlers.text_handler import (
     MAIN_MENU_KEYBOARD,
     format_analysis_response,
@@ -10,6 +10,7 @@ from bot.handlers.text_handler import (
     get_user_lang,
     handle_text,
 )
+from bot.storage import subscription
 
 
 def _result(risk_percentage, verdict="Scam"):
@@ -129,6 +130,7 @@ async def test_handle_text_analyzes_a_caption_when_text_is_absent():
     update.message.caption = "URGENT: verify your account now or it will be suspended"
     update.message.reply_text = AsyncMock()
     update.effective_message = update.message
+    update.effective_user.id = 42
 
     with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), patch(
         "bot.handlers.text_handler.analyze_text_with_llm",
@@ -154,6 +156,7 @@ def _private_update(text):
     update.message.reply_text = AsyncMock()
     update.effective_message = update.message
     update.effective_chat.type = "private"
+    update.effective_user.id = 42
     return update
 
 
@@ -190,6 +193,25 @@ async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link(
     reply = update.message.reply_text.call_args[0][0]
     assert "VERDICT: LIKELY A SCAM" in reply
     assert "Promises free money" in reply
+
+
+@pytest.mark.asyncio
+async def test_daily_scan_limit_blocks_before_any_real_work():
+    update = _private_update("free bitcoin now, click nowhere")
+    context = _private_context()
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(update.effective_user.id)
+
+    with patch("bot.handlers.text_handler.analyze_unified") as mock_unified, \
+         patch("bot.handlers.text_handler.check_message_full") as mock_check:
+        await handle_text(update, context)
+
+    mock_unified.assert_not_called()
+    mock_check.assert_not_called()
+    update.message.reply_text.assert_awaited_once_with(
+        t("en", "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+        reply_markup=MAIN_MENU_KEYBOARD,
+    )
 
 
 @pytest.mark.asyncio
@@ -269,6 +291,7 @@ async def test_handle_text_analyzes_regular_messages():
     update.message.text = "This is a test message"
     update.message.reply_text = AsyncMock()
     update.effective_message = update.message
+    update.effective_user.id = 42
     context = type("Ctx", (), {"user_data": {}})()
 
     with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": False, "matches": []}), patch(

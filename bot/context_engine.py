@@ -34,9 +34,11 @@ import logging
 from google import genai
 from google.genai import types
 
-from bot.config import GEMINI_API_KEY, GEMINI_MODEL, SCAM_PATTERN_THRESHOLD
+from bot.config import GEMINI_API_KEY, GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
 from bot.i18n import DEFAULT_LANG
-from bot.detectors.text.offline.scam_patterns import nearest_scam_pattern
+from bot.detectors.text.offline.scam_patterns import nearest_scam_pattern, nearest_scam_pattern_live
+from bot.storage import subscription
+from bot.storage import health_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -333,6 +335,7 @@ async def analyze_unified(
     link_verdicts: list[dict],
     file_verdict: dict | None = None,
     lang: str = DEFAULT_LANG,
+    user_id: int | None = None,
 ) -> dict:
     """One Gemini call reasoning over the message text, every link's full
     pipeline verdict, and an optional file-scan result together -> one
@@ -342,20 +345,54 @@ async def analyze_unified(
     no live AI at all), it just sets `ai_unavailable: True` so the
     caller's formatter shows one fixed, translated notice instead. The
     fixed labels around whatever either path returns are always
-    translated separately by the caller (verdict_style.py/i18n.py)."""
+    translated separately by the caller (verdict_style.py/i18n.py).
+
+    `user_id`: when given, gates on the Freemium daily token budget
+    (bot/storage/subscription.py) and records real usage from Gemini's
+    own usage_metadata after a successful call. None (the default) skips
+    both - callers that don't have a real per-user identity (there
+    currently are none in production, but this keeps the function
+    usable standalone/in tests without forcing every caller to pass one)
+    just always get the live path if the client is configured."""
     # Only surfaced to the model once it clears the same calibrated
     # SCAM_PATTERN_THRESHOLD the fallback already trusts - a low,
     # near-every-message similarity number would just be noise in the
     # evidence blob, not a real signal worth Gemini's attention.
     pattern_match = None
     if text:
-        pattern_hits = nearest_scam_pattern(text, k=1)
-        if pattern_hits and pattern_hits[0][0] >= SCAM_PATTERN_THRESHOLD:
+        # The live path prefers bge-m3 (genuinely Khmer-capable) when
+        # enabled, with a safe, automatic fallback to the fast hashed
+        # scheme baked into nearest_scam_pattern_live itself - see
+        # scam_patterns.py. _grounded_fallback below deliberately keeps
+        # calling the plain synchronous nearest_scam_pattern() instead:
+        # that path only runs once Gemini has ALREADY failed, and it
+        # exists specifically to answer fast without depending on
+        # anything else that could also be down (Ollama included) -
+        # adding a possible embedding-timeout wait to an "everything's
+        # already on fire" fallback would work against its own purpose.
+        pattern_hits, used_bge_m3 = await nearest_scam_pattern_live(text, k=1)
+        # bge-m3 runs measurably hotter than the hashed scheme (real
+        # benign text can score ~0.59) - reusing SCAM_PATTERN_THRESHOLD
+        # for it would false-positive on ordinary messages, so the
+        # threshold has to match whichever scheme actually ran, not
+        # just whether the feature flag is on (bge-m3 can still fall
+        # back to the hashed scheme mid-call if Ollama drops out).
+        threshold = BGE_M3_PATTERN_THRESHOLD if used_bge_m3 else SCAM_PATTERN_THRESHOLD
+        if pattern_hits and pattern_hits[0][0] >= threshold:
             pattern_match = (pattern_hits[0][0], pattern_hits[0][3])
 
     if not _client:
         return await _grounded_fallback(
             "LLM analysis is not configured.", text, keyword_result, link_verdicts, file_verdict
+        )
+
+    if user_id is not None and not subscription.has_token_budget(user_id):
+        # Same graceful-degradation path as "Gemini isn't configured" -
+        # the offline signals (keyword/link/file verdicts, scam-pattern
+        # similarity) still produce a real answer, just without live AI
+        # reasoning, exactly like an actual Gemini outage would.
+        return await _grounded_fallback(
+            "Daily AI token budget exhausted.", text, keyword_result, link_verdicts, file_verdict
         )
 
     try:
@@ -380,12 +417,16 @@ async def analyze_unified(
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             ),
         )
+        if user_id is not None and response.usage_metadata is not None:
+            subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
         data = json.loads(response.text)
         if data.get("risk_percentage") is not None:
             data["risk_percentage"] = max(0, min(100, int(data["risk_percentage"])))
         return _reconcile_with_evidence(data, link_verdicts, file_verdict, pattern_match)
-    except Exception:                                # noqa: BLE001 - must never break the reply path
+    except Exception as error:                       # noqa: BLE001 - must never break the reply path
         logger.exception("Unified context-engine analysis failed")
+        health_alerts.record_failure("Gemini", str(error))
+        await health_alerts.maybe_alert("Gemini", str(error))
         return await _grounded_fallback(
             "LLM analysis failed, please try again later.", text, keyword_result, link_verdicts, file_verdict
         )

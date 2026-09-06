@@ -578,3 +578,83 @@ async def test_analyze_unified_defaults_to_english_system_prompt(monkeypatch):
 
     system_instruction = fake_client.aio.models.last_kwargs["config"].system_instruction
     assert system_instruction == ce._SYSTEM_PROMPT
+
+
+# --- Deterministic dead-link short-circuit --------------------------------
+# A bare, non-resolving/unreachable link with no message context is pure
+# noise Gemini just guesses on (observed 30 vs 80 on the same host). These
+# pin the fixed short-circuit and, crucially, that it fails SAFE - any real
+# signal or context makes it fall through to the normal Gemini path.
+
+def _dead_link(**over):
+    v = {"host": "jam.example.com", "level": "suspicious", "score": 40,
+         "reasons": ["The host name does not resolve in DNS at all — nothing is really there."]}
+    v.update(over)
+    return v
+
+
+def test_dead_link_no_context_short_circuits_to_fixed_uncertain():
+    result = ce._unverifiable_dead_link("http://jam.example.com", [_dead_link()], None, None)
+
+    assert result is not None
+    assert result["verdict"] == "Uncertain"
+    assert result["risk_percentage"] == ce.UNVERIFIABLE_DEAD_LINK_RISK  # fixed, not model-derived
+    assert result["key_reasons"][0]["source"] == "link_evidence"
+
+
+def test_dead_link_short_circuit_is_deterministic():
+    # The whole point: identical input -> identical output every time.
+    a = ce._unverifiable_dead_link("http://jam.example.com", [_dead_link()], None, None)
+    b = ce._unverifiable_dead_link("http://jam.example.com", [_dead_link()], None, None)
+    assert a == b
+
+
+def test_dead_link_with_real_message_text_falls_through():
+    # Real words around the link = something for Gemini to reason about.
+    result = ce._unverifiable_dead_link(
+        "Hey is this legit? http://jam.example.com", [_dead_link()], None, None)
+    assert result is None
+
+
+def test_dead_link_but_virustotal_confirmed_falls_through():
+    v = _dead_link(reasons=["6 security engines on VirusTotal flag this link as malicious."], score=45)
+    assert ce._unverifiable_dead_link("http://jam.example.com", [v], None, None) is None
+
+
+def test_dead_link_but_dangerous_level_falls_through():
+    assert ce._unverifiable_dead_link(
+        "http://jam.example.com", [_dead_link(level="dangerous", score=80)], None, None) is None
+
+
+def test_dead_link_with_high_score_falls_through():
+    # A connectivity failure that somehow scores above the ceiling means a
+    # real content signal also contributed - not a pure dead link.
+    assert ce._unverifiable_dead_link(
+        "http://jam.example.com", [_dead_link(score=70)], None, None) is None
+
+
+def test_dead_link_with_a_scam_pattern_match_falls_through():
+    assert ce._unverifiable_dead_link(
+        "http://jam.example.com", [_dead_link()], None, (0.71, "lottery")) is None
+
+
+def test_two_links_fall_through():
+    assert ce._unverifiable_dead_link(
+        "http://jam.example.com http://x.example.org", [_dead_link(), _dead_link(host="x.example.org")],
+        None, None) is None
+
+
+def test_resolvable_suspicious_link_without_connectivity_reason_falls_through():
+    # "suspicious" for some OTHER reason (young domain) is not the dead-link
+    # case and must still go to Gemini.
+    v = _dead_link(reasons=["Domain registered 10 days ago — still very young."])
+    assert ce._unverifiable_dead_link("http://jam.example.com", [v], None, None) is None
+
+
+def test_message_is_only_links_detects_bare_vs_contextful():
+    links = [{"host": "jam.example.com"}]
+    assert ce._message_is_only_links("http://jam.example.com", links) is True
+    assert ce._message_is_only_links("  jam.example.com  ", links) is True
+    assert ce._message_is_only_links("check this http://jam.example.com", links) is False
+    # Khmer context around the link must count as real content.
+    assert ce._message_is_only_links("តើនេះជាការបោកទេ http://jam.example.com", links) is False

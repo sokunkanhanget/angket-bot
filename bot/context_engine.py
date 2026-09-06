@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from google import genai
 from google.genai import types
@@ -160,6 +161,103 @@ _client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # (_grounded_fallback) so the same policy holds regardless of which
 # path produced the number.
 UNCORROBORATED_RISK_CAP = 80
+
+
+# --- Deterministic short-circuit for the one genuinely context-free,
+# high-variance case ------------------------------------------------------
+# A BARE link (no message text to reason about) whose ONLY adverse signal
+# is that it doesn't resolve / can't be reached carries almost no
+# information: it's equally consistent with a typo, a transient outage,
+# and dead-or-pre-launch phishing infrastructure. Handing that to Gemini
+# produced wildly different risk numbers between otherwise-identical calls
+# (observed 30 vs 80 on the same non-resolving host), because there is
+# nothing there to reason about - the model is weighing pure noise. A
+# fixed, honest "couldn't verify, be cautious" is more consistent, saves a
+# token-budgeted Gemini call, and never claims false certainty. This ONLY
+# ever replaces that pure-noise case: anything with real message text, a
+# hard signal, a VirusTotal detection, a scam-script match, or a second
+# link falls through to Gemini exactly as before.
+UNVERIFIABLE_DEAD_LINK_RISK = 30
+# Max score a link can reach from connectivity failure alone:
+# 25 (no DNS resolution) + 15 (server unreachable) + 5 (plain HTTP).
+# Above this, some real content/scam signal must have contributed, so it
+# is NOT a pure dead link - see bot/detectors/url/pipeline.py.
+_CONNECTIVITY_ONLY_MAX = 45
+# Stable substrings of the pipeline's own connectivity reasons. Matched
+# loosely so a wording tweak in the pipeline simply disables this
+# optimization (falls back to Gemini) rather than misfiring.
+_CONNECTIVITY_REASON_MARKERS = ("does not resolve", "could not be reached")
+
+_URL_LIKE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+_DOMAINISH = re.compile(r"[^\s]+\.[^\s]{2,}")
+
+
+def _message_is_only_links(text: str, link_verdicts: list[dict]) -> bool:
+    """True when the message has no real content to reason about beyond
+    the link(s) themselves - i.e. a bare pasted URL. Strips URLs, the
+    known link hosts, and any bare-domain tokens, then checks that no
+    wordy content remains. Unicode-aware, so a Khmer sentence around the
+    link correctly counts as real context and keeps this from firing."""
+    if not text or not text.strip():
+        return True
+    leftover = _URL_LIKE.sub(" ", text)
+    for v in link_verdicts:
+        host = v.get("host")
+        if host:
+            leftover = leftover.replace(host, " ")
+    leftover = _DOMAINISH.sub(" ", leftover)
+    return not re.sub(r"[^\w]", "", leftover, flags=re.UNICODE).strip()
+
+
+def _unverifiable_dead_link(
+    text: str,
+    link_verdicts: list[dict],
+    file_verdict: dict | None,
+    pattern_match: tuple[float, str] | None,
+) -> dict | None:
+    """Return a fixed 'couldn't verify' verdict for the pure dead-link,
+    no-context case, or None to let the normal Gemini path run. Written
+    to fail SAFE: every condition that isn't clearly met returns None, so
+    this can only ever replace the ambiguous-noise case, never suppress a
+    real signal."""
+    if file_verdict and file_verdict.get("malicious", 0) > 0:
+        return None
+    if pattern_match is not None:
+        return None
+    if len(link_verdicts) != 1:
+        return None
+    v = link_verdicts[0]
+    # Only the middle "suspicious" band: a 'safe' link needs no caution,
+    # a 'dangerous' one is too strong to short-circuit as mere noise.
+    if v.get("level") != "suspicious":
+        return None
+    if _has_confirmed_evidence(link_verdicts, file_verdict):
+        return None
+    if v.get("score", 0) > _CONNECTIVITY_ONLY_MAX:
+        return None
+    reasons = v.get("reasons") or []
+    if not any(any(m in r for m in _CONNECTIVITY_REASON_MARKERS) for r in reasons):
+        return None
+    if not _message_is_only_links(text, link_verdicts):
+        return None
+
+    logger.info("deterministic dead-link short-circuit for %s (score=%s)",
+                v.get("host"), v.get("score"))
+    return {
+        "verdict": "Uncertain",
+        "risk_percentage": UNVERIFIABLE_DEAD_LINK_RISK,
+        "key_reasons": [{
+            "text": "This link could not be verified: its address does not resolve or the "
+                    "server can't be reached, and the message has no other text to judge it "
+                    "by. That is a weak caution, not proof of a scam - dead links, typos and "
+                    "temporarily offline pages look the same from here.",
+            "source": "link_evidence",
+        }],
+        "recommendations": [
+            "Don't enter any login or payment details on this link until you have confirmed it is genuine.",
+            "If someone sent it to you, check through a channel you trust that they really meant to.",
+        ],
+    }
 
 
 def _has_confirmed_evidence(link_verdicts: list[dict], file_verdict: dict | None) -> bool:
@@ -465,6 +563,14 @@ async def analyze_unified(
         threshold = BGE_M3_PATTERN_THRESHOLD if used_bge_m3 else SCAM_PATTERN_THRESHOLD
         if pattern_hits and pattern_hits[0][0] >= threshold:
             pattern_match = (pattern_hits[0][0], pattern_hits[0][3])
+
+    # Deterministic short-circuit BEFORE the Gemini call (and before the
+    # budget check - it costs no tokens): a bare, non-resolving/unreachable
+    # link with no other signal is pure noise the model just guesses on.
+    # Returns a fixed "couldn't verify" verdict, or None to proceed normally.
+    dead_link = _unverifiable_dead_link(text, link_verdicts, file_verdict, pattern_match)
+    if dead_link is not None:
+        return dead_link
 
     if not _client:
         return await _grounded_fallback(

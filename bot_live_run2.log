@@ -1,0 +1,1241 @@
+2026-09-07 21:48:51,899 INFO __main__: [startup] imports finished in 1.858s
+2026-09-07 21:48:51,903 INFO __main__: [startup] local SQLite tables ready in 0.003s
+2026-09-07 21:48:52,254 INFO __main__: [startup] Application built in 0.352s
+2026-09-07 21:48:52,255 INFO __main__: [startup] main() (SQLite init + Application build + handler registration) done in 0.356s - NOT counting the import phase logged above, which already finished before main() was even called - add both for real cold-start time - polling now...
+2026-09-07 21:48:53,262 INFO telegram.ext.Application: Application started
+2026-09-07 21:51:19,787 INFO __main__: update: message=None edited=None business=None callback=None
+2026-09-07 21:51:34,094 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Hai', id=1331457621, last_name='Socheat', type=<ChatType.PRIVATE>, username='socheathai'), date=datetime.datetime(2026, 9, 7, 14, 51, 50, tzinfo=datetime.timezone.utc), delete_chat_photo=False, entities=(MessageEntity(length=66, offset=0, type=<MessageEntityType.URL>),), from_user=User(first_name='Hai', id=1331457621, is_bot=False, language_code='en', last_name='Socheat', username='socheathai'), group_chat_created=False, link_preview_options=LinkPreviewOptions(url='https://supabase.com/dashboard/project/juwifgxtefkcecfxxoni/editor'), message_id=31328, supergroup_chat_created=False, text='https://supabase.com/dashboard/project/juwifgxtefkcecfxxoni/editor') callback=None
+2026-09-07 21:51:34,101 INFO bot.detectors.url.offline.vectors: [first-message] Supabase pool opened in 0.000s
+2026-09-07 21:51:37,786 INFO bot.detectors.url.offline.vectors: [first-message] Vector store seeded in 3.686s
+2026-09-07 21:51:39,756 INFO bot.detectors.url.pipeline: verdict safe (0) for supabase.com
+2026-09-07 21:51:41,495 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 289, in raise_error_async
+    raise ServerError(status_code, response_json, response)
+google.genai.errors.ServerError: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+2026-09-07 21:51:41,506 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}} (1 in the last hour)
+2026-09-07 21:51:41,507 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:51:51,662 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Hai', id=1331457621, last_name='Socheat', type=<ChatType.PRIVATE>, username='socheathai'), date=datetime.datetime(2026, 9, 7, 14, 52, 8, tzinfo=datetime.timezone.utc), delete_chat_photo=False, entities=(MessageEntity(length=11, offset=42, type=<MessageEntityType.BOLD>), MessageEntity(length=10, offset=56, type=<MessageEntityType.CODE>), MessageEntity(length=26, offset=95, type=<MessageEntityType.BOLD>), MessageEntity(length=12, offset=125, type=<MessageEntityType.BOLD>)), from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31330, supergroup_chat_created=False, text='👀 New activity in your business chat\n\n👤 Hai Socheat  (1331457621)\n🕒 2026-09-07 14:51 UTC\n\n✅ VERDICT: SAFE / LEGITIMATE\n🟢 0%  LOW RISK\n\n⚠️ AI reasoning was unavailable for this check - this result uses offline pattern matching only and may be less accurate than usual.\n\nⓘ Bot can make mistakes. Please check carefully.') callback=None
+2026-09-07 21:52:01,537 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Hai', id=1331457621, last_name='Socheat', type=<ChatType.PRIVATE>, username='socheathai'), date=datetime.datetime(2026, 9, 7, 14, 52, 10, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31331, supergroup_chat_created=False, text='Working now') callback=None
+2026-09-07 21:52:05,258 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 52, 21, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31332, supergroup_chat_created=False, text='send again') callback=None
+2026-09-07 21:53:24,641 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Hai', id=1331457621, last_name='Socheat', type=<ChatType.PRIVATE>, username='socheathai'), date=datetime.datetime(2026, 9, 7, 14, 53, 41, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31335, supergroup_chat_created=False, text='reasons not working:\n- I forgot to put the bot into Chat Automation') callback=None
+2026-09-07 21:53:25,367 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 18.000223635s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '18s'}]}}
+2026-09-07 21:53:25,373 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 18.000223635s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '18s'}]}} (2 in the last hour)
+2026-09-07 21:53:25,373 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:53:32,100 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Hai', id=1331457621, last_name='Socheat', type=<ChatType.PRIVATE>, username='socheathai'), date=datetime.datetime(2026, 9, 7, 14, 53, 48, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31336, supergroup_chat_created=False, text='and needed to refresh my telegram') callback=None
+2026-09-07 21:53:32,466 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 10.871657195s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '10s'}]}}
+2026-09-07 21:53:32,472 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 10.871657195s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '10s'}]}} (3 in the last hour)
+2026-09-07 21:53:33,992 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:53:46,061 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Hai', id=1331457621, last_name='Socheat', type=<ChatType.PRIVATE>, username='socheathai'), date=datetime.datetime(2026, 9, 7, 14, 54, 2, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='Hai', id=1331457621, is_bot=False, language_code='en', last_name='Socheat', username='socheathai'), group_chat_created=False, message_id=31338, supergroup_chat_created=False, text='ok ok') callback=None
+2026-09-07 21:53:46,446 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 56.919956839s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '56s'}]}}
+2026-09-07 21:53:46,452 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 56.919956839s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '56s'}]}} (4 in the last hour)
+2026-09-07 21:53:46,452 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:54:37,481 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 54, 53, tzinfo=datetime.timezone.utc), delete_chat_photo=False, entities=(MessageEntity(length=11, offset=0, type=<MessageEntityType.URL>),), from_user=User(first_name='Mao', id=1213699668, is_bot=False, last_name='Nary', username='Junenary'), group_chat_created=False, message_id=31341, supergroup_chat_created=False, text='youtube.com') callback=None
+2026-09-07 21:54:44,517 INFO bot.detectors.url.pipeline: verdict safe (15) for youtube.com
+2026-09-07 21:54:45,215 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 58.138294021s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '58s'}]}}
+2026-09-07 21:54:45,219 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 58.138294021s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '58s'}]}} (5 in the last hour)
+2026-09-07 21:54:45,219 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:54:57,186 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 55, 13, tzinfo=datetime.timezone.utc), delete_chat_photo=False, entities=(MessageEntity(length=8, offset=42, type=<MessageEntityType.BOLD>), MessageEntity(length=10, offset=53, type=<MessageEntityType.CODE>), MessageEntity(length=26, offset=92, type=<MessageEntityType.BOLD>), MessageEntity(length=13, offset=122, type=<MessageEntityType.BOLD>)), from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31343, supergroup_chat_created=False, text='👀 New activity in your business chat\n\n👤 Mao Nary  (1213699668)\n🕒 2026-09-07 14:54 UTC\n\n✅ VERDICT: SAFE / LEGITIMATE\n🟢 15%  LOW RISK\n\n⚠️ AI reasoning was unavailable for this check - this result uses offline pattern matching only and may be less accurate than usual.\n\nⓘ Bot can make mistakes. Please check carefully.') callback=None
+2026-09-07 21:54:57,614 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 45.782214242s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '45s'}]}}
+2026-09-07 21:54:57,617 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 45.782214242s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '45s'}]}} (6 in the last hour)
+2026-09-07 21:54:57,618 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:55:07,807 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 55, 24, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31344, supergroup_chat_created=False, text='wow, very safe') callback=None
+2026-09-07 21:55:08,200 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 35.192199256s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '35s'}]}}
+2026-09-07 21:55:08,204 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 35.192199256s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '35s'}]}} (7 in the last hour)
+2026-09-07 21:55:08,204 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:55:27,278 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 55, 43, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='Mao', id=1213699668, is_bot=False, last_name='Nary', username='Junenary'), group_chat_created=False, message_id=31346, supergroup_chat_created=False, text='But the sender can see it😭😭') callback=None
+2026-09-07 21:55:27,789 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 15.588655312s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '15s'}]}}
+2026-09-07 21:55:27,795 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 15.588655312s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '15s'}]}} (8 in the last hour)
+2026-09-07 21:55:27,795 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:55:53,211 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 56, 9, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31348, supergroup_chat_created=False, text='actually I just copy the text') callback=None
+2026-09-07 21:55:53,684 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 49.705908537s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '49s'}]}}
+2026-09-07 21:55:53,690 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 49.705908537s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '49s'}]}} (9 in the last hour)
+2026-09-07 21:55:53,690 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:56:00,561 INFO __main__: update: message=None edited=None business=Message(api_kwargs={'forward_date': 1788792902, 'forward_from': {'id': 8792966416, 'is_bot': True, 'first_name': 'af', 'username': 'awsergthnjmlkbhcgfdfbot'}}, business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 56, 17, tzinfo=datetime.timezone.utc), delete_chat_photo=False, entities=(MessageEntity(length=8, offset=42, type=<MessageEntityType.BOLD>), MessageEntity(length=10, offset=53, type=<MessageEntityType.CODE>), MessageEntity(length=26, offset=92, type=<MessageEntityType.BOLD>), MessageEntity(length=13, offset=122, type=<MessageEntityType.BOLD>)), forward_origin=MessageOriginUser(date=datetime.datetime(2026, 9, 7, 14, 55, 2, tzinfo=datetime.timezone.utc), sender_user=User(first_name='af', id=8792966416, is_bot=True, username='awsergthnjmlkbhcgfdfbot'), type=<MessageOriginType.USER>), from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31349, supergroup_chat_created=False, text='👀 New activity in your business chat\n\n👤 Mao Nary  (1213699668)\n🕒 2026-09-07 14:54 UTC\n\n✅ VERDICT: SAFE / LEGITIMATE\n🟢 15%  LOW RISK\n\n⚠️ AI reasoning was unavailable for this check - this result uses offline pattern matching only and may be less accurate than usual.\n\nⓘ Bot can make mistakes. Please check carefully.') callback=None
+2026-09-07 21:56:00,951 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 42.432413898s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '42s'}]}}
+2026-09-07 21:56:00,955 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 42.432413898s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '42s'}]}} (10 in the last hour)
+2026-09-07 21:56:00,955 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:56:02,905 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 56, 19, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31350, supergroup_chat_created=False, text='see') callback=None
+2026-09-07 21:56:03,314 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 40.117457468s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '40s'}]}}
+2026-09-07 21:56:03,317 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 40.117457468s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '40s'}]}} (11 in the last hour)
+2026-09-07 21:56:03,318 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:56:12,854 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 56, 29, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='Mao', id=1213699668, is_bot=False, last_name='Nary', username='Junenary'), group_chat_created=False, message_id=31351, supergroup_chat_created=False, text="Oh goddd that's great") callback=None
+2026-09-07 21:56:13,220 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 30.148679701s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '30s'}]}}
+2026-09-07 21:56:13,227 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 30.148679701s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '30s'}]}} (12 in the last hour)
+2026-09-07 21:56:13,227 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:56:20,806 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 56, 37, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31352, supergroup_chat_created=False, text='I just copy the text to give you, i think it is better to forward so you can see instead') callback=None
+2026-09-07 21:56:21,174 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 22.189379597s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '22s'}]}}
+2026-09-07 21:56:21,179 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 22.189379597s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '22s'}]}} (13 in the last hour)
+2026-09-07 21:56:21,179 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:56:30,846 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 56, 47, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='Mao', id=1213699668, is_bot=False, last_name='Nary', username='Junenary'), group_chat_created=False, message_id=31353, reply_to_message=Message(api_kwargs={'forward_date': 1788792902, 'forward_from': {'id': 8792966416, 'is_bot': True, 'first_name': 'af', 'username': 'awsergthnjmlkbhcgfdfbot'}}, business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 56, 17, tzinfo=datetime.timezone.utc), delete_chat_photo=False, entities=(MessageEntity(length=8, offset=42, type=<MessageEntityType.BOLD>), MessageEntity(length=10, offset=53, type=<MessageEntityType.CODE>), MessageEntity(length=26, offset=92, type=<MessageEntityType.BOLD>), MessageEntity(length=13, offset=122, type=<MessageEntityType.BOLD>)), forward_origin=MessageOriginUser(date=datetime.datetime(2026, 9, 7, 14, 55, 2, tzinfo=datetime.timezone.utc), sender_user=User(first_name='af', id=8792966416, is_bot=True, username='awsergthnjmlkbhcgfdfbot'), type=<MessageOriginType.USER>), from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31349, supergroup_chat_created=False, text='👀 New activity in your business chat\n\n👤 Mao Nary  (1213699668)\n🕒 2026-09-07 14:54 UTC\n\n✅ VERDICT: SAFE / LEGITIMATE\n🟢 15%  LOW RISK\n\n⚠️ AI reasoning was unavailable for this check - this result uses offline pattern matching only and may be less accurate than usual.\n\nⓘ Bot can make mistakes. Please check carefully.'), supergroup_chat_created=False, text='Btw the UI looks good and clean') callback=None
+2026-09-07 21:56:31,225 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 12.150388437s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '12s'}]}}
+2026-09-07 21:56:31,229 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 12.150388437s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '12s'}]}} (14 in the last hour)
+2026-09-07 21:56:31,229 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:56:48,026 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 57, 4, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31354, supergroup_chat_created=False, text='still need kanha to work on the responses first') callback=None
+2026-09-07 21:56:48,605 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 54.785232095s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '54s'}]}}
+2026-09-07 21:56:48,609 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 54.785232095s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '54s'}]}} (15 in the last hour)
+2026-09-07 21:56:48,609 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:57:00,623 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 57, 17, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31355, supergroup_chat_created=False, text='also, will add more verdict on the chat automation message') callback=None
+2026-09-07 21:57:01,012 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 42.370360836s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '42s'}]}}
+2026-09-07 21:57:01,018 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 42.370360836s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '42s'}]}} (16 in the last hour)
+2026-09-07 21:57:01,018 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 21:58:11,525 INFO __main__: update: message=Message(channel_chat_created=False, chat=Chat(first_name='BolBol', id=5061847588, type=<ChatType.PRIVATE>), date=datetime.datetime(2026, 9, 7, 14, 58, 28, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=207, supergroup_chat_created=False, text='⭐ ការជាវ') edited=None business=None callback=None
+2026-09-07 21:58:24,860 INFO __main__: update: message=Message(channel_chat_created=False, chat=Chat(first_name='BolBol', id=5061847588, type=<ChatType.PRIVATE>), date=datetime.datetime(2026, 9, 7, 14, 58, 41, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=209, supergroup_chat_created=False, text='🌐 Switch Language') edited=None business=None callback=None
+2026-09-07 21:58:27,184 INFO __main__: update: message=Message(channel_chat_created=False, chat=Chat(first_name='BolBol', id=5061847588, type=<ChatType.PRIVATE>), date=datetime.datetime(2026, 9, 7, 14, 58, 43, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=211, supergroup_chat_created=False, text='English') edited=None business=None callback=None
+2026-09-07 21:58:31,990 INFO __main__: update: message=Message(channel_chat_created=False, chat=Chat(first_name='BolBol', id=5061847588, type=<ChatType.PRIVATE>), date=datetime.datetime(2026, 9, 7, 14, 58, 48, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=213, supergroup_chat_created=False, text='🔎 Live Message Scan') edited=None business=None callback=None
+2026-09-07 21:59:24,283 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 14, 59, 40, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='Mao', id=1213699668, is_bot=False, last_name='Nary', username='Junenary'), group_chat_created=False, message_id=31364, supergroup_chat_created=False, text='Fighting BolBol ai🤩🤩') callback=None
+2026-09-07 21:59:24,985 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 18.390013036s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '18s'}]}}
+2026-09-07 21:59:24,990 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 18.390013036s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'model': 'gemini-2.5-flash', 'location': 'global'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '18s'}]}} (17 in the last hour)
+2026-09-07 21:59:24,990 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.
+2026-09-07 22:04:58,242 INFO __main__: update: message=None edited=None business=Message(business_connection_id='9-5T2Jvg-FRXBAAAzi-bk9Wb7Cg', channel_chat_created=False, chat=Chat(first_name='Mao', id=1213699668, last_name='Nary', type=<ChatType.PRIVATE>, username='Junenary'), date=datetime.datetime(2026, 9, 7, 15, 5, 14, tzinfo=datetime.timezone.utc), delete_chat_photo=False, from_user=User(first_name='BolBol', id=5061847588, is_bot=False, language_code='en'), group_chat_created=False, message_id=31374, supergroup_chat_created=False, text='Kjel has 😭') callback=None
+2026-09-07 22:04:59,071 ERROR bot.context_engine: Unified context-engine analysis failed
+Traceback (most recent call last):
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\context_engine.py", line 590, in analyze_unified
+    response = await _client.aio.models.generate_content(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<19 lines>...
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 8692, in generate_content
+    return await self._generate_content(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        model=model, contents=contents, config=final_parsed_config
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\models.py", line 7185, in _generate_content
+    response = await self._api_client.async_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        'post', path, request_dict, http_options
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1793, in async_request
+    result = await self._async_request(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        http_request=http_request, http_options=http_options, stream=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1726, in _async_request
+    return await self._async_retry(  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self._async_request_once, http_request, stream
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 112, in __call__
+    do = await self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 157, in iter
+    result = await action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\_utils.py", line 111, in inner
+    return call(*args, **kwargs)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 413, in exc_check
+    raise retry_exc.reraise()
+          ~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\__init__.py", line 184, in reraise
+    raise self.last_attempt.result()
+          ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 449, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\concurrent\futures\_base.py", line 401, in __get_result
+    raise self._exception
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\tenacity\asyncio\__init__.py", line 116, in __call__
+    result = await fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\_api_client.py", line 1654, in _async_request_once
+    await errors.APIError.raise_for_async_response(response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 265, in raise_for_async_response
+    await cls.raise_error_async(status_code, response_json, response)
+  File "C:\Users\USER\OneDrive\Desktop\Project\angket-bot\.venv\Lib\site-packages\google\genai\errors.py", line 287, in raise_error_async
+    raise ClientError(status_code, response_json, response)
+google.genai.errors.ClientError: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 44.330513112s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '44s'}]}}
+2026-09-07 22:04:59,073 WARNING bot.storage.health_alerts: [backend-failure] Gemini failed: 429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-2.5-flash\nPlease retry in 44.330513112s.', 'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/google.rpc.Help', 'links': [{'description': 'Learn more about Gemini API quotas', 'url': 'https://ai.google.dev/gemini-api/docs/rate-limits'}]}, {'@type': 'type.googleapis.com/google.rpc.QuotaFailure', 'violations': [{'quotaMetric': 'generativelanguage.googleapis.com/generate_content_free_tier_requests', 'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', 'quotaDimensions': {'location': 'global', 'model': 'gemini-2.5-flash'}, 'quotaValue': '20'}]}, {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '44s'}]}} (18 in the last hour)
+2026-09-07 22:04:59,073 INFO bot.context_engine: Falling back to offline detection: LLM analysis failed, please try again later.

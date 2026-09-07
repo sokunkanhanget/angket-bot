@@ -141,6 +141,38 @@ async def test_stays_silent_when_owner_cannot_be_resolved():
 
 
 @pytest.mark.asyncio
+async def test_stays_silent_for_the_owners_own_message():
+    # Real bug, confirmed live: nothing distinguished "a customer messaged
+    # the business" from "the business owner sent/replied to a message in
+    # their own connected chat" - every message in the conversation, in
+    # EITHER direction, got the full unified Gemini check, including the
+    # owner's own casual replies ("Working now", "send again" were the
+    # real examples that surfaced this). Also what was burning through the
+    # Gemini free-tier quota so fast during testing - a short back-and-
+    # forth meant several Gemini calls, not one. A private chat's chat_id
+    # equals that user's own user_id in Telegram, and owner_chat_id IS
+    # exactly the owner's user_id (BusinessConnection.user_chat_id) - so
+    # sender.id == owner_chat_id reliably means "the owner sent this".
+    update = _business_update(text="ok sounds good, talk soon")
+    update.effective_user = MagicMock(full_name="Business Owner", id=555)
+    context = _context()
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": False, "matches": []}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])) as check_full, \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock()) as unified, \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)):
+        await handle_business_message(update, context)
+
+    context.bot.send_message.assert_not_awaited()
+    # Must exit before doing ANY real work, not just before notifying -
+    # this is the actual quota-burning fix, so it must never even reach
+    # the link/Gemini checks for the owner's own messages.
+    check_full.assert_not_awaited()
+    unified.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_attached_file_is_scanned_and_always_notifies():
     # A file being sent at all is worth telling the owner about, even if
     # VirusTotal comes back clean - matches handle_file's non-Business

@@ -202,6 +202,29 @@ async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link(
 
 
 @pytest.mark.asyncio
+async def test_usage_menu_button_shows_real_recorded_counts():
+    # "usage" replaced "live_scan" as a main-menu item - unlike every
+    # other menu item, its reply is dynamic (real numbers from
+    # subscription.usage_summary(), which existed and was unit-tested
+    # but never actually wired into a real reply before this). Records
+    # real usage first so the reply can be checked against genuine
+    # counts, not just "some text came back".
+    update = _private_update(label("en", "usage"))
+    context = _private_context()
+
+    subscription.record_link_or_message_scan(update.effective_user.id)
+    subscription.record_link_or_message_scan(update.effective_user.id)
+    subscription.record_file_scan(update.effective_user.id)
+
+    await handle_text(update, context)
+
+    reply = update.message.reply_text.call_args[0][0]
+    assert f"1/{subscription.FREEMIUM_DAILY_FILES}" in reply
+    assert f"2/{subscription.FREEMIUM_DAILY_LINKS_MESSAGES}" in reply
+    assert f"0/{subscription.FREEMIUM_DAILY_TOKENS}" in reply
+
+
+@pytest.mark.asyncio
 async def test_daily_scan_limit_blocks_before_any_real_work():
     update = _private_update("free bitcoin now, click nowhere")
     context = _private_context()

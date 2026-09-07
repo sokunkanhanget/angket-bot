@@ -20,12 +20,16 @@ BTN_MENU = "MENU"
 # Menu items shown on the main menu, in canonical-key form (excludes "menu" itself).
 _MAIN_MENU_KEYS = [
     ["switch_language", "how_to_use"],
-    ["safety_tips", "live_scan"],
+    ["safety_tips", "usage"],
     ["policy", "help"],
     ["subscription"],
 ]
 
-_MENU_RESPONSE_KEYS = {"how_to_use", "safety_tips", "live_scan", "policy", "help", "subscription"}
+# "usage" is deliberately NOT here - unlike every other menu item, its
+# reply is dynamic (real daily-quota numbers from subscription.py), not
+# a static translated string t() can render on its own. See its own
+# branch in handle_text below.
+_MENU_RESPONSE_KEYS = {"how_to_use", "safety_tips", "policy", "help", "subscription"}
 
 TRIGGER_MENU_KEYBOARD = ReplyKeyboardMarkup(
     [[BTN_MENU]],
@@ -279,6 +283,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             parse_mode="HTML",
             reply_markup=main_menu_keyboard,
         )
+        return
+
+    if canonical_key == "usage":
+        # Real daily-quota numbers, not a static blurb - subscription.
+        # usage_summary() already existed (unit-tested) but was never
+        # actually wired into a real reply until now.
+        usage_user_id = update.effective_user.id if update.effective_user else None
+        if usage_user_id is not None:
+            summary = subscription.usage_summary(usage_user_id)
+            await update.message.reply_text(
+                t(lang, "usage").format(
+                    files_used=summary["files_used"], files_limit=summary["files_limit"],
+                    links_used=summary["links_messages_used"], links_limit=summary["links_messages_limit"],
+                    tokens_used=summary["tokens_used"], tokens_limit=summary["tokens_limit"],
+                ),
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard,
+            )
         return
 
     if canonical_key in _MENU_RESPONSE_KEYS:

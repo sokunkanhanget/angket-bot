@@ -1,0 +1,42 @@
+  0 safe       https://m.me/cocacola
+     - No common scam signals detected. Still, stay alert.
+  0 safe       https://fb.com/zuck
+     - No common scam signals detected. Still, stay alert.
+  0 safe       https://fb.me/e/abc123
+     - No common scam signals detected. Still, stay alert.
+ 10 safe       https://discord.gg/python
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 18 days ago — still quite new.
+ 10 safe       https://discord.com/invite/python
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 9 days ago — still quite new.
+ 10 safe       https://redd.it/1abcde
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 16 days ago — still quite new.
+ 10 safe       https://www.reddit.com/r/python/
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 17 days ago — still quite new.
+  0 safe       https://vm.tiktok.com/ZMabcdefg/
+     - No common scam signals detected. Still, stay alert.
+120 dangerous  http://discord-nitro-free.gift/claim
+     - Mentions 'discord' but the real domain is 'discord-nitro-free.gift', not Discord's official site.
+     - Contains scam-typical words: claim, free, gift.
+     - Not served over HTTPS (no padlock).
+     - The host name does not resolve in DNS at all — nothing is really there.
+     - The server could not be reached (dead site or blocking bots).
+185 dangerous  http://reddit-secure-verify.tk/login
+     - Domain ends in .tk, a free TLD heavily used for scams.
+     - Mentions 'reddit' but the real domain is 'reddit-secure-verify.tk', not Reddit's official site.
+     - Contains scam-typical words: login, secure, verify.
+     - Not served over HTTPS (no padlock).
+     - Resembles patterns seen in phishing links.
+     - The host name does not resolve in DNS at all — nothing is really there.
+     - The server could not be reached (dead site or blocking bots).
+     - Closely resembles a link that was previously flagged as suspicious or dangerous.
+135 dangerous  http://messenger-account-locked.ml/verify
+     - Domain ends in .ml, a free TLD heavily used for scams.
+     - Mentions 'messenger' but the real domain is 'messenger-account-locked.ml', not Messenger's official site.
+     - Contains scam-typical words: account, verify.
+     - Not served over HTTPS (no padlock).
+     - The host name does not resolve in DNS at all — nothing is really there.
+     - The server could not be reached (dead site or blocking bots).

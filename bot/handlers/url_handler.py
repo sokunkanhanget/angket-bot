@@ -479,6 +479,22 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     if owner_chat_id is None:
         return  # can't resolve the owner right now - nothing safe to do
 
+    # Real, confirmed bug: this handler had no way to tell "a customer
+    # messaged the business" apart from "the business owner sent/replied
+    # to a message in their own connected chat" - EVERY message in the
+    # conversation, in either direction, was getting the full unified
+    # Gemini check, including the owner's own casual replies ("Working
+    # now", "send again"). Confirmed live: this is also what was burning
+    # through the Gemini free-tier quota so fast during testing - a
+    # short back-and-forth conversation meant several Gemini calls, not
+    # one. A private chat's chat_id equals that user's own user_id in
+    # Telegram, and owner_chat_id IS exactly the owner's user_id
+    # (BusinessConnection.user_chat_id) - so the sender being the owner
+    # is a simple, reliable equality check, no separate lookup needed.
+    sender = update.effective_user
+    if sender is not None and sender.id == owner_chat_id:
+        return  # this is the owner's own message/reply - nothing to check
+
     # Live Detect (this automation) is a 7-day Freemium trial, then
     # gated behind the paid tier. ensure_trial_started is idempotent -
     # only the FIRST business message from a given owner actually starts
@@ -530,7 +546,8 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     if not text and not link_verdicts and file_verdict is None:
         return  # truly nothing to check at all - stay silent
 
-    sender = update.effective_user
+    # `sender` already resolved above (and confirmed not the owner) - no
+    # need to re-read update.effective_user a second time.
     for v in link_verdicts:
         log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
 

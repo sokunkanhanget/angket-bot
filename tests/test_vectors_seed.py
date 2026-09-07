@@ -22,8 +22,19 @@ def test_brand_and_phish_rows_covers_every_brand_and_pattern():
     brand_rows = [r for r in rows if r[0] == "brand"]
     phish_rows = [r for r in rows if r[0] == "phish"]
 
+    # brand_rows: one per PROTECTED_BRANDS domain, even brands that share
+    # a name root across more than one real domain (telegram.org/
+    # telegram.me/t.me) - each domain still gets its own "brand" vector
+    # so similarity search can match against ALL of a brand's real
+    # domains, not just its canonical one.
     assert len(brand_rows) == len(PROTECTED_BRANDS)
-    assert len(phish_rows) == len(PROTECTED_BRANDS) * len(vectors.PHISH_PATTERNS)
+    # phish_rows: one per UNIQUE brand_name root x PHISH_PATTERNS, not
+    # per domain - a brand with multiple real domains sharing the same
+    # root (e.g. "telegram" from both telegram.org and telegram.me)
+    # would otherwise generate byte-identical duplicate synthetic
+    # phishing patterns, which is wasted seed data, not extra coverage.
+    unique_brand_names = {domain.split(".")[0] for domain in PROTECTED_BRANDS}
+    assert len(phish_rows) == len(unique_brand_names) * len(vectors.PHISH_PATTERNS)
     # Every row has a real (kind, key, text, label) shape - no Nones snuck
     # in that would make json.dumps sorting blow up in _seed_fingerprint.
     for kind, key, text, label in rows:

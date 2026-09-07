@@ -1,0 +1,34 @@
+........................................................................ [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 77%]
+........................................................F.....           [100%]
+================================== FAILURES ===================================
+_____________ test_fake_vector_store_seed_matches_real_row_count ______________
+
+fake_vector_store = <tests.conftest._FakeVectorStore object at 0x000002325D970B40>
+
+    @pytest.mark.asyncio
+    async def test_fake_vector_store_seed_matches_real_row_count(fake_vector_store):
+        await fake_vector_store.seed()
+        expected = len(vectors._brand_and_phish_rows()) + len(scam_patterns._seed_rows())
+>       assert len(fake_vector_store.rows) == expected
+E       AssertionError: assert 290 == 297
+E        +  where 290 = len({('brand', 'ababank.com'): ('ABA Bank', {129: -0.5, 0: -0.25, 216: -0.25, 45: -0.25, ...}), ('brand', 'acledabank.com...., {59: 0.41702882811414954, 220: -0.20851441405707477, 230: -0.20851441405707477, 136: 0.20851441405707477, ...}), ...})
+E        +    where {('brand', 'ababank.com'): ('ABA Bank', {129: -0.5, 0: -0.25, 216: -0.25, 45: -0.25, ...}), ('brand', 'acledabank.com...., {59: 0.41702882811414954, 220: -0.20851441405707477, 230: -0.20851441405707477, 136: 0.20851441405707477, ...}), ...} = <tests.conftest._FakeVectorStore object at 0x000002325D970B40>.rows
+
+tests\test_vectors_seed.py:72: AssertionError
+============================== warnings summary ===============================
+tests/test_text_handler.py::test_handle_text_analyzes_a_caption_when_text_is_absent
+tests/test_text_handler.py::test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link
+tests/test_text_handler.py::test_daily_scan_limit_blocks_before_any_real_work
+tests/test_text_handler.py::test_handle_text_checks_attached_file_in_plain_private_chat
+tests/test_text_handler.py::test_handle_text_shows_status_and_edits_it_when_a_link_is_present
+  C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\handlers\text_handler.py:50: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    return str(context.user_data.get("lang", DEFAULT_LANG))
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_vectors_seed.py::test_fake_vector_store_seed_matches_real_row_count
+1 failed, 277 passed, 5 warnings in 87.34s (0:01:27)

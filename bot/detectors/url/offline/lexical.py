@@ -39,6 +39,40 @@ ENTROPY_MIN_LENGTH = 8    # shorter labels are too small to measure meaningfully
 ENTROPY_MIN_DIGITS = 2    # real brand/dictionary names almost never mix digits mid-name
 ENTROPY_THRESHOLD = 3.0   # bits/char - calibrated against synthetic random labels; see domain_entropy
 
+# Real, confirmed false positive: _brand_check's typosquat/Levenshtein
+# branch had no minimum-length guard (unlike the buried-name check just
+# below it, which already requires len(brand_name) >= 4). For a very
+# short PROTECTED_BRANDS domain, edit-distance <= 2 is trivially true of
+# huge numbers of totally unrelated short domains that just happen to
+# also be short - confirmed live: m.me (Messenger's real link domain,
+# distance 1) and fb.com/fb.me (Facebook's own real domains, distance 2
+# each) all scored 65-80/dangerous as "fakes" of t.me/x.com, domains
+# they have nothing to do with. Domain-length data across every current
+# PROTECTED_BRANDS entry shows a clean gap - the shortest two (t.me: 4,
+# x.com: 5) are isolated outliers, the next shortest is 9 chars - so
+# this guard costs zero real typosquat coverage for anything else in
+# the list today.
+MIN_TYPOSQUAT_DOMAIN_LENGTH = 7
+
+# Real, confirmed false positive (found via the verified-safe-link
+# corpus test): check_url() used to test SUSPICIOUS_URL_WORDS with a
+# plain substring `in` check, no word boundaries. "free" matched inside
+# "freebsd" in a totally ordinary blog URL path
+# (.../amd-based-freebsd-desktop-reloaded/), contributing to a real
+# safe link scoring "Dangerous". Same failure class as other buried-
+# substring bugs already fixed elsewhere in this file (see PROTECTED_
+# BRANDS' short-brand-name guard) - a short/common suspicious word is a
+# substring of countless unrelated words ("free" in "freebsd"/
+# "freelance", "claim" in "disclaimer", "account" in "accountability").
+# \b (word boundary) is the fix: it requires a transition to/from a
+# non-word character, so it matches "/verify-account" (real path
+# separators either side) but not "freebsd" (no boundary between "free"
+# and "bsd", both letters). Precompiled once at import time, not per
+# call - this runs on every URL check_url() scores.
+SUSPICIOUS_URL_WORD_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in SUSPICIOUS_URL_WORDS) + r")\b"
+)
+
 # The (?:[a-zA-Z0-9._%+-]+@)? group captures a userinfo@ prefix when
 # present (e.g. "real-bank.com@evil.tk") - without it, extract_urls()
 # would silently truncate past the '@' and hand check_url() only
@@ -49,9 +83,27 @@ ENTROPY_THRESHOLD = 3.0   # bits/char - calibrated against synthetic random labe
 # that same '@' check - same behavior check_url() already gives anyone
 # who calls it directly with a full string; this just makes normal
 # message scanning reach it too, instead of it being silently dead.
+
+# Real, confirmed bug (found by testing raw-IP URLs live): the
+# domain-name host branch's final label MUST end in [a-z]{2,24} (a
+# letters-only TLD) - an IPv4 address's last octet is always digits, so
+# NO position in a bare IP URL could ever satisfy it, not even via
+# backtracking. Before the (?:\d{1,3}\.){3}\d{1,3} alternative below was
+# added, "http://203.0.113.5/" and "http://203.0.113.5/login" (no
+# dotted-extension-shaped path segment for the regex to accidentally
+# latch onto instead) returned NO match at all - extract_urls() saw
+# nothing, so check_message_full() reported zero links for a message
+# that visibly contains one. "http://203.0.113.5/secure/login.php" was
+# even worse: it silently matched only the trailing "login.php" as if
+# THAT were the whole URL, discarding the real host and most of the
+# path entirely. An IP-hosted link is one of the most textbook phishing/
+# malware-hosting indicators there is (no domain registration needed,
+# evades brand/typosquat checks) - this was a real blind spot, not a
+# scoring nuance.
 URL_REGEX = re.compile(
-    r"(?:https?://)?(?:[a-zA-Z0-9._%+-]+@)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-    r"[a-z]{2,24}(?::\d{2,5})?(?:/[^\s<>()]*)?",
+    r"(?:https?://)?(?:[a-zA-Z0-9._%+-]+@)?"
+    r"(?:(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}|(?:\d{1,3}\.){3}\d{1,3})"
+    r"(?::\d{2,5})?(?:/[^\s<>()]*)?",
     re.IGNORECASE,
 )
 
@@ -190,14 +242,24 @@ def _verdict_labels(score: int):
 # --- Checks ----------------------------------------------------------
 
 def _brand_check(host: str, reg: str):
+    # A domain that's ITSELF a listed official brand domain can never be
+    # "impersonating a brand" - it already is one. Real, confirmed bug
+    # this generalizes past: the old version of this check only compared
+    # reg against the CURRENT loop iteration's brand_domain, so a real
+    # company's OWN second domain (e.g. Telegram's telegram.me, next to
+    # its canonical telegram.org) still got checked against every OTHER
+    # brand entry sharing its brand_name root and flagged as "mentions
+    # telegram but isn't telegram.org" - confirmed live at 80/dangerous
+    # before this fix. x.com/twitter.com (two real entries for one
+    # company) never hit this by luck, not design: "x" is too short to
+    # ever reach the buried-name check below.
+    if reg in PROTECTED_BRANDS:
+        return None
+
     reg_leet = _deleet(reg)
     host_leet = _deleet(host)
     for brand_domain, label in PROTECTED_BRANDS.items():
         brand_name = brand_domain.split(".")[0]
-
-        # Real, untouched domain match -> legitimate, stop.
-        if reg == brand_domain:
-            return None
 
         # Matches the real brand ONLY after removing leetspeak (faceb00k -> facebook)
         # -> that's a deliberate disguise, strongest signal.
@@ -205,10 +267,13 @@ def _brand_check(host: str, reg: str):
             return (50, f"Domain '{reg}' is a disguised copy of {label} ({brand_domain}).")
 
         # Close-but-not-equal (typosquat), on raw or de-leeted domain.
-        for r in (reg, reg_leet):
-            dist = levenshtein(r, brand_domain)
-            if 0 < dist <= 2 and abs(len(r) - len(brand_domain)) <= 3:
-                return (45, f"Domain looks like a fake of {label} ({brand_domain}).")
+        # See MIN_TYPOSQUAT_DOMAIN_LENGTH's docstring for why very short
+        # brand domains (t.me, x.com) are excluded from this branch.
+        if len(brand_domain) >= MIN_TYPOSQUAT_DOMAIN_LENGTH:
+            for r in (reg, reg_leet):
+                dist = levenshtein(r, brand_domain)
+                if 0 < dist <= 2 and abs(len(r) - len(brand_domain)) <= 3:
+                    return (45, f"Domain looks like a fake of {label} ({brand_domain}).")
 
         # Brand name buried in the host, but the domain isn't the official one.
         for h in (host, host_leet):
@@ -257,7 +322,7 @@ def check_url(raw_url: str) -> dict:
         score += brand[0]
         reasons.append(brand[1])
 
-    hits = sorted(w for w in SUSPICIOUS_URL_WORDS if w in host or w in path_query)
+    hits = sorted(set(SUSPICIOUS_URL_WORD_PATTERN.findall(host) + SUSPICIOUS_URL_WORD_PATTERN.findall(path_query)))
     if hits:
         score += min(len(hits) * 10, 30)
         reasons.append(f"Contains scam-typical words: {', '.join(hits[:4])}.")

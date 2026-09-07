@@ -1,0 +1,50 @@
+--- real (should be low/safe) ---
+ 10 safe       https://amzn.to/4fqvn0D
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 9 days ago — still quite new.
+  0 safe       https://wa.me/85512345678
+     - No common scam signals detected. Still, stay alert.
+ 20 safe       https://lnkd.in/gABC123
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 16 days ago — still quite new.
+     - Server answered HTTP 404 (error page).
+ 10 safe       https://youtu.be/dQw4w9WgXcQ
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 28 days ago — still quite new.
+ 60 dangerous  https://g.co/gemini
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 28 days ago — still quite new.
+     - The link redirects to a different domain (ai.google.dev) — the visible address was not the real destination.
+     - After following redirects it lands on 'ai.google.dev', which shows its own warning signs.
+
+--- fake impersonations (should be dangerous) ---
+155 dangerous  http://amazon-account-suspended.tk/verify
+     - Domain ends in .tk, a free TLD heavily used for scams.
+     - Mentions 'amazon' but the real domain is 'amazon-account-suspended.tk', not Amazon's official site.
+     - Contains scam-typical words: account, verify.
+     - Not served over HTTPS (no padlock).
+     - Resembles patterns seen in phishing links.
+     - The host name does not resolve in DNS at all — nothing is really there.
+     - The server could not be reached (dead site or blocking bots).
+185 dangerous  http://whatsapp-account-verify.tk/login
+     - Domain ends in .tk, a free TLD heavily used for scams.
+     - Mentions 'whatsapp' but the real domain is 'whatsapp-account-verify.tk', not WhatsApp's official site.
+     - Contains scam-typical words: account, login, verify.
+     - Not served over HTTPS (no padlock).
+     - Structurally near-identical to known phishing link patterns.
+     - The host name does not resolve in DNS at all — nothing is really there.
+     - The server could not be reached (dead site or blocking bots).
+165 dangerous  http://linkedin-secure-login.ml/verify
+     - Domain ends in .ml, a free TLD heavily used for scams.
+     - Mentions 'linkedin' but the real domain is 'linkedin-secure-login.ml', not LinkedIn's official site.
+     - Contains scam-typical words: login, secure, verify.
+     - Not served over HTTPS (no padlock).
+     - Resembles patterns seen in phishing links.
+     - The host name does not resolve in DNS at all — nothing is really there.
+     - The server could not be reached (dead site or blocking bots).
+115 dangerous  http://youtube-copyright-strike.ml/appeal
+     - Domain ends in .ml, a free TLD heavily used for scams.
+     - Mentions 'youtube' but the real domain is 'youtube-copyright-strike.ml', not YouTube's official site.
+     - Not served over HTTPS (no padlock).
+     - The host name does not resolve in DNS at all — nothing is really there.
+     - The server could not be reached (dead site or blocking bots).

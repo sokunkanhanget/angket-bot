@@ -9,7 +9,7 @@ BUTTONS = {
         "back": "↩️ Back",
         "how_to_use": "📖 How to Use",
         "safety_tips": "🛡️ Safety Tips",
-        "live_scan": "🔎 Live Message Scan",
+        "usage": "📈 Usage",
         "policy": "📜 Policy",
         "help": "❓ Help",
         "subscription": "⭐ Subscription",
@@ -25,7 +25,7 @@ BUTTONS = {
         "back": "↩️ ត្រឡប់ក្រោយ",
         "how_to_use": "📖 របៀបប្រើប្រាស់",
         "safety_tips": "🛡️ គន្លឹះសុវត្ថិភាព",
-        "live_scan": "🔎 ការពិនិត្យដោយស្វ័យប្រវត្តិ",
+        "usage": "📈 ការប្រើប្រាស់",
         "policy": "📜 គោលការណ៍",
         "help": "❓ ជំនួយ",
         "subscription": "⭐ ការជាវ",
@@ -82,7 +82,13 @@ TEXT = {
             "📄 Suspicious file\n"
             "🔗 Suspicious URL"
         ),
-        "live_scan": "🔎 <b>Live Message Scan</b>\n\nSend me any message and I’ll scan it in real time.",
+        "usage": (
+            "📈 <b>Usage</b>\n\n"
+            "📄 Files scanned today: {files_used}/{files_limit}\n"
+            "🔗 Links/messages scanned today: {links_used}/{links_limit}\n"
+            "🤖 AI tokens used today: {tokens_used}/{tokens_limit}\n\n"
+            "Resets daily. Upgrade for higher limits."
+        ),
         "policy": (
             "📋 <b>Angket Bot Policy</b>\n\n"
             "Please read our policies to understand how Angket handles your information and how you should use the service.\n\n"
@@ -201,7 +207,13 @@ TEXT = {
             "📄 ឯកសារដែលគួរឱ្យសង្ស័យ\n"
             "🔗 URL ឬតំណភ្ជាប់ដែលគួរឱ្យសង្ស័យ"
         ),
-        "live_scan": "🔎 <b>ការពិនិត្យដោយស្វ័យប្រវត្តិ</b>\n\nផ្ញើសារណាមួយមកកាន់ Angket Bot ដើម្បីស្កេនវាភ្លាមៗ។",
+        "usage": (
+            "📈 <b>ការប្រើប្រាស់</b>\n\n"
+            "📄 ឯកសារបានពិនិត្យថ្ងៃនេះ៖ {files_used}/{files_limit}\n"
+            "🔗 តំណ/សារបានពិនិត្យថ្ងៃនេះ៖ {links_used}/{links_limit}\n"
+            "🤖 ថូខឹន AI បានប្រើប្រាស់ថ្ងៃនេះ៖ {tokens_used}/{tokens_limit}\n\n"
+            "វានឹងកំណត់ឡើងវិញរៀងរាល់ថ្ងៃ។ សូមអាប់ក្រេដដើម្បីទទួលបានដែនកំណត់ខ្ពស់ជាងនេះ។"
+        ),
         "policy": (
             "📋 <b>គោលការណ៍ប្រើប្រាស់ Angket Bot</b>\n\n"
             "សូមអានគោលការណ៍របស់យើង ដើម្បីយល់ពីរបៀបដែល Angket គ្រប់គ្រងព័ត៌មានរបស់អ្នក និងរបៀបប្រើប្រាស់សេវាកម្មឱ្យបានត្រឹមត្រូវ។\n\n"

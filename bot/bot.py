@@ -154,7 +154,10 @@ def main():
     logger.info("[startup] Application built in %.3fs", time.perf_counter() - step_start)
 
     async def _log_every_update(update, context):
-        logger.debug(
+        # Temporarily bumped from .debug to .info for live troubleshooting
+        # of a real "business messages aren't arriving" report - revert to
+        # .debug once resolved, this is noisy for every update type.
+        logger.info(
             "update: message=%s edited=%s business=%s callback=%s",
             update.message, update.edited_message,
             update.business_message, update.callback_query,

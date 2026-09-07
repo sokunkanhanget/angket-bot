@@ -1,0 +1,25 @@
+ 35 suspicious https://amzn.to/4fqvn0D
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 9 days ago — still quite new.
+     - The link redirects to a different domain (www.amazon.com) — the visible address was not the real destination.
+     - After following redirects it lands on 'www.amazon.com', which shows its own warning signs.
+ 20 safe       https://wa.me/85512345678
+     - No common scam signals detected. Still, stay alert.
+     - The link redirects to a different domain (api.whatsapp.com) — the visible address was not the real destination.
+ 30 suspicious https://wa.me/message/ABCDEF123456
+     - No common scam signals detected. Still, stay alert.
+     - The link redirects to a different domain (api.whatsapp.com) — the visible address was not the real destination.
+     - Server answered HTTP 500 (error page).
+ 20 safe       https://lnkd.in/gABC123
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 16 days ago — still quite new.
+     - Server answered HTTP 404 (error page).
+ 55 suspicious https://youtu.be/dQw4w9WgXcQ
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 28 days ago — still quite new.
+     - The link redirects to a different domain (www.youtube.com) — the visible address was not the real destination.
+     - 1 security engine on VirusTotal flags this link as malicious.
+ 20 safe       https://g.co/kgs/abc123
+     - No common scam signals detected. Still, stay alert.
+     - TLS certificate issued 28 days ago — still quite new.
+     - Server answered HTTP 404 (error page).

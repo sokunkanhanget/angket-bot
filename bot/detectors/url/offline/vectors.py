@@ -357,14 +357,27 @@ def _brand_and_phish_rows() -> list[tuple[str, str, str, str | None]]:
         ("brand", domain, domain, label)
         for domain, label in PROTECTED_BRANDS.items()
     ]
-    phish_rows = [
-        (
-            "phish", pattern.format(brand=domain.split(".")[0]),
-            pattern.format(brand=domain.split(".")[0]), f"{label} impersonation pattern",
-        )
-        for domain, label in PROTECTED_BRANDS.items()
-        for pattern in PHISH_PATTERNS
-    ]
+    # Keyed and deduped by brand_name (domain.split(".")[0]), not by
+    # domain: a real brand that legitimately operates more than one
+    # domain (telegram.org/telegram.me/t.me - see PROTECTED_BRANDS)
+    # shares the same brand_name root across those entries, so without
+    # this dedup, telegram.me would generate BYTE-IDENTICAL synthetic
+    # phishing-pattern rows to telegram.org's (same key, same text) -
+    # wasted, colliding seed data, not extra detection coverage. Caught
+    # live by test_fake_vector_store_seed_matches_real_row_count when
+    # telegram.me/t.me were added.
+    seen_brand_names: set[str] = set()
+    phish_rows = []
+    for domain, label in PROTECTED_BRANDS.items():
+        brand_name = domain.split(".")[0]
+        if brand_name in seen_brand_names:
+            continue
+        seen_brand_names.add(brand_name)
+        for pattern in PHISH_PATTERNS:
+            phish_rows.append((
+                "phish", pattern.format(brand=brand_name),
+                pattern.format(brand=brand_name), f"{label} impersonation pattern",
+            ))
     return brand_rows + phish_rows
 
 

@@ -99,11 +99,50 @@ BRAND_SIM_THRESHOLD = PHISH_SIM_THRESHOLD
 # article, a security-awareness tool, a review) has no reason to use
 # this framing. The second (independent) signal _brand_page_spoof can
 # use instead of domain resemblance - see its docstring.
+#
+# Deliberately narrower than an earlier version of this list, which also
+# had "sign in", "signin", "welcome to", "your account", and "official
+# website". Confirmed live via the verified-safe-link corpus false-
+# positive test that those are too generic to mean anything: GitHub's
+# own unauthenticated-page chrome literally says "Sign in" in its header
+# on every repo page, and "official website:" is completely ordinary
+# README/blog boilerplate - both tripped this gate on pages with nothing
+# to do with impersonation (github.com/tensorflow/tensorflow flagged as
+# "presents itself as Google", tensorflow.org flagged the same way,
+# among ~20 others in that run). What's left here is language that's
+# specific to an account/security-portal context, not generic site
+# navigation.
+#
+# "log in"/"log into" removed in a second pass, same reasoning: even
+# with the proximity requirement below, a plain "Log In" nav button is
+# extremely common site chrome, and gets scanned into page_text right
+# next to an UNRELATED brand mention once a real page's structure (nav
+# bar vs. main content, e.g. a partner-platform list or a "follow us on
+# X" footer link) flattens into one string. Confirmed live via a second
+# corpus re-run, all three real false positives driven by this exact
+# phrase: claude.com's own nav ("pricing log in features claude for
+# microsoft 365"), productrise.app's nav ("blog log in start tracking
+# ... google ai mode"), dexerto.com's footer ("advertise with us
+# archive log in sign up") - all nav/footer chrome, distances 32-75
+# chars, well beyond how close real phishing copy sits in every
+# confirmed-real case tested (under 20 chars: "Log in to your AbaBank
+# account now"). Unlike "sign in", real phishing pages still have other
+# ways to trip this check (the remaining phrases below, or domain
+# resemblance, or credential-exfil/other pipeline signals entirely) -
+# this isn't the only signal _brand_page_spoof or the pipeline has.
 BRAND_SPOOF_PORTAL_PHRASES = (
-    "log in", "log into", "sign in", "signin", "welcome to",
-    "verify your account", "your account", "online banking",
-    "official website", "reset your password", "confirm your account",
+    "verify your account", "online banking",
+    "reset your password", "confirm your account",
 )
+# How close (characters) portal-style language must sit to an actual
+# brand-name mention to count as that PAGE presenting itself as the
+# brand, rather than the phrase and the brand name just both existing
+# somewhere on the same (possibly long) page. Without this, the same
+# false-positive run above would still misfire on any page that happens
+# to mention a brand name once near the top and a phrase like "log in"
+# once anywhere else lower down - the two need to actually be part of
+# the same claim.
+BRAND_SPOOF_PORTAL_PROXIMITY = 80
 NEARDUP_THRESHOLD = 0.90       # MinHash similarity = same phishing kit
 # Below this, MinHash is unreliable - not just literal empty pages, but
 # generic bot-challenge/interstitial pages (Cloudflare "Checking your
@@ -117,6 +156,49 @@ NEARDUP_THRESHOLD = 0.90       # MinHash similarity = same phishing kit
 MIN_PAGE_TEXT_FOR_NEARDUP = 300
 MAX_NETWORK_POINTS = 45        # cap for all network-derived signals combined
 MAX_URLS_PER_MESSAGE = 5       # input validation: protect quota & event loop from spam
+
+# Real, confirmed false positive: registered_domain(before) !=
+# registered_domain(after) is the general cross-domain-redirect signal
+# (bit.ly -> free-iphone-winner.tk is exactly the case it exists to
+# catch), but real companies commonly operate a SECOND real domain that
+# always redirects to their main one - a permanent rebrand
+# (twitter.com -> x.com, Twitter/X Corp's own 2023 rebrand) or simply a
+# shorter official link/invite domain a platform runs alongside its main
+# site (m.me -> messenger.com, fb.me/fb.com -> facebook.com,
+# discord.gg -> discord.com, redd.it -> reddit.com - all confirmed live,
+# all real first-party infra, not a scam redirect). Named for the
+# broader pattern, not just "rebrand" - originally twitter.com/x.com
+# only, confirmed via the verified-safe-link corpus test scoring it
+# "Suspicious" purely for following that real, permanent redirect.
+#
+# Each source maps to a SET of allowed destinations, not one fixed
+# domain - real, confirmed live: g.co (Google's shortlink domain) fans
+# out to multiple genuinely different real Google-owned registered
+# domains depending on path (g.co/gemini -> google.dev, g.co/photos ->
+# google.com, g.co/ai -> ai.google - Google owns the .google gTLD too).
+# A single fixed destination would be wrong for most of g.co's own real
+# traffic, so this had to support more than one from the start rather
+# than special-casing g.co on top of a single-destination design.
+#
+# Deliberately tiny and hand-verified, not a heuristic: a wrong entry
+# here would blind the exact attack this check exists to catch, so only
+# add a destination with the same standard of evidence as these (a
+# real, confirmed-live redirect to the company's own real other domain
+# - not "this redirect looked fine once"). lnkd.in is deliberately NOT
+# here - see its reference_data.py PROTECTED_BRANDS comment: its real
+# redirect target was never actually confirmed live.
+KNOWN_FIRST_PARTY_REDIRECTS = {
+    "twitter.com": {"x.com"},
+    "m.me": {"messenger.com"},
+    "fb.me": {"facebook.com"},
+    "fb.com": {"facebook.com"},
+    "discord.gg": {"discord.com"},
+    "redd.it": {"reddit.com"},
+    "amzn.to": {"amazon.com"},
+    "wa.me": {"whatsapp.com"},
+    "youtu.be": {"youtube.com"},
+    "g.co": {"google.com", "google.dev", "ai.google"},
+}
 
 # Mentor-flagged: the exact same link forwarded by many different
 # Telegram users today triggers an independent live network.trace() per
@@ -353,7 +435,9 @@ async def analyze_url(
                 hops = " → ".join(network._host(u) for _, u in chain[-4:] + [(0, final_url)])
                 detail.append(f"redirect chain ({len(chain)} hop(s)): {hops}")
 
-            if net.get("cross_domain_redirect"):
+            if net.get("cross_domain_redirect") and registered_domain(final_host) in KNOWN_FIRST_PARTY_REDIRECTS.get(reg_domain, ()):
+                detail.append(f"redirects to '{final_host}', its own known first-party domain — not scored.")
+            elif net.get("cross_domain_redirect"):
                 add_network(20, f"The link redirects to a different domain ({final_host}) — "
                                 f"the visible address was not the real destination.")
 
@@ -576,10 +660,12 @@ def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) ->
          real domain (best_brand_sim >= BRAND_SIM_THRESHOLD) - a
          typosquat. (broryat.tech scored 0.152 against telegram.org -
          nowhere close.)
-      2. The page uses portal/login-style framing ("welcome to",
-         "log in", "your account", ...) - language a real login/account
-         page uses, that a page merely discussing the brand as a topic
-         has no reason to.
+      2. The page uses portal/login-style framing ("log in",
+         "online banking", ...) NEAR an actual brand mention (within
+         BRAND_SPOOF_PORTAL_PROXIMITY chars) - language a real
+         login/account page uses close to the brand it's impersonating,
+         that a page merely discussing the brand as a topic elsewhere
+         has no reason to produce.
 
     Deliberately EITHER, not both required: real phishing doesn't always
     use a typosquat domain - plenty of real cases sit on a throwaway or
@@ -589,14 +675,26 @@ def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) ->
     fake-ABA-login-page case, which requiring domain resemblance too
     would have silently stopped catching).
 
-    Coarse gate, not per-brand: best_brand_sim is the single best
-    similarity across ALL known brands in this URL's top-4 vector hits
-    (see _safe_nearest), not specifically the brand being keyword-counted
-    in the loop below - accepted simplification, a low aggregate score
-    already shows the domain doesn't look like ANY known brand.
+    The proximity requirement on signal 2 (added after broryat.tech's
+    original fix) closes a second false-positive class the domain-
+    resemblance/portal-phrase split alone didn't: a portal phrase
+    existing ANYWHERE on the page, unrelated to the brand mention, is
+    still not evidence the page presents itself as that brand.
+    Confirmed live via the verified-safe-link corpus false-positive
+    test - see BRAND_SPOOF_PORTAL_PHRASES' docstring for the specific
+    false positives that motivated both this and the trimmed phrase
+    list.
+
+    best_brand_sim (domain resemblance) stays a page-wide, not
+    per-brand, signal - it's the single best similarity across ALL
+    known brands in this URL's top-4 vector hits (see _safe_nearest),
+    not specifically the brand being keyword-counted in the loop below -
+    accepted simplification, a low aggregate score already shows the
+    domain doesn't look like ANY known brand.
     """
     low = page_text.lower()
-    if best_brand_sim < BRAND_SIM_THRESHOLD and not any(phrase in low for phrase in BRAND_SPOOF_PORTAL_PHRASES):
+    domain_resembles_a_brand = best_brand_sim >= BRAND_SIM_THRESHOLD
+    if not domain_resembles_a_brand and not any(phrase in low for phrase in BRAND_SPOOF_PORTAL_PHRASES):
         return None
     for domain, label in PROTECTED_BRANDS.items():
         brand = domain.split(".")[0]
@@ -609,10 +707,42 @@ def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) ->
         # example.com's placeholder page tripped this before the guard.
         if len(brand) < 4:
             continue
-        if low.count(brand) >= BRAND_PAGE_SPOOF_MIN and registered_domain(final_host) != domain:
+        if registered_domain(final_host) == domain:
+            continue
+        brand_positions = _substring_positions(low, brand)
+        if len(brand_positions) < BRAND_PAGE_SPOOF_MIN:
+            continue
+        if domain_resembles_a_brand or _portal_phrase_near(low, brand_positions):
             return (f"The page presents itself as {label}, but it lives on "
                     f"'{registered_domain(final_host)}' — not the official {label} domain.")
     return None
+
+
+def _substring_positions(text: str, needle: str) -> list[int]:
+    """Every non-overlapping start index of `needle` in `text` - same
+    matches as str.count(), just with the positions kept instead of
+    only the count, so _portal_phrase_near can measure distance from
+    them."""
+    positions = []
+    start = 0
+    while (idx := text.find(needle, start)) != -1:
+        positions.append(idx)
+        start = idx + len(needle)
+    return positions
+
+
+def _portal_phrase_near(low: str, brand_positions: list[int]) -> bool:
+    """True if any BRAND_SPOOF_PORTAL_PHRASES occurrence sits within
+    BRAND_SPOOF_PORTAL_PROXIMITY chars of one of brand_positions - see
+    _brand_page_spoof's docstring for why page-wide presence alone
+    isn't enough."""
+    for phrase in BRAND_SPOOF_PORTAL_PHRASES:
+        start = 0
+        while (idx := low.find(phrase, start)) != -1:
+            if any(abs(idx - p) <= BRAND_SPOOF_PORTAL_PROXIMITY for p in brand_positions):
+                return True
+            start = idx + 1
+    return False
 
 
 async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | None = None) -> list[dict]:

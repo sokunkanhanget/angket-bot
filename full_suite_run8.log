@@ -1,0 +1,18 @@
+........................................................................ [ 24%]
+........................................................................ [ 48%]
+........................................................................ [ 72%]
+........................................................................ [ 97%]
+........                                                                 [100%]
+============================== warnings summary ===============================
+tests/test_text_handler.py::test_handle_text_analyzes_a_caption_when_text_is_absent
+tests/test_text_handler.py::test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link
+tests/test_text_handler.py::test_daily_scan_limit_blocks_before_any_real_work
+tests/test_text_handler.py::test_handle_text_checks_attached_file_in_plain_private_chat
+tests/test_text_handler.py::test_handle_text_shows_status_and_edits_it_when_a_link_is_present
+  C:\Users\USER\OneDrive\Desktop\Project\angket-bot\bot\handlers\text_handler.py:50: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    return str(context.user_data.get("lang", DEFAULT_LANG))
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+296 passed, 5 warnings in 91.13s (0:01:31)

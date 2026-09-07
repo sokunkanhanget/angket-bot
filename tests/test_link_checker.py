@@ -66,6 +66,52 @@ def test_check_url_flags_raw_ip():
     assert v["level"] != "safe"
 
 
+def test_extract_urls_finds_bare_ip_with_no_path():
+    # Real, confirmed bug: the domain-host branch's final label must be
+    # [a-z]{2,24} (letters only) - an IPv4 address's last octet is
+    # always digits, so no backtracking position could ever satisfy it.
+    # A bare IP with nothing after it that regex could accidentally
+    # latch onto instead returned NO match at all - extract_urls() saw
+    # nothing, so a message containing a real IP-hosted link got zero
+    # scrutiny, not even a low score. Confirmed live before the fix:
+    # check_url() alone (test above) correctly flags a raw IP, but
+    # extract_urls() never handed it one to check in the first place.
+    assert extract_urls("http://203.0.113.5/") == ["http://203.0.113.5/"]
+    assert extract_urls("check this out http://203.0.113.5") == ["http://203.0.113.5"]
+
+
+def test_extract_urls_finds_ip_with_extensionless_path():
+    # Same bug, different symptom: a path segment with no dot in it
+    # ("login", not "login.php") gave the old regex nothing else to
+    # latch onto either, so the whole URL vanished rather than being
+    # partially mis-extracted.
+    assert extract_urls("http://203.0.113.5/admin/12345") == ["http://203.0.113.5/admin/12345"]
+    assert extract_urls("http://203.0.113.5:8080/login") == ["http://203.0.113.5:8080/login"]
+
+
+def test_extract_urls_does_not_truncate_ip_to_trailing_path_segment():
+    # The most dangerous symptom: with a dotted-extension path segment
+    # present, the old regex didn't just miss the IP - it silently
+    # matched ONLY "login.php" as if that were the entire URL, discarding
+    # the real host and most of the path. check_message_full would then
+    # score a fake host ("login.php", not even the real destination)
+    # instead of the actual IP-hosted link.
+    urls = extract_urls("http://203.0.113.5/secure/login.php")
+    assert urls == ["http://203.0.113.5/secure/login.php"]
+
+    v = check_url(urls[0])
+    assert v["host"] == "203.0.113.5"
+    assert any("raw IP address" in r for r in v["reasons"])
+
+
+def test_extract_urls_ip_fix_does_not_regress_domain_extraction():
+    # The IPv4 alternative must not change how ordinary domain-shaped
+    # hosts are matched - "203.example.com" has digit-only labels too,
+    # but its final label ("com") is letters, so it must still go
+    # through the domain branch, not be mistaken for a malformed IP.
+    assert extract_urls("see 203.example.com") == ["203.example.com"]
+
+
 def test_registered_domain_handles_multi_level_suffix():
     assert registered_domain("www.bank.com.kh") == "bank.com.kh"
     assert registered_domain("mail.google.com") == "google.com"
@@ -109,6 +155,73 @@ def test_check_url_skips_entropy_when_already_a_brand_disguise():
     reasons_text = " ".join(v["reasons"])
     assert "PayPal" in reasons_text
     assert "randomly generated" not in reasons_text
+
+
+def test_check_url_ignores_suspicious_word_buried_in_an_unrelated_word():
+    # Real false positive, confirmed live via the verified-safe-link
+    # corpus test: this exact URL (an ordinary FreeBSD blog post)
+    # scored "Dangerous" partly because SUSPICIOUS_URL_WORDS' "free"
+    # matched as a plain substring of "freebsd" - nothing to do with
+    # the scam-word meaning of "free". Same bug class as buried brand
+    # names, just in the scam-word list instead of PROTECTED_BRANDS.
+    v = check_url("https://vermaden.wordpress.com/2026/09/06/amd-based-freebsd-desktop-reloaded/")
+
+    assert not any("scam-typical words" in r for r in v["reasons"])
+
+
+def test_check_url_still_flags_a_real_standalone_suspicious_word():
+    # The word-boundary fix must not silently stop catching the real
+    # case: a suspicious word as its own path segment (the way an
+    # actual phishing link uses it) still has to fire.
+    v = check_url("http://some-bank-lookalike.example/verify-account")
+
+    assert any("scam-typical words" in r and "verify" in r for r in v["reasons"])
+
+
+def test_check_url_does_not_flag_a_brands_own_second_domain():
+    # Real false positive, confirmed live: telegram.me is Telegram's own
+    # original domain (still real, still Telegram-operated - serves the
+    # identical channel-preview content t.me does) and scored
+    # 80/dangerous, "mentions telegram but the real domain is
+    # telegram.me, not Telegram's official site" - the buried-name check
+    # was comparing it only against the telegram.org entry, with no way
+    # to know telegram.me is ALSO a real Telegram domain. t.me (what
+    # nearly every real Telegram link actually looks like) is the other
+    # half of the same real gap.
+    for url in ("https://telegram.me/telegram", "https://t.me/durov"):
+        v = check_url(url)
+        assert not any("not the official" in r or "disguised copy" in r for r in v["reasons"]), url
+
+
+def test_check_url_does_not_flag_unrelated_short_domains_as_typosquats():
+    # Real false positive, confirmed live: adding "t.me" to
+    # PROTECTED_BRANDS (see above) made m.me - Messenger's own real
+    # message-link domain, used on every Facebook Page's "Send Message"
+    # button - score 80/dangerous as "a fake of Telegram (t.me)", since
+    # edit-distance(m.me, t.me) == 1. fb.com and fb.me (Facebook's own
+    # real domains) hit the SAME bug against x.com and t.me respectively
+    # (distance 2 each) - fb.com vs x.com is not even new, x.com has
+    # been in PROTECTED_BRANDS since before this session; it just never
+    # got tested against a short unrelated domain until now.
+    # MIN_TYPOSQUAT_DOMAIN_LENGTH is the general fix - these three are
+    # now also their own recognized brand domains (see reference_data.py),
+    # so this test pins the general length-guard specifically, using
+    # domains that are NOT themselves in PROTECTED_BRANDS, to prove the
+    # guard (not just the self-match short-circuit) is doing the work.
+    for url in ("http://m.mx", "http://fb.io", "http://fb.co"):
+        v = check_url(url)
+        assert not any("looks like a fake of" in r for r in v["reasons"]), url
+
+
+def test_check_url_still_flags_typosquats_of_normal_length_brands():
+    # The length guard must not silently disable typosquat detection for
+    # every OTHER brand - only the two outlier short domains (t.me,
+    # x.com) are exempt from it. "paypai.com" (l -> i, not a leetspeak
+    # substitution) isolates the Levenshtein branch specifically from
+    # the separate exact-match-after-deleet "disguised copy" branch.
+    v = check_url("http://paypai.com/")
+
+    assert any("looks like a fake of" in r for r in v["reasons"])
 
 
 # --- anchor-text mismatch (Telegram text_link entities) -------------------
@@ -494,6 +607,45 @@ def test_analyze_url_does_not_flag_brand_spoof_below_the_mention_threshold(seede
     assert not any("not the official" in r for r in verdict["reasons"])
 
 
+def test_analyze_url_does_not_flag_brand_page_spoof_on_the_brands_own_second_domain(seeded_vectors, monkeypatch):
+    # Real false positive, confirmed live: telegram.me is Telegram's own
+    # original domain (still real, still Telegram-operated) - a real
+    # fetch of telegram.me/telegram returns Telegram's own genuine
+    # channel-preview page, which of course mentions "Telegram" many
+    # times, and _brand_page_spoof used to read that as impersonating
+    # telegram.org (the only Telegram domain PROTECTED_BRANDS knew
+    # about). Now that telegram.me/t.me are their own PROTECTED_BRANDS
+    # entries, is_official_brand is True for them, which gates
+    # _brand_page_spoof out entirely (same protection telegram.org
+    # itself already had) - this proves that gate actually covers a
+    # brand's OTHER real domain too, not just its canonical one.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url="https://telegram.me/telegram",
+        page_text="Telegram: View @telegram. The official Telegram on Telegram. "
+                   "Telegram News. 9,614,677 subscribers. View in Telegram.",
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return 3000
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://telegram.me/telegram"))
+
+    assert not any("presents itself as" in r or "not the official" in r for r in verdict["reasons"])
+    assert verdict["level"] == "safe"
+
+
 def test_brand_page_spoof_ignores_short_brand_names():
     # Regression: PROTECTED_BRANDS' "x.com" derives the single-letter
     # brand keyword "x" (domain.split(".")[0]) - a raw substring count
@@ -561,6 +713,91 @@ def test_brand_page_spoof_fires_on_domain_resemblance_even_without_portal_langua
 
     assert result is not None
     assert "Telegram" in result and "not the official" in result
+
+
+def test_brand_page_spoof_ignores_generic_ui_phrases_removed_from_the_list():
+    # Real false positive, confirmed live via the verified-safe-link
+    # corpus test: github.com/tensorflow/tensorflow and
+    # github.com/sindresorhus/awesome both got flagged as "presents
+    # itself as Google" because "Google" is mentioned 3+ times in
+    # ordinary docs/README text AND GitHub's own unauthenticated-page
+    # chrome says "Sign in" - a phrase that used to be in
+    # BRAND_SPOOF_PORTAL_PHRASES but is generic site navigation, not
+    # login/account-portal framing about the brand being impersonated.
+    text = (
+        "Sign in "
+        "TensorFlow is an end-to-end open source platform for machine "
+        "learning, originally developed by researchers at Google. Google "
+        "also maintains Google Colab notebooks for running examples."
+    )
+    assert text.lower().count("google") >= 3  # sanity: clears BRAND_PAGE_SPOOF_MIN
+
+    result = pipeline._brand_page_spoof(text, "github.com", 0.0)
+
+    assert result is None
+
+
+def test_brand_page_spoof_ignores_portal_phrase_far_from_any_brand_mention():
+    # The proximity half of the same false-positive class: even a phrase
+    # still in BRAND_SPOOF_PORTAL_PHRASES ("online banking") existing
+    # SOMEWHERE on a long page isn't evidence the page presents itself
+    # as the brand, unless it sits near an actual mention of that brand.
+    text = (
+        "Log in to compare our online banking rates against competitors. "
+        + ("Unrelated filler text about local branch hours and fees. " * 5)
+        + "Google Google Google is mentioned here purely as an example of "
+        "a well-known technology company, far from the banking language above."
+    )
+    assert text.lower().count("google") >= 3  # sanity: clears BRAND_PAGE_SPOOF_MIN
+
+    result = pipeline._brand_page_spoof(text, "some-financial-blog.example", 0.0)
+
+    assert result is None
+
+
+def test_brand_page_spoof_fires_when_portal_phrase_sits_near_the_brand_mention():
+    # Positive counterpart to the proximity test above: the same kept
+    # phrase, now placed right next to the brand mentions instead of far
+    # away, must still fire - proves the proximity requirement narrows
+    # the signal rather than silently disabling it.
+    text = (
+        "Log in to your Google online banking account now. "
+        "Google Google keeps your money safe."
+    )
+    assert text.lower().count("google") >= 3  # sanity: clears BRAND_PAGE_SPOOF_MIN
+
+    result = pipeline._brand_page_spoof(text, "some-financial-blog.example", 0.0)
+
+    assert result is not None
+    assert "Google" in result and "not the official" in result
+
+
+def test_brand_page_spoof_ignores_log_in_nav_chrome_near_an_unrelated_brand_mention():
+    # Real false positive, confirmed live via a second verified-safe-
+    # link corpus run (after the "sign in" trim above): "log in" is
+    # JUST as generic a nav-menu label as "sign in" was, and the
+    # proximity requirement alone doesn't save it - a page's own "Log
+    # In" button routinely ends up within BRAND_SPOOF_PORTAL_PROXIMITY
+    # chars of an unrelated brand mention once real page structure (nav
+    # bar next to a partner-platform list, a footer next to a "follow
+    # us on X" link) flattens into one string. Real examples that
+    # motivated removing "log in"/"log into" entirely:
+    #   claude.com's own nav: "...pricing log in features claude for
+    #     microsoft 365 skills..." (distance 61 chars)
+    #   dexerto.com's footer: "...see dexerto first on google editorial
+    #     standards...archive log in sign up..." (distance 75 chars)
+    # Both real pages, zero connection between the login button and the
+    # unrelated brand mention.
+    text = (
+        "Pricing Log In Features Claude for Microsoft 365 Skills Claude Apps. "
+        "Claude for Microsoft 365 is available in the app store, alongside "
+        "the existing Claude for Microsoft Teams integration."
+    )
+    assert text.lower().count("microsoft") >= 3  # sanity: clears BRAND_PAGE_SPOOF_MIN
+
+    result = pipeline._brand_page_spoof(text, "claude.com", 0.0)
+
+    assert result is None
 
 
 def test_analyze_url_caps_stacked_network_signals_at_max_network_points(seeded_vectors, monkeypatch):
@@ -790,6 +1027,242 @@ def test_analyze_url_merges_network_signals(seeded_vectors, monkeypatch):
     assert "redirects to a different domain" in joined
     assert "registered only" in joined
     assert any("final destination" in d for d in verdict["detail"])
+
+
+def test_analyze_url_does_not_score_a_known_rebrand_redirect(seeded_vectors, monkeypatch):
+    # Real false positive, confirmed live via the verified-safe-link
+    # corpus test: a plain twitter.com link scored "Suspicious" (30)
+    # purely for following Twitter/X Corp's own real, permanent 2023
+    # rebrand redirect to x.com - registered_domain(twitter.com) !=
+    # registered_domain(x.com), so the general cross-domain-redirect
+    # check (correctly built to catch bit.ly -> free-iphone-winner.tk)
+    # fired on every single twitter.com link that exists.
+    # KNOWN_FIRST_PARTY_REDIRECTS exists specifically to make this ONE
+    # hand-verified pair inert, without weakening the general check for
+    # anything else.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url="https://x.com/nodepractices",
+        redirect_chain=[(301, "https://twitter.com/nodepractices")],
+        cross_domain_redirect=True,
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://twitter.com/nodepractices"))
+
+    assert not any("redirects to a different domain" in r for r in verdict["reasons"])
+    assert verdict["level"] == "safe"
+
+
+def test_analyze_url_still_scores_an_unrelated_cross_domain_redirect(seeded_vectors, monkeypatch):
+    # The allowlist must not accidentally widen into "any redirect off
+    # twitter.com is fine" - only the exact known destination (x.com)
+    # is exempt. A twitter.com short-link redirecting somewhere else
+    # entirely must still be scored normally.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url="http://free-prize-winner.tk/claim",
+        redirect_chain=[(301, "https://twitter.com/t.co/abc123")],
+        cross_domain_redirect=True,
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return 5
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://twitter.com/t.co/abc123"))
+
+    assert any("redirects to a different domain" in r for r in verdict["reasons"])
+
+
+@pytest.mark.parametrize("source_url,final_url", [
+    ("https://m.me/cocacola", "https://www.messenger.com/t/cocacola"),
+    ("https://fb.me/e/abc123", "https://www.facebook.com/event_invite/abc123/"),
+    ("https://fb.com/zuck", "https://www.facebook.com/zuck"),
+    ("https://discord.gg/python", "https://discord.com/invite/python"),
+    ("https://redd.it/1abcde", "https://www.reddit.com/r/python/comments/1abcde/"),
+    ("https://amzn.to/4fqvn0D", "https://www.amazon.com/dp/B0ABCDEF"),
+    ("https://wa.me/85512345678", "https://api.whatsapp.com/send/?phone=85512345678"),
+    ("https://youtu.be/dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+])
+def test_analyze_url_does_not_score_other_known_first_party_redirects(
+    seeded_vectors, monkeypatch, source_url, final_url
+):
+    # Real false positives, all confirmed live: m.me, fb.me, fb.com,
+    # discord.gg, redd.it, amzn.to, wa.me, and youtu.be are each a real
+    # platform's OWN real short-link/invite domain, and each genuinely
+    # redirects to that same platform's main site - not a scam redirect.
+    # Before KNOWN_FIRST_PARTY_REDIRECTS covered these, m.me scored
+    # 80/dangerous ("a fake of Telegram"), fb.com scored 65/dangerous
+    # ("a fake of X (Twitter)"), fb.me scored 65/dangerous ("a fake of
+    # Telegram") - partly the separate short-domain-typosquat bug, see
+    # MIN_TYPOSQUAT_DOMAIN_LENGTH - and discord.gg/redd.it/amzn.to/
+    # wa.me/youtu.be all scored Suspicious purely for their real
+    # redirect (youtu.be also picked up a spurious single-engine
+    # VirusTotal flag on top, unrelated to this fix).
+    from urllib.parse import urlsplit
+    source_host = urlsplit(source_url).hostname
+
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url=final_url,
+        redirect_chain=[(301, source_url)],
+        cross_domain_redirect=True,
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url(source_url))
+
+    assert not any("redirects to a different domain" in r for r in verdict["reasons"]), source_host
+    assert not any("looks like a fake of" in r or "not the official" in r for r in verdict["reasons"]), source_host
+    assert verdict["level"] == "safe", source_host
+
+
+def test_check_url_flags_a_real_discord_impersonation():
+    # Discord wasn't a protected brand at all before this session, despite
+    # being a very common real impersonation target (fake Nitro/giveaway
+    # scams). Confirms adding it as a real brand actually adds detection
+    # power, not just false-positive suppression for its own domains.
+    v = check_url("http://discord-nitro-free.gift/claim")
+
+    assert any("Discord" in r for r in v["reasons"])
+
+
+def test_check_url_flags_a_real_whatsapp_and_youtube_impersonation():
+    # WhatsApp already had a protected .com entry, but "wa" (wa.me's
+    # brand_name root) is too short to buried-name-match on its own -
+    # this pins that the FULL "whatsapp" root (from whatsapp.com) still
+    # catches a buried-name impersonation regardless of wa.me existing
+    # alongside it. YouTube was not a protected brand at all before this
+    # session (only generic "google.com" was) despite being a very
+    # common real impersonation target (fake copyright-strike/
+    # monetization scams).
+    v = check_url("http://whatsapp-account-verify.tk/login")
+    assert any("WhatsApp" in r for r in v["reasons"])
+
+    v = check_url("http://youtube-copyright-strike.ml/appeal")
+    assert any("YouTube" in r for r in v["reasons"])
+
+
+def test_check_url_does_not_flag_googles_own_shortlink_domain():
+    # g.co is real, confirmed live to redirect to legitimate Google
+    # infrastructure - see the multi-destination redirect test below for
+    # the redirect-scoring half; this test just pins the lexical/brand
+    # half (typosquat/buried-name immunity), which g.co gets from being
+    # a PROTECTED_BRANDS entry regardless of where any given path
+    # redirects to.
+    v = check_url("https://g.co/kgs/abc123")
+
+    assert not any("not the official" in r or "looks like a fake of" in r for r in v["reasons"])
+
+
+@pytest.mark.parametrize("final_url", [
+    "https://ai.google.dev",           # g.co/gemini
+    "https://www.google.com/photos/",  # g.co/photos
+    "https://ai.google/",              # g.co/ai - Google owns the .google gTLD too
+])
+def test_analyze_url_does_not_score_any_of_googles_confirmed_shortlink_destinations(
+    seeded_vectors, monkeypatch, final_url
+):
+    # Real false positive, confirmed live: g.co (Google's own shortlink
+    # domain) doesn't redirect to one fixed destination - different
+    # paths land on different genuinely real Google-owned registered
+    # domains. Before KNOWN_FIRST_PARTY_REDIRECTS supported multiple
+    # destinations per source, g.co/gemini scored 60/dangerous purely
+    # for following that real redirect. This test proves all three
+    # confirmed-live destinations are covered, not just one.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url=final_url,
+        redirect_chain=[(301, "https://g.co/gemini")],
+        cross_domain_redirect=True,
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://g.co/gemini"))
+
+    assert not any("redirects to a different domain" in r for r in verdict["reasons"]), final_url
+    assert verdict["level"] == "safe", final_url
+
+
+def test_analyze_url_still_scores_a_redirect_off_g_co_to_an_unknown_destination(seeded_vectors, monkeypatch):
+    # The multi-destination allowlist must not accidentally widen into
+    # "any redirect off g.co is fine" - only its 3 confirmed-live real
+    # destinations are exempt. A g.co short link redirecting somewhere
+    # completely unrelated must still be scored normally.
+    fake = _FakeNet(
+        reachable=True, status=200, tls_valid=True,
+        final_url="http://free-prize-winner.tk/claim",
+        redirect_chain=[(301, "https://g.co/fake")],
+        cross_domain_redirect=True,
+    )
+
+    async def fake_trace(url):
+        return fake.result
+
+    async def fake_age(host):
+        return 5
+
+    async def fake_resolve(host):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://g.co/fake"))
+
+    assert any("redirects to a different domain" in r for r in verdict["reasons"])
 
 
 def test_analyze_url_survives_total_network_failure(seeded_vectors, monkeypatch):

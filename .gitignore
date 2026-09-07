@@ -4,6 +4,7 @@ venv/
 *.pyc
 scan_logs.db
 *.log
+logs/
 __pycache__/
 .pytest_cache
 .pytest_cache/

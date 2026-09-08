@@ -77,6 +77,7 @@ from bot.detectors.url.offline.lexical import (
 )
 from bot.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
 from bot.storage import health_alerts
+from bot.verdict_style import SECTION_DIVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -843,6 +844,7 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
     lines += [f"- {r}" for r in recs]
     lines += [
         "",
+        SECTION_DIVIDER,
         "ⓘ Bot can make mistakes. Please check carefully.",
     ]
 

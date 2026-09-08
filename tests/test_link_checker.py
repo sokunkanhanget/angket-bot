@@ -1679,3 +1679,23 @@ def test_web_urls_allows_bare_domains():
     assert pipeline._web_urls("check bit.ly/x9 please") == ["bit.ly/x9"]
 
 
+# --- format_verdict_full ----------------------------------------------
+
+def test_format_verdict_full_has_a_divider_directly_above_the_disclaimer():
+    # Direct teammate feedback: a divider belongs directly ABOVE the
+    # disclaimer specifically (not the earlier, since-removed stray
+    # divider that sat somewhere else - see SECTION_DIVIDER's own
+    # docstring in bot/verdict_style.py for that history). Zero prior
+    # direct coverage of this rendering function existed before this.
+    v = {
+        "host": "free-prize-winner.tk", "score": 85, "level": "dangerous",
+        "reasons": ["Domain ends in .tk, a free TLD heavily used for scams."],
+        "detail": [],
+    }
+    reply = pipeline.format_verdict_full(v)
+
+    assert reply.count(pipeline.SECTION_DIVIDER) == 1
+    assert f"{pipeline.SECTION_DIVIDER}\nⓘ Bot can make mistakes. Please check carefully." in reply
+    assert reply.rstrip().endswith("ⓘ Bot can make mistakes. Please check carefully.")
+
+

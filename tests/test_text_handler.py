@@ -6,11 +6,13 @@ from bot.i18n import key_for_label, label, t
 from bot.handlers.text_handler import (
     MAIN_MENU_KEYBOARD,
     format_analysis_response,
+    format_unified_response,
     get_language_keyboard,
     get_user_lang,
     handle_text,
 )
 from bot.storage import subscription
+from bot.verdict_style import SECTION_DIVIDER
 
 
 def _result(risk_percentage, verdict="Scam"):
@@ -34,8 +36,41 @@ def test_format_analysis_response_uses_high_risk_style():
     assert "💡 <b>WHAT YOU SHOULD DO</b>" in response
     assert "• Uses an unrealistic offer &lt;now&gt;" in response
     assert "ⓘ Angket Bot may occasionally make mistakes." in response
-    assert "────────────────────" not in response
+    # Direct teammate feedback: a divider belongs directly ABOVE the
+    # disclaimer specifically (not the earlier, since-removed stray
+    # divider that sat somewhere else in the reply - see SECTION_DIVIDER's
+    # own docstring in bot/verdict_style.py for that history).
+    assert response.count(SECTION_DIVIDER) == 1
+    assert f"{SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in response
     assert "1. Verdict" not in response
+
+
+def test_format_unified_response_shows_a_file_header_when_a_file_was_checked():
+    # Real teammate feedback: the unified (text+link+file) private-DM
+    # reply had no dedicated file-name/type header at all before this -
+    # a file's presence only ever surfaced as one 📄-tagged reason line
+    # buried in Key Reasons, easy to miss.
+    unified = {
+        "verdict": "Scam", "risk_percentage": 95,
+        "key_reasons": [{"text": "Attached file is malicious", "source": "file_evidence"}],
+        "recommendations": ["Do not open the file"],
+    }
+    response = format_unified_response(unified, {"suspicious": False, "matches": []}, file_name="invoice.pdf.exe")
+
+    assert response.startswith("📎 <b>File:</b> invoice.pdf.exe\n📄 <b>Type:</b> EXE\n" + SECTION_DIVIDER)
+    # Tight against the file info AND the verdict line - no blank line
+    # either side of this specific divider, unlike the one above the
+    # disclaimer (which does have one) - matches the feedback's own example.
+    assert f"{SECTION_DIVIDER}\n⚠️ <b>{t('en', 'verdict_label')}" in response
+
+
+def test_format_unified_response_has_no_file_header_for_a_text_only_message():
+    unified = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
+    response = format_unified_response(unified, {"suspicious": False, "matches": []})
+
+    assert "📎" not in response
+    assert "📄 <b>Type:</b>" not in response
+    assert response.startswith(f"✅ <b>{t('en', 'verdict_label')}")
 
 
 def test_format_analysis_response_uses_medium_and_low_thresholds():
@@ -256,6 +291,11 @@ async def test_handle_text_checks_attached_file_in_plain_private_chat():
     update.message.caption = "please review this invoice urgently"
     update.message.document = AsyncMock()
     update.message.document.file_id = "file123"
+    # A real string, not an AsyncMock's own auto-generated attribute -
+    # format_unified_response's file-header block calls html.escape() on
+    # this, which would crash on a coroutine-like mock object the same
+    # way a real Telegram Document's file_name is always a real str|None.
+    update.message.document.file_name = "invoice.pdf"
     context = _private_context()
 
     with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(

@@ -41,8 +41,21 @@ async def scan_file(file_hash: str, file_name: str) -> dict:
     evidence, exactly like keyword_result never gets folded into a
     link's own score) - the filename finding rides along as its own key
     so callers can surface or reason over it without conflating the two.
+
+    Never raises: scan_vt_hash() itself catches every failure mode (a
+    confirmed "not on VT" vs. VT itself being unreachable - see its own
+    docstring for `checked`) and check_filename() is pure/local, so a
+    caller always gets a real dict back, even when VirusTotal is fully
+    down - handle_file's own reply-building can then use `filename_warning`
+    as a fallback signal instead of showing nothing at all.
+
+    filename_risk_score is the raw check_filename() severity number
+    (0 when there's no warning) - kept separate from filename_warning's
+    text so a caller building its OWN risk percentage (unlike VT's
+    engine-count-derived one) has a real number to show, not just prose.
     """
     result = await scan_vt_hash(file_hash)
     warning = check_filename(file_name)
     result["filename_warning"] = warning[1] if warning else None
+    result["filename_risk_score"] = warning[0] if warning else 0
     return result

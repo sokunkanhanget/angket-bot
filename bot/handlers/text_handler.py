@@ -13,7 +13,7 @@ from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_se
 from bot.handlers.url_handler import extract_text_link_entities, resolve_ticket
 from bot.storage import subscription
 from bot.detectors.url.pipeline import check_message_full
-from bot.verdict_style import SOURCE_TAGS, risk_style, verdict_style
+from bot.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, verdict_style
 
 BTN_MENU = "MENU"
 
@@ -167,7 +167,7 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(llm_result.get('recommendations', []), '✓', lang)}",
-        t(lang, 'verdict_disclaimer'),
+        f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
     ]
 
     if keyword_result["suspicious"]:
@@ -177,7 +177,26 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
     return "\n\n".join(lines)
 
 
-def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEFAULT_LANG) -> str:
+def _file_header_block(file_name: str | None) -> str:
+    """📎 File: name / 📄 Type: EXT header, ending in its OWN divider -
+    shown above a unified verdict whenever a document was actually part
+    of what got checked, direct teammate feedback. Deliberately meant to
+    be prepended with a single "\\n" (not the "\\n\\n" this module's
+    other sections join with) so the divider sits tight against both the
+    file info above it and the VERDICT line below it, matching the
+    feedback's own example exactly - not another blank-line-separated
+    section. Empty string (not None) when there's no file, so a plain
+    f"{block}{header}" concatenation works with no extra branching at
+    the call site."""
+    if not file_name:
+        return ""
+    ext = file_name.rsplit(".", 1)[-1].upper() if "." in file_name else "Unknown"
+    return f"📎 <b>File:</b> {escape(file_name)}\n📄 <b>Type:</b> {ext}\n{SECTION_DIVIDER}\n"
+
+
+def format_unified_response(
+    unified: dict, keyword_result: dict, lang: str = DEFAULT_LANG, file_name: str | None = None
+) -> str:
     """Same visual shape as format_analysis_response, but key_reasons are
     {text, source} objects (context_engine.py's schema) instead of plain
     strings, so a reason that came from checking a link can be tagged 🔗
@@ -202,7 +221,8 @@ def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEF
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
     header = (
-        f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n\n"
+        _file_header_block(file_name)
+        + f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n\n"
         + _summary(unified.get("verdict"), risk_percentage, lang)
     )
     risk_block = f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>"
@@ -211,7 +231,7 @@ def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEF
         lines = [
             header,
             f"{risk_block}\n\n⚠️ {escape(t(lang, 'ai_unavailable_notice'))}",
-            t(lang, 'verdict_disclaimer'),
+            f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
         ]
         if keyword_result["suspicious"]:
             matches = escape(", ".join(keyword_result["matches"]))
@@ -235,7 +255,7 @@ def format_unified_response(unified: dict, keyword_result: dict, lang: str = DEF
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{reasons_block}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(unified.get('recommendations', []), '✓', lang)}",
-        t(lang, 'verdict_disclaimer'),
+        f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
     ]
 
     if keyword_result["suspicious"]:
@@ -374,7 +394,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             file_verdict = results[1] if not isinstance(results[1], Exception) else None
 
         unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
-        reply_text = format_unified_response(unified, keyword_result, lang)
+        reply_text = format_unified_response(
+            unified, keyword_result, lang, file_name=document.file_name if document is not None else None
+        )
         if user_id is not None:
             subscription.record_link_or_message_scan(user_id)
 

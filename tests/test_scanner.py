@@ -69,7 +69,7 @@ def test_script_extension_disguised_behind_an_image():
 @pytest.mark.asyncio
 async def test_scan_file_merges_vt_result_with_filename_warning():
     with patch.object(scanner, "scan_vt_hash", AsyncMock(return_value={
-        "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
+        "checked": True, "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
         "undetected": 5, "total": 75,
         "top_engines": {"Microsoft": "Clean", "Kaspersky": "Clean", "BitDefender": "Clean"},
     })):
@@ -79,11 +79,13 @@ async def test_scan_file_merges_vt_result_with_filename_warning():
     assert result["malicious"] == 0  # VT's own count is untouched by the filename heuristic
     assert result["filename_warning"] is not None
     assert "exe" in result["filename_warning"]
+    assert result["filename_risk_score"] == 50  # check_filename's own severity number, carried through
 
 
 @pytest.mark.asyncio
 async def test_scan_file_filename_warning_is_none_for_an_ordinary_name():
-    with patch.object(scanner, "scan_vt_hash", AsyncMock(return_value={"found": False})):
+    with patch.object(scanner, "scan_vt_hash", AsyncMock(return_value={"checked": True, "found": False})):
         result = await scan_file("b" * 64, "report.docx")
 
     assert result["filename_warning"] is None
+    assert result["filename_risk_score"] == 0

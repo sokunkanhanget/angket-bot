@@ -42,6 +42,19 @@ SOURCE_TAGS = {
     "file_evidence": " 📄",
 }
 
+# Direct user/teammate feedback on the reply's visual layout: a clean
+# separator between the real content and the disclaimer footer, so the
+# disclaimer doesn't read as just another paragraph of the verdict
+# itself. Plain Unicode box-drawing characters - render identically,
+# with no escaping needed, in both this project's parse modes
+# (Markdown: pipeline.py/file_handler.py; HTML: text_handler.py/
+# url_handler.py's business notification), unlike most punctuation.
+# A stray divider was removed from a different, awkward position in an
+# earlier session (between the disclaimer and the rest of the reply) -
+# this is deliberately just ABOVE the disclaimer specifically, not a
+# repeat of that.
+SECTION_DIVIDER = "─" * 46
+
 
 def verdict_style(verdict: str | None, lang: str = DEFAULT_LANG) -> tuple[str, str]:
     icon = _VERDICT_ICONS.get(verdict, "⚪")

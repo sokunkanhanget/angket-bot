@@ -39,9 +39,10 @@ async def test_clean_scan_shows_only_the_virustotal_button():
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="a" * 64)), \
          patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
-             "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
+             "checked": True, "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
              "undetected": 5, "total": 75,
              "top_engines": {"Microsoft": "Clean", "Kaspersky": "Clean", "BitDefender": "Clean"},
+             "filename_warning": None, "filename_risk_score": 0,
          })), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
@@ -50,6 +51,8 @@ async def test_clean_scan_shows_only_the_virustotal_button():
     assert len(keyboard.inline_keyboard) == 1
     assert len(keyboard.inline_keyboard[0]) == 1
     assert keyboard.inline_keyboard[0][0].text == label("en", "view_on_virustotal")
+    reply = sent.edit_text.call_args.args[0]
+    assert "SAFE" in reply
 
 
 @pytest.mark.asyncio
@@ -58,9 +61,10 @@ async def test_malicious_scan_shows_delete_ignore_and_virustotal_buttons():
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="b" * 64)), \
          patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
-             "found": True, "malicious": 40, "suspicious": 2, "harmless": 20,
+             "checked": True, "found": True, "malicious": 40, "suspicious": 2, "harmless": 20,
              "undetected": 13, "total": 75,
              "top_engines": {"Microsoft": "Trojan", "Kaspersky": "Trojan", "BitDefender": "Trojan"},
+             "filename_warning": None, "filename_risk_score": 0,
          })), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
@@ -77,29 +81,88 @@ async def test_malicious_scan_shows_delete_ignore_and_virustotal_buttons():
 
 @pytest.mark.asyncio
 async def test_unknown_signature_still_offers_a_virustotal_link():
+    # checked=True here specifically means VT itself confirmed it has
+    # never seen this hash - a real (if weak) answer, distinct from
+    # "VT couldn't be reached" below, which used to be indistinguishable.
     update, context, sent = _file_update()
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="c" * 64)), \
-         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={"found": False})), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
+             "checked": True, "found": False, "filename_warning": None, "filename_risk_score": 0,
+         })), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
 
     keyboard = sent.edit_text.call_args.kwargs["reply_markup"]
     assert len(keyboard.inline_keyboard) == 1
     assert keyboard.inline_keyboard[0][0].text == label("en", "view_on_virustotal")
+    reply = sent.edit_text.call_args.args[0]
+    assert "UNCERTAIN" in reply
+    assert "never been seen by VirusTotal" in reply
+
+
+@pytest.mark.asyncio
+async def test_virustotal_outage_still_gives_a_real_verdict_not_a_generic_failure():
+    # Real fix, matching the text/link checkers' own resilience: before
+    # this session, ANY scan_file failure (a genuine VT outage included)
+    # showed a bare "couldn't scan, try again later" with zero signal -
+    # very different from how a Gemini outage still produces a real
+    # degraded verdict from whatever offline evidence remains. Now
+    # scan_vt_hash() itself never raises - a VT outage comes back as
+    # checked=False, and the handler builds a real (if honest,
+    # "uncertain") verdict from it instead of a dead end.
+    update, context, sent = _file_update()
+
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="e" * 64)), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
+             "checked": False, "found": False, "error": "503 UNAVAILABLE",
+             "filename_warning": None, "filename_risk_score": 0,
+         })), \
+         patch("bot.handlers.file_handler.log_scan") as mock_log:
+        await handle_file(update, context)
+
+    reply = sent.edit_text.call_args.args[0]
+    assert "UNCERTAIN" in reply
+    assert "VirusTotal could not be reached" in reply
+    mock_log.assert_called_once()  # this DID complete a real (degraded) scan, unlike a download failure
+
+
+@pytest.mark.asyncio
+async def test_virustotal_outage_with_a_disguised_filename_still_flags_it():
+    # The other half of the same fix: even with VT fully down, the
+    # filename heuristic alone is real, independent, local evidence -
+    # it must not get silently dropped just because VT had nothing.
+    update, context, sent = _file_update()
+
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="f" * 64)), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
+             "checked": False, "found": False, "error": "503 UNAVAILABLE",
+             "filename_warning": "File name disguises an executable ('.exe') behind a '.pdf' extension.",
+             "filename_risk_score": 50,
+         })), \
+         patch("bot.handlers.file_handler.log_scan"):
+        await handle_file(update, context)
+
+    reply = sent.edit_text.call_args.args[0]
+    assert "DANGEROUS" in reply
+    assert "disguises an executable" in reply
+    assert "VirusTotal could not be reached" in reply
+    keyboard = sent.edit_text.call_args.kwargs["reply_markup"]
+    assert len(keyboard.inline_keyboard) == 2  # dangerous -> Delete/Ignore + VT link
 
 
 @pytest.mark.asyncio
 async def test_scan_failure_replies_gracefully_instead_of_crashing():
-    # Regression: handle_file had no exception handling around
-    # download_and_hash/scan_file at all - a genuine VirusTotal outage
-    # (a raw network exception, not a vt.APIError scan_vt_hash already
-    # catches) would propagate uncaught and crash the handler, leaving
-    # the user with NO reply whatsoever.
+    # This is now the DEFENSE-IN-DEPTH path (a genuinely unexpected bug
+    # in scan_file itself, e.g. check_filename raising) - the normal "VT
+    # is down" case no longer raises at all (see the two tests above),
+    # it comes back as a real dict. This test just confirms an actually
+    # unexpected exception still can't crash the handler / leave the
+    # user with no reply.
     update, context, sent = _file_update()
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="d" * 64)), \
-         patch("bot.handlers.file_handler.scan_file", AsyncMock(side_effect=ConnectionError("VT unreachable"))), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(side_effect=RuntimeError("unexpected bug"))), \
          patch("bot.handlers.file_handler.log_scan") as mock_log:
         await handle_file(update, context)
 

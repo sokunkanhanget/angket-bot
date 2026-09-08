@@ -13,7 +13,9 @@ import pytest
 
 import bot.context_engine as context_engine
 from bot.handlers.url_handler import handle_business_message
+from bot.i18n import t
 from bot.storage import subscription
+from bot.verdict_style import SECTION_DIVIDER
 
 
 def _business_update(text=None, has_document=False):
@@ -21,7 +23,9 @@ def _business_update(text=None, has_document=False):
     update.effective_message.text = text
     update.effective_message.caption = None
     update.effective_message.business_connection_id = "conn1"
-    update.effective_message.document = MagicMock(file_id="fake-doc") if has_document else None
+    update.effective_message.document = (
+        MagicMock(file_id="fake-doc", file_name="invoice.pdf") if has_document else None
+    )
     update.effective_message.photo = None
     update.effective_message.date = None
     update.effective_user = MagicMock(full_name="Customer", id=42)
@@ -124,6 +128,9 @@ async def test_notifies_owner_for_suspicious_text():
     assert kwargs["chat_id"] == 555
     assert "LIKELY A SCAM" in kwargs["text"]
     assert "Urgent money request" in kwargs["text"]
+    # Direct teammate feedback: a divider directly above the disclaimer.
+    assert f"{SECTION_DIVIDER}\n" in kwargs["text"]
+    assert kwargs["text"].rstrip().endswith(t("en", "business_disclaimer"))
 
 
 @pytest.mark.asyncio
@@ -208,7 +215,13 @@ async def test_attached_file_is_scanned_and_always_notifies():
     args = mock_unified.call_args.args
     passed_file_verdict = args[3] if len(args) > 3 else kwargs.get("file_verdict")
     assert passed_file_verdict["malicious"] == 0
-    assert "📄" in context.bot.send_message.call_args.kwargs["text"]
+    sent_text = context.bot.send_message.call_args.kwargs["text"]
+    assert "📄" in sent_text
+    # Direct teammate feedback: a dedicated file-name/type header, same
+    # as the private-DM unified reply gets - not just a 📄-tagged reason
+    # line buried in Key Reasons.
+    assert "📎 File: invoice.pdf" in sent_text
+    assert "📄 Type: PDF" in sent_text
 
 
 @pytest.mark.asyncio

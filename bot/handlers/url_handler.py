@@ -66,7 +66,7 @@ from bot.detectors.url.pipeline import (
     format_verdict_full,
     _risk_percent_and_label,
 )
-from bot.verdict_style import SOURCE_TAGS, risk_style, verdict_style
+from bot.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, verdict_style
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.storage import subscription
@@ -407,7 +407,20 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
 # message gets checked automatically and privately reported to them.
 # ---------------------------------------------------------------------------
 
-def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG) -> str:
+def _file_header_lines(file_name: str | None) -> list[str]:
+    """📎 File: name / 📄 Type: EXT header block, shown above a unified
+    verdict whenever a document was actually part of what got checked -
+    direct teammate feedback, same block for both the private-DM
+    (format_unified_response) and business owner-DM replies. Empty list
+    when there's no file, so callers can unconditionally splice this in
+    without an extra branch at each call site."""
+    if not file_name:
+        return []
+    ext = file_name.rsplit(".", 1)[-1].upper() if "." in file_name else "Unknown"
+    return [f"📎 File: {file_name}", f"📄 Type: {ext}", SECTION_DIVIDER]
+
+
+def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG, file_name: str | None = None) -> str:
     """Markdown rendering of an analyze_unified() verdict for the business
     owner-DM notification - same shape as text_handler.py's
     format_unified_response, but Markdown instead of HTML to match every
@@ -422,14 +435,16 @@ def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG) -> st
     risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
+    file_header = _file_header_lines(file_name)
 
     if unified.get("ai_unavailable"):
-        return "\n".join([
+        return "\n".join(file_header + [
             f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
             f"{risk_icon} *{percentage}  {risk_label.upper()}*",
             "",
             f"⚠️ {t(lang, 'ai_unavailable_notice')}",
             "",
+            SECTION_DIVIDER,
             t(lang, "business_disclaimer"),
         ])
 
@@ -438,7 +453,7 @@ def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG) -> st
         for r in (unified.get("key_reasons") or [])
     ] or [f"- {t(lang, 'none_provided')}"]
 
-    lines = [
+    lines = file_header + [
         f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
         f"{risk_icon} *{percentage}  {risk_label.upper()}*",
         "",
@@ -448,7 +463,7 @@ def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG) -> st
     recs = unified.get("recommendations") or []
     if recs:
         lines += ["", f"*{t(lang, 'business_what_they_can_do_header')}*", "\n".join(f"- {r}" for r in recs)]
-    lines += ["", t(lang, "business_disclaimer")]
+    lines += ["", SECTION_DIVIDER, t(lang, "business_disclaimer")]
     return "\n".join(lines)
 
 
@@ -569,7 +584,9 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         return
 
     header = f"{t(owner_lang, 'business_new_activity')}\n\n{_sender_header(sender, message.date)}\n\n"
-    body = header + _format_unified_business_text(unified, owner_lang)
+    body = header + _format_unified_business_text(
+        unified, owner_lang, file_name=document.file_name if document is not None else None
+    )
 
     # Reuses the toggle-oriented short/full ticket store with the SAME
     # text in both slots - this notification never renders a "See full

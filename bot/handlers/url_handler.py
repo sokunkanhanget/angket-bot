@@ -413,11 +413,27 @@ def _file_header_lines(file_name: str | None) -> list[str]:
     direct teammate feedback, same block for both the private-DM
     (format_unified_response) and business owner-DM replies. Empty list
     when there's no file, so callers can unconditionally splice this in
-    without an extra branch at each call site."""
+    without an extra branch at each call site.
+
+    Real, confirmed bug this fixes: this reply uses Telegram's legacy
+    Markdown (parse_mode="Markdown"), where a bare, unescaped "_" opens/
+    closes italics - a real filename with an odd number of underscores
+    ("Week4_DOM_Lab_Exercises.docx", confirmed live) broke entity
+    parsing entirely ("Can't parse entities: can't find end of the
+    entity..."), and since context.bot.send_message() wasn't wrapped in
+    a try/except, that exception propagated all the way up and killed
+    the WHOLE notification - the owner got nothing at all for that
+    message, not even a degraded reply. Same escape-bug class flagged
+    repeatedly elsewhere in this project's history. Backticks (inline
+    code) are the fix, not manual escaping - Markdown treats their
+    content as fully literal, no nested entity parsing at all, matching
+    the same pattern pipeline.py's own format_verdict_full already uses
+    for a scanned link's host (`{host}`), another arbitrary
+    external string in the exact same Markdown context."""
     if not file_name:
         return []
     ext = file_name.rsplit(".", 1)[-1].upper() if "." in file_name else "Unknown"
-    return [f"📎 File: {file_name}", f"📄 Type: {ext}", SECTION_DIVIDER]
+    return [f"📎 File: `{file_name}`", f"📄 Type: {ext}", SECTION_DIVIDER]
 
 
 def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG, file_name: str | None = None) -> str:
@@ -598,10 +614,33 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         [[InlineKeyboardButton("🗑️ Delete", callback_data=f"u:x:{ticket}")]]
     )
 
-    await context.bot.send_message(
-        chat_id=owner_chat_id,
-        text=body,
-        parse_mode="Markdown",
-        disable_web_page_preview=True,
-        reply_markup=keyboard,
-    )
+    # Real, confirmed bug: this had no error handling at all - a
+    # Markdown-parsing failure (e.g. the filename bug _file_header_lines'
+    # docstring describes) previously killed the WHOLE notification
+    # silently, no matter how correct the underlying verdict was. Every
+    # OTHER failure mode in this handler already degrades gracefully
+    # (Gemini down, VirusTotal down, a file/link check itself failing) -
+    # this is the one place that didn't, despite being the very last
+    # step where all of that work could still be thrown away. Retrying
+    # once with parse_mode=None (plain text, Telegram does zero entity
+    # parsing) turns "the owner never even knew this happened" into "the
+    # owner still gets the real verdict, just without bold/formatting."
+    try:
+        await context.bot.send_message(
+            chat_id=owner_chat_id,
+            text=body,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+            reply_markup=keyboard,
+        )
+    except TelegramError:
+        logger.exception("Business notification failed to send with Markdown formatting - retrying as plain text")
+        try:
+            await context.bot.send_message(
+                chat_id=owner_chat_id,
+                text=body,
+                disable_web_page_preview=True,
+                reply_markup=keyboard,
+            )
+        except TelegramError:
+            logger.exception("Business notification failed even as plain text - giving up for this message")

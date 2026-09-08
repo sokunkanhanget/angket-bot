@@ -219,9 +219,87 @@ async def test_attached_file_is_scanned_and_always_notifies():
     assert "📄" in sent_text
     # Direct teammate feedback: a dedicated file-name/type header, same
     # as the private-DM unified reply gets - not just a 📄-tagged reason
-    # line buried in Key Reasons.
-    assert "📎 File: invoice.pdf" in sent_text
+    # line buried in Key Reasons. Backtick-wrapped (Markdown inline
+    # code) - see the next test for why that specifically matters.
+    assert "📎 File: `invoice.pdf`" in sent_text
     assert "📄 Type: PDF" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_a_filename_with_underscores_does_not_break_markdown_parsing():
+    # Real bug, confirmed live: this reply uses Telegram's legacy
+    # Markdown, where a bare "_" opens/closes italics. A real filename
+    # with an odd number of underscores ("Week4_DOM_Lab_Exercises.docx")
+    # broke Telegram's own entity parser entirely
+    # ("Can't parse entities: can't find end of the entity..."), and
+    # since send_message wasn't wrapped in a try/except at the time,
+    # that exception killed the WHOLE notification - the owner got
+    # NOTHING, not even a degraded reply, no matter how correct the
+    # underlying verdict was. Backticks (inline code) are the fix -
+    # Markdown treats their content as fully literal, no nested parsing.
+    update = _business_update(text=None, has_document=True)
+    update.effective_message.document.file_name = "Week4_DOM_Lab_Exercises.docx"
+    context = _context()
+
+    fake_file = MagicMock()
+
+    async def _download(buf):
+        buf.write(b"fake file bytes")
+    fake_file.download_to_memory = AsyncMock(side_effect=_download)
+    context.bot.get_file = AsyncMock(return_value=fake_file)
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": False, "matches": []}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.url_handler.scan_file", AsyncMock(return_value={
+             "found": True, "malicious": 0, "suspicious": 0, "total": 70,
+         })), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Not a Scam", "risk_percentage": 5,
+             "key_reasons": [{"text": "File is clean on VirusTotal", "source": "file_evidence"}],
+             "recommendations": [],
+         })):
+        await handle_business_message(update, context)
+
+    context.bot.send_message.assert_awaited_once()
+    sent_text = context.bot.send_message.call_args.kwargs["text"]
+    assert "📎 File: `Week4_DOM_Lab_Exercises.docx`" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_send_failure_falls_back_to_plain_text_instead_of_total_silence():
+    # Defense-in-depth for the same real bug class: even with the
+    # backtick fix above, a FUTURE unforeseen Markdown edge case must
+    # not be able to silently kill the whole notification again, the
+    # way it did before this fix existed. Every other failure mode in
+    # this handler already degrades gracefully (Gemini down, VirusTotal
+    # down) - this proves the very last step (actually sending) does too.
+    from telegram.error import BadRequest
+
+    update = _business_update(text="URGENT: send $800 now, don't call")
+    context = _context()
+    context.bot.send_message = AsyncMock(side_effect=[
+        BadRequest("Can't parse entities: can't find end of the entity starting at byte offset 131"),
+        MagicMock(),  # the plain-text retry succeeds
+    ])
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam", "risk_percentage": 95,
+             "key_reasons": [{"text": "Urgent money request", "source": "message_text"}],
+             "recommendations": ["Verify independently"],
+         })):
+        await handle_business_message(update, context)
+
+    assert context.bot.send_message.await_count == 2
+    first_call, second_call = context.bot.send_message.await_args_list
+    assert first_call.kwargs["parse_mode"] == "Markdown"
+    assert "parse_mode" not in second_call.kwargs  # plain text - no entity parsing at all
+    assert second_call.kwargs["text"] == first_call.kwargs["text"]  # same real verdict, just unformatted
 
 
 @pytest.mark.asyncio

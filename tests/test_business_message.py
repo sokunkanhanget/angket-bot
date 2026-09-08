@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import bot.context_engine as context_engine
-from bot.handlers.url_handler import handle_business_message
+from bot.handlers.url_handler import _file_header_lines, handle_business_message
 from bot.i18n import t
 from bot.storage import subscription
 from bot.verdict_style import SECTION_DIVIDER
@@ -265,6 +265,25 @@ async def test_a_filename_with_underscores_does_not_break_markdown_parsing():
     context.bot.send_message.assert_awaited_once()
     sent_text = context.bot.send_message.call_args.kwargs["text"]
     assert "📎 File: `Week4_DOM_Lab_Exercises.docx`" in sent_text
+
+
+@pytest.mark.parametrize("file_name,expected_ext", [
+    ("game-test.txt", "TXT"),  # "-" isn't special in Telegram's legacy Markdown at all,
+    ("weird*name.pdf", "PDF"),  # confirmed live via a real sendMessage call for each of
+    ("under_score_heavy_name.docx", "DOCX"),  # these - but backtick-wrapping makes the whole
+    ("no_extension_at_all", "Unknown"),  # question moot generically, not char-by-char.
+])
+def test_file_header_backtick_wraps_the_name_regardless_of_special_characters(file_name, expected_ext):
+    # Direct unit coverage for the actual fix (backticks = literal
+    # content, no nested entity parsing) rather than re-proving it via
+    # the full handle_business_message path for every character - that
+    # integration proof already exists above for the real underscore
+    # case that broke production.
+    lines = _file_header_lines(file_name)
+
+    assert lines[0] == f"📎 File: `{file_name}`"
+    assert lines[1] == f"📄 Type: {expected_ext}"
+    assert lines[2] == SECTION_DIVIDER
 
 
 @pytest.mark.asyncio

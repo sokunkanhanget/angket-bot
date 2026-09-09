@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
-from bot.config import SCAN_LOG_DB, SUPABASE_DB_URL
+from bot.config.config import SCAN_LOG_DB, SUPABASE_DB_URL
 
 # --- Embedding (unchanged) ---------------------------------------------
 

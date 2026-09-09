@@ -4,7 +4,7 @@ import logging
 from google import genai
 from google.genai import types
 
-from bot.config import GEMINI_API_KEY, GEMINI_MODEL
+from bot.config.config import GEMINI_API_KEY, GEMINI_MODEL
 from bot.storage import subscription
 from bot.storage import health_alerts
 

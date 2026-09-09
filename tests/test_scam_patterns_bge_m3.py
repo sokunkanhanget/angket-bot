@@ -5,7 +5,7 @@ Tests for nearest_scam_pattern_live() - the real bge-m3-preferring,
 safe-fallback entry point context_engine.py's live path now calls.
 Returns (hits, used_bge_m3) - the second value matters because bge-m3
 runs on a different similarity SCALE than the hashed scheme (see
-BGE_M3_PATTERN_THRESHOLD in bot/config.py, calibrated from these very
+BGE_M3_PATTERN_THRESHOLD in bot/config/config.py, calibrated from these very
 tests catching a real threshold-reuse bug during development).
 
 Split from test_scam_patterns.py (which covers the plain, always-on
@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from bot.detectors.text.offline import scam_patterns
-from bot.config import BGE_M3_PATTERN_THRESHOLD, OLLAMA_URL
+from bot.config.config import BGE_M3_PATTERN_THRESHOLD, OLLAMA_URL
 
 
 def _ollama_reachable() -> bool:
@@ -43,7 +43,7 @@ def _reset_bge_m3_index():
 
 @pytest.mark.asyncio
 async def test_flag_off_uses_the_plain_hashed_scheme_directly(monkeypatch):
-    monkeypatch.setattr("bot.config.USE_BGE_M3_EMBEDDINGS", False)
+    monkeypatch.setattr("bot.config.config.USE_BGE_M3_EMBEDDINGS", False)
     text = "Mom, I lost my phone, this is my friend's number. I'm in trouble and need money right now, please don't call, just trust me."
 
     live_hits, used_bge_m3 = await scam_patterns.nearest_scam_pattern_live(text, k=1)
@@ -56,7 +56,7 @@ async def test_flag_off_uses_the_plain_hashed_scheme_directly(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_flag_on_but_ollama_unreachable_falls_back_safely(monkeypatch):
-    monkeypatch.setattr("bot.config.USE_BGE_M3_EMBEDDINGS", True)
+    monkeypatch.setattr("bot.config.config.USE_BGE_M3_EMBEDDINGS", True)
     monkeypatch.setattr("bot.detectors.text.online.bge_m3_embed.OLLAMA_URL", "http://localhost:1")
     text = "free bitcoin now, click nowhere"
 
@@ -73,7 +73,7 @@ async def test_flag_on_but_ollama_unreachable_falls_back_safely(monkeypatch):
 @pytest.mark.skipif(not _ollama_reachable(), reason="no local Ollama instance available")
 @pytest.mark.asyncio
 async def test_flag_on_and_ollama_reachable_actually_uses_bge_m3(monkeypatch):
-    monkeypatch.setattr("bot.config.USE_BGE_M3_EMBEDDINGS", True)
+    monkeypatch.setattr("bot.config.config.USE_BGE_M3_EMBEDDINGS", True)
 
     # A Khmer paraphrase of the family_emergency script - the hashed
     # scheme is blind to Khmer (confirmed elsewhere: ~0.14 similarity to
@@ -95,7 +95,7 @@ async def test_flag_on_and_ollama_reachable_actually_uses_bge_m3(monkeypatch):
 @pytest.mark.skipif(not _ollama_reachable(), reason="no local Ollama instance available")
 @pytest.mark.asyncio
 async def test_bge_m3_correctly_categorizes_khmer_examples_across_scam_types(monkeypatch):
-    monkeypatch.setattr("bot.config.USE_BGE_M3_EMBEDDINGS", True)
+    monkeypatch.setattr("bot.config.config.USE_BGE_M3_EMBEDDINGS", True)
     # Expanded validation corpus - real-shaped Khmer paraphrases (not
     # translations of the exact seed examples) across several different
     # scam categories, not just family_emergency. Each must both match
@@ -126,7 +126,7 @@ async def test_bge_m3_correctly_categorizes_khmer_examples_across_scam_types(mon
 @pytest.mark.skipif(not _ollama_reachable(), reason="no local Ollama instance available")
 @pytest.mark.asyncio
 async def test_bge_m3_scores_genuinely_benign_khmer_text_below_its_own_threshold(monkeypatch):
-    monkeypatch.setattr("bot.config.USE_BGE_M3_EMBEDDINGS", True)
+    monkeypatch.setattr("bot.config.config.USE_BGE_M3_EMBEDDINGS", True)
     # The other half of real validation: proving it doesn't just match
     # EVERYTHING to some category. Compared against BGE_M3_PATTERN_THRESHOLD
     # (0.70), NOT a plain "should be near zero" assumption - bge-m3
@@ -149,7 +149,7 @@ async def test_bge_m3_scores_genuinely_benign_khmer_text_below_its_own_threshold
 @pytest.mark.skipif(not _ollama_reachable(), reason="no local Ollama instance available")
 @pytest.mark.asyncio
 async def test_bge_m3_index_is_built_once_and_reused(monkeypatch):
-    monkeypatch.setattr("bot.config.USE_BGE_M3_EMBEDDINGS", True)
+    monkeypatch.setattr("bot.config.config.USE_BGE_M3_EMBEDDINGS", True)
 
     await scam_patterns.nearest_scam_pattern_live("test message one", k=1)
     index_after_first_call = scam_patterns._bge_m3_index

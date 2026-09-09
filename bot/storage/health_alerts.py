@@ -28,7 +28,7 @@ import time
 
 import httpx
 
-from bot.config import ADMIN_CHAT_ID, TELEGRAM_BOT_TOKEN
+from bot.config.config import ADMIN_CHAT_ID, TELEGRAM_BOT_TOKEN
 
 logger = logging.getLogger(__name__)
 

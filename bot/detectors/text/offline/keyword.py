@@ -1,4 +1,4 @@
-from bot.config import SUSPICIOUS_KEYWORDS
+from bot.config.config import SUSPICIOUS_KEYWORDS
 
 
 def analyze_text(text: str) -> dict:

@@ -10,7 +10,7 @@ Regression tests for routing behavior:
 
 2. Context-engineering routing: plain PRIVATE chat is no longer
    suppressed by a link (handle_text reasons over text + link together
-   itself - see bot/context_engine.py). GROUP/supergroup chat keeps the
+   itself - see bot/context_engine/context_engine.py). GROUP/supergroup chat keeps the
    old two-independent-replies behavior, untouched.
 
 3. Business chat automation: Business messages are now excluded from

@@ -1,39 +1,21 @@
-DEFAULT_LANG = "en"
+"""
+bot/translate/translate.py
+=============================
+All translatable CONTENT text - verdict labels, risk levels, key-reasons/
+what-to-do headers, disclaimers, menu pages (how-to-use/safety-tips/
+policy/etc.), and every other fixed string a reply actually shows to a
+user - split out of the old bot/i18n.py so content translation lives
+separately from bot/button/start_button.py's menu BUTTON labels (a
+different concern: what a keyboard button says vs. what a reply says).
 
-BUTTONS = {
-    "en": {
-        "menu": "MENU",
-        "switch_language": "🌐 Switch Language",
-        "lang_en": "English",
-        "lang_km": "ខ្មែរ",
-        "back": "↩️ Back",
-        "how_to_use": "📖 How to Use",
-        "safety_tips": "🛡️ Safety Tips",
-        "usage": "📈 Usage",
-        "policy": "📜 Policy",
-        "help": "❓ Help",
-        "subscription": "⭐ Subscription",
-        "delete": "🗑️ Delete",
-        "ignore": "🙈 Ignore",
-        "view_on_virustotal": "📊 View on VirusTotal",
-    },
-    "km": {
-        "menu": "ម៉ឺនុយ",
-        "switch_language": "🌐 ផ្លាស់ប្តូរភាសា",
-        "lang_en": "English",
-        "lang_km": "ខ្មែរ",
-        "back": "↩️ ត្រឡប់ក្រោយ",
-        "how_to_use": "📖 របៀបប្រើប្រាស់",
-        "safety_tips": "🛡️ គន្លឹះសុវត្ថិភាព",
-        "usage": "📈 ការប្រើប្រាស់",
-        "policy": "📜 គោលការណ៍",
-        "help": "❓ ជំនួយ",
-        "subscription": "⭐ ការជាវ",
-        "delete": "🗑️ លុប",
-        "ignore": "🙈 មិនអើពើ",
-        "view_on_virustotal": "📊 មើលនៅលើ VirusTotal",
-    },
-}
+Dynamic per-call text (Gemini's own key_reasons/recommendations) is NOT
+here - Gemini is asked to respond directly in the target language (see
+context_engine.py's lang param); this only covers the FIXED strings
+around that dynamic text, translated once instead of round-tripping
+through the model for a handful of fixed words every call.
+"""
+
+DEFAULT_LANG = "en"
 
 TEXT = {
     "en": {
@@ -106,8 +88,6 @@ TEXT = {
         ),
         "help": "❓ <b>Help</b>\n\nNeed assistance? Just send your question and we'll do our best to help.",
         "subscription": "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
-        "file_deleted": "🗑️ Message deleted.",
-        "file_scan_ignored": "🙈 Ignored. No action taken.",
         "file_scan_failed": (
             "⚠️ Could not finish scanning this file right now (the download or "
             "the virus-check service failed). Please try again in a moment."
@@ -134,6 +114,7 @@ TEXT = {
         # fixed words every single call. -----------------------------
         "checking_status": "🔍 Checking",
         "verdict_label": "VERDICT",
+        "type_label": "TYPE",
         "key_reasons_header": "KEY REASONS",
         "what_to_do_header": "WHAT YOU SHOULD DO",
         "keyword_match_label": "KEYWORD MATCH",
@@ -145,12 +126,12 @@ TEXT = {
         "summary_warning_signs": "This message has warning signs. Verify it before taking action.",
         "summary_strong_unsafe": "This message shows strong signs of being unsafe.",
         "summary_no_indicators": "No strong scam indicators were detected in this message.",
+        "summary_uncertain_no_signal": "There isn't enough information here to give a confident verdict.",
         "verdict_disclaimer": (
             "ⓘ Angket Bot may occasionally make mistakes.\n"
             "Double-check important information before taking action."
         ),
-        "business_new_activity": "👀 New activity in your business chat",
-        "business_disclaimer": "ⓘ Bot can make mistakes. Please check carefully.",
+        "business_new_activity": "👀 New Activity Detected",
         "business_what_they_can_do_header": "What They Can Do",
         "verdict_scam": "LIKELY A SCAM",
         "verdict_not_a_scam": "SAFE / LEGITIMATE",
@@ -231,8 +212,6 @@ TEXT = {
         ),
         "help": "❓ <b>ជំនួយ</b>\n\nត្រូវការជំនួយ? គ្រាន់តែផ្ញើសំណួររបស់អ្នក ហើយយើងនឹងខិតខំជួយអ្នកឱ្យបានល្អបំផុត។",
         "subscription": "⭐ <b>ការជាវ</b>\n\nគម្រោងជាវនឹងមកដល់ឆាប់ៗនេះ។",
-        "file_deleted": "🗑️ សារត្រូវបានលុប។",
-        "file_scan_ignored": "🙈 មិនអើពើ។ គ្មានសកម្មភាពត្រូវបានធ្វើឡើយ។",
         "file_scan_failed": (
             "⚠️ មិនអាចបញ្ចប់ការពិនិត្យឯកសារនេះបានទេនាពេលនេះ "
             "(ការទាញយក ឬសេវាកម្មពិនិត្យមេរោគបានបរាជ័យ)។ សូមព្យាយាមម្តងទៀតក្នុងពេលបន្តិចទៀត។"
@@ -255,6 +234,7 @@ TEXT = {
         # other new Khmer text (see the bge-m3 sandbox test messages).
         "checking_status": "🔍 កំពុងពិនិត្យ",
         "verdict_label": "លទ្ធផល",
+        "type_label": "ប្រភេទ",
         "key_reasons_header": "មូលហេតុសំខាន់ៗ",
         "what_to_do_header": "អ្វីដែលគួរធ្វើ",
         "keyword_match_label": "ពាក្យគន្លឹះដែលត្រូវគ្នា",
@@ -267,12 +247,12 @@ TEXT = {
         "summary_warning_signs": "សារនេះមានសញ្ញាគួរឱ្យប្រុងប្រយ័ត្ន។ សូមផ្ទៀងផ្ទាត់មុននឹងធ្វើសកម្មភាព។",
         "summary_strong_unsafe": "សារនេះបង្ហាញសញ្ញាខ្លាំងថាមិនមានសុវត្ថិភាព។",
         "summary_no_indicators": "រកមិនឃើញសញ្ញាការឆបោកខ្លាំងក្នុងសារនេះទេ។",
+        "summary_uncertain_no_signal": "មិនមានព័ត៌មានគ្រប់គ្រាន់ដើម្បីផ្តល់លទ្ធផលច្បាស់លាស់នោះទេ។",
         "verdict_disclaimer": (
-            "ⓘ Angket Bot អាចមានកំហុសខ្លះជួនកាល។\n"
-            "សូមផ្ទៀងផ្ទាត់ព័ត៌មានសំខាន់ៗម្តងទៀត មុននឹងធ្វើសកម្មភាព។"
+            "ⓘ Angket Bot អាចមានកំហុសខ្លះ។\n"
+            "សូមផ្ទៀងផ្ទាត់ព័ត៌មានម្តងទៀត មុននឹងធ្វើសកម្មភាព។"
         ),
-        "business_new_activity": "👀 សកម្មភាពថ្មីនៅក្នុងជជែកអាជីវកម្មរបស់អ្នក",
-        "business_disclaimer": "ⓘ Bot អាចមានកំហុសខ្លះ។ សូមពិនិត្យដោយប្រុងប្រយ័ត្ន។",
+        "business_new_activity": "👀 បានរកឃើញសកម្មភាពថ្មី",
         "business_what_they_can_do_header": "អ្វីដែលពួកគេអាចធ្វើបាន",
         "verdict_scam": "ទំនងជាការឆបោក",
         "verdict_not_a_scam": "សុវត្ថិភាព / ត្រឹមត្រូវ",
@@ -284,29 +264,3 @@ TEXT = {
         "risk_unknown": "ហានិភ័យមិនស្គាល់",
     },
 }
-
-
-def _normalize_lang(lang: str | None) -> str:
-    return lang if lang in BUTTONS else DEFAULT_LANG
-
-
-def t(lang: str | None, key: str) -> str:
-    locale = _normalize_lang(lang)
-    return TEXT.get(locale, {}).get(key) or TEXT.get(DEFAULT_LANG, {}).get(key) or key
-
-
-def label(lang: str | None, key: str) -> str:
-    locale = _normalize_lang(lang)
-    return BUTTONS.get(locale, {}).get(key) or BUTTONS.get(DEFAULT_LANG, {}).get(key) or key
-
-
-def key_for_label(text: str) -> str | None:
-    normalized = (text or "").strip()
-    if not normalized:
-        return None
-
-    for lang, labels in BUTTONS.items():
-        for key, label_text in labels.items():
-            if normalized == label_text:
-                return key
-    return None

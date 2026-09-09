@@ -19,8 +19,8 @@ import json
 
 import pytest
 
-import bot.context_engine as ce
-from bot.context_engine import _grounded_fallback, _reconcile_with_evidence, _system_prompt, analyze_unified
+import bot.context_engine.context_engine as ce
+from bot.context_engine.context_engine import _grounded_fallback, _reconcile_with_evidence, _system_prompt, analyze_unified
 
 
 class _FakeResponse:
@@ -195,7 +195,7 @@ async def test_analyze_unified_degrades_without_api_key(fake_vector_store, monke
     # No API key configured -> must return the grounded fallback, never
     # raise and never return a bare "not configured" verdict with no
     # local evidence attached.
-    import bot.context_engine as ce
+    import bot.context_engine.context_engine as ce
     monkeypatch.setattr(ce, "_client", None)
 
     keyword_result = {"suspicious": True, "matches": ["free bitcoin"]}
@@ -316,7 +316,7 @@ async def test_analyze_unified_falls_back_on_malformed_json(fake_vector_store, m
     result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
 
     # ai_unavailable tells the caller's formatter to show one fixed,
-    # translated notice (bot/i18n.py's ai_unavailable_notice) instead of
+    # translated notice (bot/translate/translate.py's ai_unavailable_notice) instead of
     # expecting AI-authored reasons text - see format_unified_response.
     assert result["ai_unavailable"] is True
 

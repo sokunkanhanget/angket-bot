@@ -38,7 +38,7 @@ import time
 
 import httpx
 
-from bot.config import SCAN_LOG_DB
+from bot.config.config import SCAN_LOG_DB
 from bot.storage import health_alerts
 
 API_BASE = "https://www.virustotal.com/api/v3"

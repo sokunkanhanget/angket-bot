@@ -7,7 +7,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 SCAN_LOG_DB = os.getenv("SCAN_LOG_DB", "scan_logs.db")
 
 # Supabase Postgres (pgvector) - backs bot/detectors/url/offline/vectors.py's
@@ -46,13 +46,22 @@ USE_BGE_M3_EMBEDDINGS = os.getenv("USE_BGE_M3_EMBEDDINGS", "false").lower() == "
 # range 0.508-0.674 across 54 real test cases - 0.70 sits in the gap.
 BGE_M3_PATTERN_THRESHOLD = float(os.getenv("BGE_M3_PATTERN_THRESHOLD", "0.70"))
 
-# Offline scam-message pattern similarity threshold (context_engine.py's
-# no-Gemini fallback) - calibrated live against real examples: a
-# near-verbatim repeat of a known scam script scored 0.686, genuinely
-# benign messages topped out at 0.337. Env-overridable since re-tuning
-# this (e.g. after adding more seed patterns) is an expected, routine
-# change, not a code change.
+# Offline scam-message pattern similarity threshold (bot/context_engine/
+# context_engine.py's no-Gemini fallback) - calibrated live against real
+# examples: a near-verbatim repeat of a known scam script scored 0.686,
+# genuinely benign messages topped out at 0.337. Env-overridable since
+# re-tuning this (e.g. after adding more seed patterns) is an expected,
+# routine change, not a code change.
 SCAM_PATTERN_THRESHOLD = float(os.getenv("SCAM_PATTERN_THRESHOLD", "0.5"))
+
+# The Telegram Bot API only ever gives message timestamps in UTC - it has
+# no concept of a user's real local timezone at all, so a genuinely
+# per-user "UTC + their timezone" display (as literally requested) isn't
+# something the Bot API can answer. This is a single project-wide offset
+# instead, defaulting to Cambodia's ICT (UTC+7) since this bot's whole
+# audience/localization (the km i18n locale) is Cambodia-based - override
+# via .env if that's ever wrong for a deployment.
+DISPLAY_TIMEZONE_OFFSET_HOURS = int(os.getenv("DISPLAY_TIMEZONE_OFFSET_HOURS", "7"))
 
 SUSPICIOUS_KEYWORDS = (
     "free bitcoin",

@@ -1,35 +1,25 @@
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import TelegramError
+from telegram import Update
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.storage.scan_log import log_scan
 from bot.storage import subscription
 from bot.handlers.text_handler import get_user_lang
-from bot.i18n import label, t
-from bot.verdict_style import SECTION_DIVIDER
+from bot.translate.translate import DEFAULT_LANG
+from bot.button.start_button import t
+from bot.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
 
 logger = logging.getLogger(__name__)
 
 
-# Same shape as bot/detectors/url/pipeline.py's own _VERDICT_SENTENCES/
-# _RECOMMENDATIONS - not imported from there (those are that module's
-# own private constants for LINK verdicts specifically), but matching
-# the exact structure so handle_file's reply reads like the same
-# product as the link/text checkers, per direct user request. "uncertain"
-# is the one level neither of pipeline.py's own maps has - files
-# genuinely can end up with no real signal either way (a brand-new
-# hash VirusTotal has never seen, no filename disguise, or a VT outage
-# with nothing else to go on) - see _classify_file_result below.
-_FILE_VERDICT_SENTENCES = {
-    "dangerous": "This file is 🔴 *DANGEROUS* — do not open it.",
-    "suspicious": "This file is 🟠 *SUSPICIOUS* — proceed with caution.",
-    "safe": "This file is 🟢 *SAFE*.",
-    "uncertain": "This file is ⚪ *UNCERTAIN* — not enough information for a real verdict.",
-}
-
+# Recommendation text per internal file-scan level - "uncertain" is the
+# one level neither of pipeline.py's own maps has - files genuinely can
+# end up with no real signal either way (a brand-new hash VirusTotal has
+# never seen, no filename disguise, or a VT outage with nothing else to
+# go on) - see _classify_file_result below. Maps onto the shared
+# Scam/Not a Scam/Uncertain verdict vocabulary via LEVEL_TO_VERDICT.
 _FILE_RECOMMENDATIONS = {
     "dangerous": [
         "Do not open this file, run it, or extract its contents.",
@@ -49,15 +39,6 @@ _FILE_RECOMMENDATIONS = {
         "Verify the sender through another channel before opening it.",
     ],
 }
-
-
-def _risk_percent_and_label(pct: int) -> tuple[int, str]:
-    pct = min(max(pct, 0), 100)
-    if pct <= 30:
-        return pct, "Low Risk"
-    if pct <= 60:
-        return pct, "Medium Risk"
-    return pct, "High Risk"
 
 
 def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
@@ -119,64 +100,48 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
     return "uncertain", None, reasons
 
 
-def _format_file_verdict(file_name: str, level: str, pct: int | None, reasons: list[str]) -> str:
-    """Same section layout as pipeline.py's format_verdict_full (link
-    checker) - Scanned target / Risk / Reasons / What Can You Do / the
-    same disclaimer line - per direct user request that this reply read
-    like the url/text checkers' output, not a raw VirusTotal data dump."""
-    verdict_sentence = _FILE_VERDICT_SENTENCES[level]
+def _with_disclaimer(message: str, lang: str = DEFAULT_LANG) -> str:
+    """Every other reply path (text/link, including their own Gemini-failure
+    fallbacks) keeps the divider + disclaimer even when degraded - file
+    scanning's download/scan failure replies were the one path that
+    returned early and skipped it entirely."""
+    return f"{message}\n\n{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}"
+
+
+def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: str = DEFAULT_LANG) -> str:
+    """Same VERDICT/TYPE/risk/reasons/what-to-do/disclaimer shape as
+    text_handler.py's unified reply and pipeline.py's link verdict -
+    direct user spec that text/link/file (and the business notification)
+    all read as one consistent product. `file_name` no longer appears in
+    the body itself (the TYPE line replaces the old "Scanned File" line
+    project-wide) - per the same spec, which gives an exact template with
+    no scanned-target line."""
+    verdict = LEVEL_TO_VERDICT[level]
+    verdict_icon, verdict_label = verdict_style(verdict, lang)
+    risk_icon, risk_label = risk_style(pct, lang)
     recs = _FILE_RECOMMENDATIONS[level]
 
     lines = [
-        "📡 *Angket Bot - File Scanner*",
+        f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
+        f"📁 *{t(lang, 'type_label')}: {scan_type_label(has_text=False, has_link=False, has_file=True)}*",
+        summary_sentence(verdict, pct, lang),
         "",
-        "📄 *Scanned File*",
-        f"`{file_name}`",
+        f"{risk_icon} *{risk_label.upper()}*" if pct is None else f"{risk_icon} *{pct}%  {risk_label.upper()}*",
         "",
-        "🛡️ *Risk*",
-        verdict_sentence,
+        f"🔍 *{t(lang, 'key_reasons_header')}*",
     ]
-    if pct is not None:
-        _, risk_label = _risk_percent_and_label(pct)
-        lines.append(f"{pct}% estimated risk — {risk_label}")
-    else:
-        lines.append("N/A — no real signal to estimate a percentage from")
-    lines += ["", "🔍 *Reasons*"]
-    lines += [f"- {r}" for r in reasons]
+    lines += [f"• {r}" for r in reasons]
     lines += [
         "",
-        "💡 *What Can You Do?*",
+        f"💡 *{t(lang, 'what_to_do_header')}*",
     ]
-    lines += [f"- {r}" for r in recs]
+    lines += [f"✓ {r}" for r in recs]
     lines += [
         "",
         SECTION_DIVIDER,
-        "ⓘ Bot can make mistakes. Please check carefully.",
+        t(lang, "verdict_disclaimer"),
     ]
     return "\n".join(lines)
-
-
-def _virustotal_button(lang: str, sha256: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(
-        label(lang, "view_on_virustotal"),
-        url=f"https://www.virustotal.com/gui/file/{sha256}",
-    )
-
-
-def _scan_result_keyboard(lang: str, original_message_id: int, level: str, sha256: str) -> InlineKeyboardMarkup:
-    """Delete/Ignore only make sense next to an actually-dangerous result -
-    a clean/suspicious/uncertain file has nothing to delete or ignore.
-    Gated on the CLASSIFIED level now (which can come from the filename
-    heuristic alone when VT has nothing to say), not just VT's raw
-    malicious count - see _classify_file_result."""
-    rows = []
-    if level == "dangerous":
-        rows.append([
-            InlineKeyboardButton(label(lang, "delete"), callback_data=f"delete_{original_message_id}"),
-            InlineKeyboardButton(label(lang, "ignore"), callback_data="ignore"),
-        ])
-    rows.append([_virustotal_button(lang, sha256)])
-    return InlineKeyboardMarkup(rows)
 
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -200,7 +165,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         sha256 = await download_and_hash(context, document.file_id)
     except Exception:                          # noqa: BLE001 - a Telegram-side download failure must still get a reply
         logger.exception("File download failed for %s", file_name)
-        await message.edit_text(t(lang, "file_scan_failed"))
+        await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))
         return
 
     # scan_file() isn't SUPPOSED to raise - a VirusTotal outage comes back
@@ -214,39 +179,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         result = await scan_file(sha256, file_name)
     except Exception:                          # noqa: BLE001 - must never break the reply path
         logger.exception("Unexpected error scanning %s", file_name)
-        await message.edit_text(t(lang, "file_scan_failed"))
+        await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))
         return
 
     subscription.record_file_scan(user_id)
 
     level, risk_percentage, reasons = _classify_file_result(result)
-    reply = _format_file_verdict(file_name, level, risk_percentage, reasons)
-    keyboard = _scan_result_keyboard(lang, update.message.message_id, level, sha256)
+    reply = _format_file_verdict(level, risk_percentage, reasons, lang)
     log_scan(user_id, file_name, sha256, result.get("malicious", 0))
 
-    await message.edit_text(
-        reply,
-        parse_mode="Markdown",
-        reply_markup=keyboard,
-    )
-
-
-async def handle_scan_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Delete/Ignore taps on a file-scan result - registered with an
-    explicit pattern (see bot.py) so it can never swallow unrelated
-    callbacks like the business-chat link notifications' `^u:` ones."""
-    query = update.callback_query
-    await query.answer()
-    lang = get_user_lang(context)
-
-    if query.data.startswith("delete_"):
-        target_message_id = int(query.data.split("_", 1)[1])
-        try:
-            await context.bot.delete_message(chat_id=query.message.chat_id, message_id=target_message_id)
-            await query.edit_message_text(t(lang, "file_deleted"))
-        except TelegramError:
-            # Already deleted, or the bot lacks delete permission in this
-            # chat - either way, nothing more we can safely do here.
-            await query.edit_message_text(t(lang, "file_deleted"))
-    elif query.data == "ignore":
-        await query.edit_message_text(t(lang, "file_scan_ignored"))
+    await message.edit_text(reply, parse_mode="Markdown")

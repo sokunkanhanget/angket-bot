@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from bot.detectors.text.online.bge_m3_embed import cosine_similarity, embed_bge_m3
-from bot.config import OLLAMA_URL
+from bot.config.config import OLLAMA_URL
 
 
 def _ollama_reachable() -> bool:

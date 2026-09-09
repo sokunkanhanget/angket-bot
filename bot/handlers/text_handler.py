@@ -7,13 +7,14 @@ from telegram.ext import ContextTypes
 from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.detectors.text.online.llm import analyze_text_with_llm
 from bot.detectors.text.offline.keyword import analyze_text
-from bot.context_engine import analyze_unified
-from bot.i18n import DEFAULT_LANG, BUTTONS, key_for_label, label, t
+from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
+from bot.translate.translate import DEFAULT_LANG
+from bot.button.start_button import BUTTONS, key_for_label, label, t
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
-from bot.handlers.url_handler import extract_text_link_entities, resolve_ticket
+from bot.handlers.url_handler import extract_text_link_entities
 from bot.storage import subscription
 from bot.detectors.url.pipeline import check_message_full
-from bot.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, verdict_style
+from bot.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
 
 BTN_MENU = "MENU"
 
@@ -67,19 +68,6 @@ def get_language_keyboard(lang: str) -> ReplyKeyboardMarkup:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_user_lang(context)
-    # Deep-link tickets from link-checker showcases arrive here too
-    # (t.me/<bot>?start=<ticket>). A valid ticket takes priority over
-    # the welcome menu; an expired/unknown one falls through to it.
-    if context.args:
-        full = resolve_ticket(context, context.args[0])
-        if full is not None:
-            await update.message.reply_text(
-                full,
-                parse_mode="Markdown",
-                disable_web_page_preview=True,
-            )
-            return
-
     await update.message.reply_text(
         "🛡️ <b>Welcome to Angket Bot</b>\n"
         "Your security assistant for checking suspicious content.\n\n"
@@ -99,22 +87,6 @@ def _format_list(items: list, prefix: str, lang: str = DEFAULT_LANG) -> str:
     if not items:
         return f"{prefix} {t(lang, 'none_provided')}"
     return "\n".join(f"{prefix} {escape(str(item))}" for item in items)
-
-
-def _summary(verdict: str | None, risk_percentage: int | None, lang: str = DEFAULT_LANG) -> str:
-    if verdict == "Scam":
-        if risk_percentage is not None and risk_percentage <= 60:
-            return t(lang, "summary_warning_signs")
-        return t(lang, "summary_strong_unsafe")
-    if verdict == "Not a Scam":
-        if risk_percentage is not None and risk_percentage > 30:
-            return t(lang, "summary_warning_signs")
-        return t(lang, "summary_no_indicators")
-    if risk_percentage is not None and risk_percentage > 60:
-        return t(lang, "summary_strong_unsafe")
-    if risk_percentage is not None and risk_percentage > 30:
-        return t(lang, "summary_warning_signs")
-    return t(lang, "summary_no_indicators")
 
 
 _CHECKING_ANIMATION_FRAMES = ["", " .", " . .", " . . ."]
@@ -153,16 +125,20 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
     and Gemini call are both out of scope for translation for now (see
     bot.py's TEXT_FILTER) - this function's signature is otherwise identical to
     format_unified_response on purpose, so it stays that way on purpose,
-    not by oversight."""
+    not by oversight. TYPE is always "text" here - this path never
+    reasons over links/files itself (see handle_text's own docstring:
+    a group-chat link gets its own separate reply from handle_url)."""
     lang = DEFAULT_LANG
-    verdict_icon, verdict_label = verdict_style(llm_result.get("verdict"), lang)
+    verdict = llm_result.get("verdict")
+    verdict_icon, verdict_label = verdict_style(verdict, lang)
     risk_icon, risk_label = risk_style(llm_result.get("risk_percentage"), lang)
     risk_percentage = llm_result.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
     lines = [
-        f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n\n"
-        + _summary(llm_result.get("verdict"), risk_percentage, lang),
+        f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n"
+        f"📁 <b>{t(lang, 'type_label')}: {scan_type_label(True, False, False)}</b>\n"
+        + summary_sentence(verdict, risk_percentage, lang),
         f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
@@ -177,25 +153,9 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
     return "\n\n".join(lines)
 
 
-def _file_header_block(file_name: str | None) -> str:
-    """📎 File: name / 📄 Type: EXT header, ending in its OWN divider -
-    shown above a unified verdict whenever a document was actually part
-    of what got checked, direct teammate feedback. Deliberately meant to
-    be prepended with a single "\\n" (not the "\\n\\n" this module's
-    other sections join with) so the divider sits tight against both the
-    file info above it and the VERDICT line below it, matching the
-    feedback's own example exactly - not another blank-line-separated
-    section. Empty string (not None) when there's no file, so a plain
-    f"{block}{header}" concatenation works with no extra branching at
-    the call site."""
-    if not file_name:
-        return ""
-    ext = file_name.rsplit(".", 1)[-1].upper() if "." in file_name else "Unknown"
-    return f"📎 <b>File:</b> {escape(file_name)}\n📄 <b>Type:</b> {ext}\n{SECTION_DIVIDER}\n"
-
-
 def format_unified_response(
-    unified: dict, keyword_result: dict, lang: str = DEFAULT_LANG, file_name: str | None = None
+    unified: dict, keyword_result: dict, lang: str = DEFAULT_LANG,
+    has_link: bool = False, has_file: bool = False, has_text: bool = True,
 ) -> str:
     """Same visual shape as format_analysis_response, but key_reasons are
     {text, source} objects (context_engine.py's schema) instead of plain
@@ -204,10 +164,17 @@ def format_unified_response(
     have produced on its own.
 
     Unlike format_analysis_response, this one IS lang-aware: the fixed
-    labels/headers come from i18n.py, and the dynamic key_reasons/
-    recommendations text is expected to already be in the target
+    labels/headers come from bot/translate/translate.py, and the dynamic
+    key_reasons/recommendations text is expected to already be in the target
     language (analyze_unified asks Gemini to respond in it directly -
     see context_engine.py).
+
+    has_link/has_file/has_text feed the "📁 TYPE:" line - the caller
+    already knows exactly what was actually checked (link_verdicts,
+    whether a document was attached, whether the message was more than
+    just a bare pasted link), so it's computed there rather than
+    guessed back out of the `unified` verdict dict, which carries no
+    such bookkeeping itself.
 
     unified["ai_unavailable"] (set by context_engine.py's
     _grounded_fallback) means there's no AI-authored reasons/
@@ -215,15 +182,16 @@ def format_unified_response(
     sections are replaced with one fixed, translated notice instead of
     a body that would otherwise mix raw English boilerplate into an
     otherwise-Khmer reply, or a "None provided" What To Do section."""
-    verdict_icon, verdict_label = verdict_style(unified.get("verdict"), lang)
+    verdict = unified.get("verdict")
+    verdict_icon, verdict_label = verdict_style(verdict, lang)
     risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
 
     header = (
-        _file_header_block(file_name)
-        + f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n\n"
-        + _summary(unified.get("verdict"), risk_percentage, lang)
+        f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n"
+        f"📁 <b>{t(lang, 'type_label')}: {scan_type_label(has_text, has_link, has_file)}</b>\n"
+        + summary_sentence(verdict, risk_percentage, lang)
     )
     risk_block = f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>"
 
@@ -343,7 +311,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # Plain private DM: reason over text AND any link together in one
     # Gemini call, instead of the link-only verdict a private-chat link
-    # used to fall back to. See bot/context_engine.py for why this
+    # used to fall back to. See bot/context_engine/context_engine.py for why this
     # exists - a text-only scam that includes ANY link, even a
     # lexically clean one, used to lose all of its text reasoning here.
     # Business chat never reaches this function at all (route.py's
@@ -395,7 +363,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
         reply_text = format_unified_response(
-            unified, keyword_result, lang, file_name=document.file_name if document is not None else None
+            unified, keyword_result, lang,
+            has_link=bool(link_verdicts),
+            has_file=document is not None,
+            has_text=not _message_is_only_links(text, link_verdicts),
         )
         if user_id is not None:
             subscription.record_link_or_message_scan(user_id)

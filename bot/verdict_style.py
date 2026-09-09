@@ -8,7 +8,7 @@ diverge on what counts as "High Risk" or how a verdict is labelled.
 
 Both verdict_style() and risk_style() take a `lang` - the labels are
 FIXED text (not something Gemini generates per call), so they're
-translated once via i18n.py instead of round-tripping through the model
+translated once via bot/translate/translate.py instead of round-tripping through the model
 for a handful of words every single call. Group chat (bot/route.py's
 TEXT_FILTER path) deliberately keeps calling these with lang="en" -
 see text_handler.py's format_analysis_response - group replies are out
@@ -17,7 +17,8 @@ of scope for translation for now, unlike private DM/business chat.
 
 from __future__ import annotations
 
-from bot.i18n import DEFAULT_LANG, t
+from bot.translate.translate import DEFAULT_LANG
+from bot.button.start_button import t
 
 _VERDICT_ICONS = {
     "Scam": "⚠️",
@@ -70,3 +71,77 @@ def risk_style(risk_percentage: int | None, lang: str = DEFAULT_LANG) -> tuple[s
     if risk_percentage <= 60:
         return "🟠", t(lang, "risk_medium")
     return "🔴", t(lang, "risk_high")
+
+
+def summary_sentence(verdict: str | None, risk_percentage: int | None, lang: str = DEFAULT_LANG) -> str:
+    """The one-line sentence right under VERDICT/TYPE (e.g. "This message
+    shows strong signs of being unsafe."). Moved here from text_handler.py
+    so pipeline.py and file_handler.py can share it too, now that every
+    scan surface (text/link/file/business) uses the same reply shape -
+    text_handler.py importing this from here instead of defining it
+    locally avoids a circular import (pipeline.py is imported BY
+    url_handler.py, which text_handler.py also imports from)."""
+    if verdict == "Scam":
+        if risk_percentage is not None and risk_percentage <= 60:
+            return t(lang, "summary_warning_signs")
+        return t(lang, "summary_strong_unsafe")
+    if verdict == "Not a Scam":
+        if risk_percentage is not None and risk_percentage > 30:
+            return t(lang, "summary_warning_signs")
+        return t(lang, "summary_no_indicators")
+    if risk_percentage is not None and risk_percentage > 60:
+        return t(lang, "summary_strong_unsafe")
+    if risk_percentage is not None and risk_percentage > 30:
+        return t(lang, "summary_warning_signs")
+    # risk_percentage is None here only for file_handler.py's genuine
+    # no-signal case (no VT match/reachability AND no filename warning) -
+    # a real, confirmed bug this fixes live: that case's verdict label is
+    # "SUSPICIOUS" (Uncertain), so falling through to "no indicators
+    # detected" directly contradicted it. risk_style(None) already shows
+    # "⚪ Unknown Risk" distinctly for the same reason - this matches that.
+    if risk_percentage is None:
+        return t(lang, "summary_uncertain_no_signal")
+    return t(lang, "summary_no_indicators")
+
+
+# pipeline.py (link checker) and file_handler.py (file scanner) each have
+# their own internal risk "level" vocabulary (dangerous/suspicious/safe,
+# plus file's extra "uncertain" for a genuine no-signal case) - this maps
+# either onto the SAME three-way verdict vocabulary (Scam/Not a Scam/
+# Uncertain) verdict_style() already uses for text/business checks, so
+# all four surfaces render an identical VERDICT line. "uncertain" (file
+# only) maps to "Uncertain" too: paired with risk_percentage=None, that
+# renders as "⚪ Unknown Risk" via risk_style(None) - genuinely distinct
+# from "suspicious"'s real, numeric-percentage "Uncertain" case, not a
+# forced conflation of two different situations.
+LEVEL_TO_VERDICT = {
+    "dangerous": "Scam",
+    "suspicious": "Uncertain",
+    "safe": "Not a Scam",
+    "uncertain": "Uncertain",
+}
+
+
+def scan_type_label(has_text: bool, has_link: bool, has_file: bool) -> str:
+    """The "📁 TYPE:" line's value - which of text/link/file this
+    particular check actually covered. Direct user spec: seven exact
+    combinations, not a generic sorted join (a bare link+file with no
+    real text reads "file+link", not "link+file", while text always
+    sorts first when present) - see the caller-supplied booleans'
+    docstrings at each call site for how "has_text" in particular is
+    decided (a message that's ONLY a pasted link does not count)."""
+    if has_text and has_link and has_file:
+        return "all"
+    if has_text and has_link:
+        return "text+link"
+    if has_text and has_file:
+        return "text+file"
+    if has_link and has_file:
+        return "file+link"
+    if has_text:
+        return "text"
+    if has_link:
+        return "link"
+    if has_file:
+        return "file"
+    return "text"  # degenerate/unreachable in practice - every caller checks something

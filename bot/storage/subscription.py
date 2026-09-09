@@ -27,7 +27,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
-from bot.config import SCAN_LOG_DB
+from bot.config.config import SCAN_LOG_DB
 
 # --- Tier limits, per the team's plan ------------------------------------
 

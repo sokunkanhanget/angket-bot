@@ -75,9 +75,11 @@ from bot.detectors.url.offline.lexical import (
     has_malformed_protocol,
     registered_domain,
 )
-from bot.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
+from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
 from bot.storage import health_alerts
-from bot.verdict_style import SECTION_DIVIDER
+from bot.translate.translate import DEFAULT_LANG
+from bot.button.start_button import t
+from bot.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
 
 logger = logging.getLogger(__name__)
 
@@ -794,12 +796,6 @@ def _risk_percent_and_label(score: int) -> tuple[int, str]:
     return pct, "High Risk"
 
 
-_VERDICT_SENTENCES = {
-    "dangerous": "This link is 🔴 *DANGEROUS* — avoid it.",
-    "suspicious": "This link is 🟠 *SUSPICIOUS* — proceed with caution.",
-    "safe": "This link is 🟢 *SAFE*.",
-}
-
 _RECOMMENDATIONS = {
     "dangerous": [
         "Do not open this link, log in, or enter any codes, passwords, or card details.",
@@ -819,33 +815,39 @@ _RECOMMENDATIONS = {
 
 
 def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
-    """Full breakdown; include_evidence=False drops the Technical Evidence section."""
-    pct, risk_label = _risk_percent_and_label(v["score"])
-    verdict_sentence = _VERDICT_SENTENCES[v["level"]]
+    """Full breakdown; include_evidence=False drops the Technical Evidence
+    section. Same VERDICT/TYPE/risk/reasons/what-to-do/disclaimer shape as
+    text_handler.py's unified reply and file_handler.py's file verdict -
+    direct user spec that all three (plus the business notification) read
+    as one consistent product, not three differently-worded ones. Always
+    English (DEFAULT_LANG) - matches this function's existing callers
+    (group chat's link checker), same scope limitation
+    format_analysis_response documents for group-chat text."""
+    pct, _ = _risk_percent_and_label(v["score"])
+    verdict = LEVEL_TO_VERDICT[v["level"]]
+    verdict_icon, verdict_label = verdict_style(verdict, DEFAULT_LANG)
+    risk_icon, risk_label = risk_style(pct, DEFAULT_LANG)
     recs = _RECOMMENDATIONS[v["level"]]
 
     lines = [
-        "📡 *Angket Bot - Link Checker*",
+        f"{verdict_icon} *{t(DEFAULT_LANG, 'verdict_label')}: {verdict_label}*",
+        f"📁 *{t(DEFAULT_LANG, 'type_label')}: {scan_type_label(has_text=False, has_link=True, has_file=False)}*",
+        summary_sentence(verdict, pct, DEFAULT_LANG),
         "",
-        "🔗 *Scanned Link*",
-        f"`{v['host']}`",
+        f"{risk_icon} *{pct}%  {risk_label.upper()}*",
         "",
-        "🛡️ *Risk*",
-        verdict_sentence,
-        f"{pct}% estimated scam risk — {risk_label}",
-        "",
-        "🔍 *Reasons*",
+        f"🔍 *{t(DEFAULT_LANG, 'key_reasons_header')}*",
     ]
-    lines += [f"- {r}" for r in v["reasons"]]
+    lines += [f"• {r}" for r in v["reasons"]]
     lines += [
         "",
-        "💡 *What Can You Do?*",
+        f"💡 *{t(DEFAULT_LANG, 'what_to_do_header')}*",
     ]
-    lines += [f"- {r}" for r in recs]
+    lines += [f"✓ {r}" for r in recs]
     lines += [
         "",
         SECTION_DIVIDER,
-        "ⓘ Bot can make mistakes. Please check carefully.",
+        t(DEFAULT_LANG, "verdict_disclaimer"),
     ]
 
     detail = v.get("detail") or []

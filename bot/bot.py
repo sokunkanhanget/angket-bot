@@ -24,19 +24,17 @@ from telegram import Update
 from telegram.ext import (
     Application,
     BusinessConnectionHandler,
-    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
     TypeHandler,
 )
 
-from bot.config import GEMINI_API_KEY, SUPABASE_DB_URL, TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
-from bot.handlers.file_handler import handle_file, handle_scan_action_callback
+from bot.config.config import GEMINI_API_KEY, SUPABASE_DB_URL, TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
+from bot.handlers.file_handler import handle_file
 from bot.handlers.text_handler import handle_text, start
 from bot.handlers.url_handler import (
     handle_business_message,
-    handle_business_url_callback,
     handle_url,
     on_business_connection,
 )
@@ -46,7 +44,7 @@ from bot.storage.scan_log import init_db, init_url_db
 #   bot/detectors/url/ + bot/handlers/url_handler.py — link checking (BB)
 #   bot/detectors/text/ + bot/handlers/text_handler.py,
 #   bot/detectors/file/ + bot/handlers/file_handler.py — teammates' text & file scanning
-#   bot/context_engine.py — merges both, for plain private DM and Business
+#   bot/context_engine/context_engine.py — merges both, for plain private DM and Business
 #     chat automation (see below)
 # Shared infra lives in bot/storage/scan_log.py so both log to one DB.
 
@@ -73,7 +71,7 @@ TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.Upd
 #   group 2  — teammate's text/LLM scan (text or caption). GROUP/supergroup
 #              and plain PRIVATE chat only — see below.
 #   group 3  — Business chat automation: ONE unified text+link+file check
-#              per message (bot/context_engine.py + handle_business_message)
+#              per message (bot/context_engine/context_engine.py + handle_business_message)
 #
 # No image/photo scanning (e.g. QR decoding) anywhere - text, links, and
 # files only, per team decision.
@@ -184,15 +182,6 @@ def main():
     # handlers/url_handler.on_business_connection for why this matters).
     app.add_handler(BusinessConnectionHandler(on_business_connection))
 
-    # "See full details" / "Show less detail" / "Delete" taps on the
-    # owner's private business-link notifications.
-    app.add_handler(CallbackQueryHandler(handle_business_url_callback, pattern=r"^u:"))
-
-    # Delete/Ignore taps on a direct (non-Business) file-scan result.
-    # Explicit pattern so it can never swallow the business-link
-    # callbacks above, unlike an unscoped catch-all handler would.
-    app.add_handler(CallbackQueryHandler(handle_scan_action_callback, pattern=r"^(delete_|ignore)"))
-
     # Link checker — text or caption, GROUP/supergroup chat only; silent
     # when no links are found. Plain PRIVATE chat and Business chat are
     # both excluded here on purpose: handle_text (private) and
@@ -206,7 +195,7 @@ def main():
 
     # Teammate's text/LLM scan — text or caption, GROUP/supergroup chat and
     # plain PRIVATE chat (private reasons over any link itself - see
-    # bot/context_engine.py). Business chat is excluded: it's fully owned
+    # bot/context_engine/context_engine.py). Business chat is excluded: it's fully owned
     # by group 3 now. Own group so a document's caption doesn't get
     # shadowed by handle_file's earlier, unconditional match on the same
     # message in group 0.
@@ -214,7 +203,7 @@ def main():
 
     # Business chat automation: one unified text+link+file check per
     # customer message, privately reported to the business owner. See
-    # bot/context_engine.py and handle_business_message's docstring.
+    # bot/context_engine/context_engine.py and handle_business_message's docstring.
     app.add_handler(
         MessageHandler(filters.UpdateType.BUSINESS_MESSAGE, handle_business_message), group=3
     )

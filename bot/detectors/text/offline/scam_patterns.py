@@ -2,7 +2,7 @@
 bot/detectors/text/scam_patterns.py
 =====================================
 Offline scam-MESSAGE pattern similarity - the deterministic fallback
-signal used when Gemini is unavailable (see bot/context_engine.py's
+signal used when Gemini is unavailable (see bot/context_engine/context_engine.py's
 _grounded_fallback), AND (see nearest_scam_pattern below) a piece of
 evidence fed into the live Gemini call too.
 
@@ -142,7 +142,7 @@ def nearest_scam_pattern(text: str, k: int = 1) -> list[tuple[float, str, str, s
 
 
 # --- bge-m3 (real, Khmer-capable embeddings) - live, with safe fallback --
-# Gated by USE_BGE_M3_EMBEDDINGS (bot/config.py, default off - no
+# Gated by USE_BGE_M3_EMBEDDINGS (bot/config/config.py, default off - no
 # production hosting is arranged yet, this depends on whatever Ollama
 # instance OLLAMA_URL points at, which today means a local dev machine,
 # not a reliable always-on server). ALWAYS falls back to the hashed
@@ -200,7 +200,7 @@ async def nearest_scam_pattern_live(text: str, k: int = 1) -> tuple[list[tuple[f
     True). Found the hard way: an early version of this wiring reused
     the hashed scheme's threshold for both paths, which would have
     false-positived on ordinary benign messages once bge-m3 was live."""
-    from bot.config import USE_BGE_M3_EMBEDDINGS
+    from bot.config.config import USE_BGE_M3_EMBEDDINGS
     from bot.detectors.text.online.bge_m3_embed import cosine_similarity, embed_bge_m3
 
     if USE_BGE_M3_EMBEDDINGS and await _ensure_bge_m3_index():

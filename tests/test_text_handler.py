@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from bot.i18n import key_for_label, label, t
+from bot.button.start_button import key_for_label, label, t
 from bot.handlers.text_handler import (
     MAIN_MENU_KEYBOARD,
     format_analysis_response,
@@ -32,6 +32,7 @@ def test_format_analysis_response_uses_high_risk_style():
     assert "⚠️ <b>VERDICT: LIKELY A SCAM</b>" in response
     assert "This message shows strong signs of being unsafe." in response
     assert "🔴 <b>85%  HIGH RISK</b>" in response
+    assert "📁 <b>TYPE: text</b>" in response
     assert "🔍 <b>KEY REASONS</b>" in response
     assert "💡 <b>WHAT YOU SHOULD DO</b>" in response
     assert "• Uses an unrealistic offer &lt;now&gt;" in response
@@ -45,31 +46,28 @@ def test_format_analysis_response_uses_high_risk_style():
     assert "1. Verdict" not in response
 
 
-def test_format_unified_response_shows_a_file_header_when_a_file_was_checked():
-    # Real teammate feedback: the unified (text+link+file) private-DM
-    # reply had no dedicated file-name/type header at all before this -
-    # a file's presence only ever surfaced as one 📄-tagged reason line
-    # buried in Key Reasons, easy to miss.
+def test_format_unified_response_type_line_reflects_what_was_actually_checked():
+    # Direct user spec: the "📁 TYPE:" line replaces the old dedicated
+    # file-name/type header - text/link/file combinations render as one
+    # of exactly seven values (see verdict_style.scan_type_label).
     unified = {
         "verdict": "Scam", "risk_percentage": 95,
         "key_reasons": [{"text": "Attached file is malicious", "source": "file_evidence"}],
         "recommendations": ["Do not open the file"],
     }
-    response = format_unified_response(unified, {"suspicious": False, "matches": []}, file_name="invoice.pdf.exe")
+    response = format_unified_response(
+        unified, {"suspicious": False, "matches": []}, has_link=True, has_file=True, has_text=True
+    )
 
-    assert response.startswith("📎 <b>File:</b> invoice.pdf.exe\n📄 <b>Type:</b> EXE\n" + SECTION_DIVIDER)
-    # Tight against the file info AND the verdict line - no blank line
-    # either side of this specific divider, unlike the one above the
-    # disclaimer (which does have one) - matches the feedback's own example.
-    assert f"{SECTION_DIVIDER}\n⚠️ <b>{t('en', 'verdict_label')}" in response
+    assert response.startswith(f"⚠️ <b>{t('en', 'verdict_label')}: {t('en', 'verdict_scam')}</b>\n")
+    assert "📁 <b>TYPE: all</b>" in response
 
 
-def test_format_unified_response_has_no_file_header_for_a_text_only_message():
+def test_format_unified_response_type_line_is_text_only_by_default():
     unified = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
     response = format_unified_response(unified, {"suspicious": False, "matches": []})
 
-    assert "📎" not in response
-    assert "📄 <b>Type:</b>" not in response
+    assert "📁 <b>TYPE: text</b>" in response
     assert response.startswith(f"✅ <b>{t('en', 'verdict_label')}")
 
 
@@ -204,7 +202,7 @@ def _private_context():
 @pytest.mark.asyncio
 async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link():
     # Plain private chat, no link: context-engineering path still fires
-    # (unconditionally, per bot/context_engine.py), just with zero link
+    # (unconditionally, per bot/context_engine/context_engine.py), just with zero link
     # evidence. A "Checking" status is still shown and then edited into
     # the verdict - analyze_unified (Gemini + bge-m3) is just as slow
     # here as the link/file path, so staying silent made the bot look

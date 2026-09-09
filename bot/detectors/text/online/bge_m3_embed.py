@@ -3,7 +3,7 @@ bot/detectors/text/online/bge_m3_embed.py
 =============================================
 Real bge-m3 embeddings via a local Ollama instance - PREPARED, not
 wired into the live query path yet (see USE_BGE_M3_EMBEDDINGS in
-bot/config.py, default off). Production hosting (Daun Penh Data Center
+bot/config/config.py, default off). Production hosting (Daun Penh Data Center
 or equivalent always-on Ollama) hasn't been arranged - this points at
 a local dev Ollama by default, which is not a production dependency.
 
@@ -36,7 +36,7 @@ import math
 
 import httpx
 
-from bot.config import OLLAMA_URL
+from bot.config.config import OLLAMA_URL
 
 EMBED_MODEL = "bge-m3"
 TIMEOUT_SECONDS = 10.0

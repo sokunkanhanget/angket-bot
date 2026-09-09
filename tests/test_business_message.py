@@ -11,9 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import bot.context_engine as context_engine
-from bot.handlers.url_handler import _file_header_lines, handle_business_message
-from bot.i18n import t
+import bot.context_engine.context_engine as context_engine
+from bot.handlers.url_handler import handle_business_message
+from bot.button.start_button import t
 from bot.storage import subscription
 from bot.verdict_style import SECTION_DIVIDER
 
@@ -85,7 +85,7 @@ async def test_notifies_owner_for_scam_text_with_no_keyword_match_no_link_no_fil
     # the crude local keyword list (instead of the full Gemini verdict)
     # silently missed a "Hi Mom, send $800 now, don't call" style
     # family-emergency scam, since it matches none of
-    # bot.config.SUSPICIOUS_KEYWORDS and has no link or file at all.
+    # bot.config.config.SUSPICIOUS_KEYWORDS and has no link or file at all.
     update = _business_update(
         text="Mom, this is urgent, send $800 right now, don't call, just trust me."
     )
@@ -124,13 +124,20 @@ async def test_notifies_owner_for_suspicious_text():
         await handle_business_message(update, context)
 
     context.bot.send_message.assert_awaited_once()
+    assert "reply_markup" not in context.bot.send_message.call_args.kwargs  # direct user spec: no buttons
     kwargs = context.bot.send_message.call_args.kwargs
     assert kwargs["chat_id"] == 555
     assert "LIKELY A SCAM" in kwargs["text"]
+    assert "📁 *TYPE: text*" in kwargs["text"]
     assert "Urgent money request" in kwargs["text"]
     # Direct teammate feedback: a divider directly above the disclaimer.
     assert f"{SECTION_DIVIDER}\n" in kwargs["text"]
-    assert kwargs["text"].rstrip().endswith(t("en", "business_disclaimer"))
+    assert kwargs["text"].rstrip().endswith("Double-check important information before taking action.")
+    # New spec: "👀 New Activity Detected" header + 👤/🆔/🕒 block above the
+    # same body every other surface (text/link/file) renders.
+    assert kwargs["text"].startswith(
+        f"{t('en', 'business_new_activity')}\n\n👤 `Customer`\n🆔 42\n🕒 —\n{SECTION_DIVIDER}\n"
+    )
 
 
 @pytest.mark.asyncio
@@ -216,27 +223,23 @@ async def test_attached_file_is_scanned_and_always_notifies():
     passed_file_verdict = args[3] if len(args) > 3 else kwargs.get("file_verdict")
     assert passed_file_verdict["malicious"] == 0
     sent_text = context.bot.send_message.call_args.kwargs["text"]
-    assert "📄" in sent_text
-    # Direct teammate feedback: a dedicated file-name/type header, same
-    # as the private-DM unified reply gets - not just a 📄-tagged reason
-    # line buried in Key Reasons. Backtick-wrapped (Markdown inline
-    # code) - see the next test for why that specifically matters.
-    assert "📎 File: `invoice.pdf`" in sent_text
-    assert "📄 Type: PDF" in sent_text
+    # New spec: no filename/extension header any more (dropped project-wide
+    # in favor of the "📁 TYPE:" line) - a file being part of the check is
+    # now signalled there instead.
+    assert "📁 *TYPE: file*" in sent_text
 
 
 @pytest.mark.asyncio
-async def test_a_filename_with_underscores_does_not_break_markdown_parsing():
-    # Real bug, confirmed live: this reply uses Telegram's legacy
-    # Markdown, where a bare "_" opens/closes italics. A real filename
-    # with an odd number of underscores ("Week4_DOM_Lab_Exercises.docx")
-    # broke Telegram's own entity parser entirely
-    # ("Can't parse entities: can't find end of the entity..."), and
-    # since send_message wasn't wrapped in a try/except at the time,
-    # that exception killed the WHOLE notification - the owner got
-    # NOTHING, not even a degraded reply, no matter how correct the
-    # underlying verdict was. Backticks (inline code) are the fix -
-    # Markdown treats their content as fully literal, no nested parsing.
+async def test_a_filename_with_underscores_does_not_break_the_notification():
+    # Real bug, confirmed live (when this reply used to render the raw
+    # filename): Telegram's legacy Markdown treats a bare "_" as an
+    # italics delimiter, and an odd number of underscores in a real
+    # filename ("Week4_DOM_Lab_Exercises.docx") broke entity parsing
+    # entirely. The filename is no longer rendered into this reply at
+    # all (superseded by the "📁 TYPE:" line - see the previous test), so
+    # that specific vector is gone; this just confirms an unusual
+    # filename still can't break the notification some other way (e.g.
+    # via scan_file/log_url_scan choking on it).
     update = _business_update(text=None, has_document=True)
     update.effective_message.document.file_name = "Week4_DOM_Lab_Exercises.docx"
     context = _context()
@@ -263,27 +266,7 @@ async def test_a_filename_with_underscores_does_not_break_markdown_parsing():
         await handle_business_message(update, context)
 
     context.bot.send_message.assert_awaited_once()
-    sent_text = context.bot.send_message.call_args.kwargs["text"]
-    assert "📎 File: `Week4_DOM_Lab_Exercises.docx`" in sent_text
-
-
-@pytest.mark.parametrize("file_name,expected_ext", [
-    ("game-test.txt", "TXT"),  # "-" isn't special in Telegram's legacy Markdown at all,
-    ("weird*name.pdf", "PDF"),  # confirmed live via a real sendMessage call for each of
-    ("under_score_heavy_name.docx", "DOCX"),  # these - but backtick-wrapping makes the whole
-    ("no_extension_at_all", "Unknown"),  # question moot generically, not char-by-char.
-])
-def test_file_header_backtick_wraps_the_name_regardless_of_special_characters(file_name, expected_ext):
-    # Direct unit coverage for the actual fix (backticks = literal
-    # content, no nested entity parsing) rather than re-proving it via
-    # the full handle_business_message path for every character - that
-    # integration proof already exists above for the real underscore
-    # case that broke production.
-    lines = _file_header_lines(file_name)
-
-    assert lines[0] == f"📎 File: `{file_name}`"
-    assert lines[1] == f"📄 Type: {expected_ext}"
-    assert lines[2] == SECTION_DIVIDER
+    assert context.bot.send_message.call_args.kwargs["parse_mode"] == "Markdown"  # succeeded on the first try
 
 
 @pytest.mark.asyncio

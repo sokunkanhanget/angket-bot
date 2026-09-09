@@ -2,7 +2,7 @@
 tests/test_verdict_style.py
 =============================
 verdict_style() and risk_style() are FIXED labels (not model-generated),
-translated via i18n.py - covers the lang parameter added when private-DM/
+translated via bot/translate/translate.py - covers the lang parameter added when private-DM/
 business-chat verdict content became translatable.
 """
 

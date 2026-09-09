@@ -26,7 +26,7 @@ import ssl
 import time
 from datetime import datetime, timezone
 
-from bot.config import SCAN_LOG_DB
+from bot.config.config import SCAN_LOG_DB
 
 TIMEOUT = 8.0
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60

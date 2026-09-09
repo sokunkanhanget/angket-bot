@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import vt
 
-from bot.config import VIRUSTOTAL_API_KEY
+from bot.config.config import VIRUSTOTAL_API_KEY
 
 
 async def scan_vt_hash(file_hash: str) -> dict:

@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from bot.config import SCAN_LOG_DB
+from bot.config.config import SCAN_LOG_DB
 
 RDAP_TIMEOUT = 8.0
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60

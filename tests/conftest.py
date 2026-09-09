@@ -103,7 +103,7 @@ async def seeded_vectors(fake_vector_store, tmp_path, monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def isolated_scan_log_db(tmp_path_factory):
-    """bot.storage.scan_log does its own `from bot.config import SCAN_LOG_DB`,
+    """bot.storage.scan_log does its own `from bot.config.config import SCAN_LOG_DB`,
     binding a SEPARATE module-level name from the copies pipeline.py/
     domain_info.py/cert_info.py/vectors.py each bind the same way - so
     seeded_vectors patching THOSE never touches this one. Nothing else in

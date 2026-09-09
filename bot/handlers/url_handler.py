@@ -50,23 +50,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
-import time
+from datetime import timedelta
 
-from telegram import MessageEntity, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import MessageEntity, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.detectors.text.offline.keyword import analyze_text
-from bot.context_engine import analyze_unified
-from bot.i18n import DEFAULT_LANG, t
+from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
+from bot.config.config import DISPLAY_TIMEZONE_OFFSET_HOURS
+from bot.translate.translate import DEFAULT_LANG
+from bot.button.start_button import t
 from bot.detectors.url.pipeline import (
     check_message_full,
     format_verdict_full,
-    _risk_percent_and_label,
 )
-from bot.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, verdict_style
+from bot.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.storage import subscription
@@ -74,130 +74,9 @@ from bot.storage import subscription
 logger = logging.getLogger(__name__)
 
 
-# How long a ticket (deep-link OR business-DM toggle state) stays valid.
-TICKET_TTL_SECONDS = 60 * 60 * 24  # 24h
-
-
-# ---------------------------------------------------------------------------
-# Normal-chat flow: deep-link ticket store (bot_data, ticket -> full text).
-# ---------------------------------------------------------------------------
-
-def _tickets(context: ContextTypes.DEFAULT_TYPE) -> dict:
-    """Shared (bot-wide) ticket store, NOT per-user.
-
-    Why bot_data and not user_data: the person who taps "See full
-    details" is not guaranteed to be the same Telegram user who
-    triggered the check. bot_data is shared across every chat/user the
-    bot talks to, so any deep link the bot itself generated can always
-    be resolved.
-    """
-    return context.bot_data.setdefault("url_tickets", {})
-
-
-def _prune_expired(tickets: dict) -> None:
-    now = time.time()
-    for ticket_id in [k for k, v in tickets.items() if now - v["ts"] > TICKET_TTL_SECONDS]:
-        tickets.pop(ticket_id, None)
-
-
-def _stash_ticket(context: ContextTypes.DEFAULT_TYPE, full_text: str) -> str:
-    tickets = _tickets(context)
-    _prune_expired(tickets)
-    ticket = secrets.token_hex(4)
-    tickets[ticket] = {"text": full_text, "ts": time.time()}
-    return ticket
-
-
-def resolve_ticket(context: ContextTypes.DEFAULT_TYPE, ticket: str) -> str | None:
-    """Look up a ticket's full breakdown. Used by /start below."""
-    tickets = _tickets(context)
-    _prune_expired(tickets)
-    entry = tickets.get(ticket)
-    return entry["text"] if entry else None
-
-
-# ---------------------------------------------------------------------------
-# Business-DM flow: toggle ticket store (bot_data, ticket -> {short, full}).
-# ---------------------------------------------------------------------------
-
-def _business_tickets(context: ContextTypes.DEFAULT_TYPE) -> dict:
-    return context.bot_data.setdefault("business_url_tickets", {})
-
-
-def _stash_business_ticket(context: ContextTypes.DEFAULT_TYPE, short_text: str, full_text: str) -> str:
-    tickets = _business_tickets(context)
-    _prune_expired(tickets)
-    ticket = secrets.token_hex(4)
-    tickets[ticket] = {"short": short_text, "full": full_text, "ts": time.time()}
-    return ticket
-
-
-def _business_keyboard(ticket: str, showing_full: bool) -> InlineKeyboardMarkup:
-    if showing_full:
-        detail_button = InlineKeyboardButton("🔼 Show less detail", callback_data=f"u:l:{ticket}")
-    else:
-        detail_button = InlineKeyboardButton("🔍 See full details", callback_data=f"u:d:{ticket}")
-    delete_button = InlineKeyboardButton("🗑️ Delete", callback_data=f"u:x:{ticket}")
-    return InlineKeyboardMarkup([[detail_button, delete_button]])
-
-
-async def handle_business_url_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles taps on the business-DM notification: detail toggle + delete."""
-    query = update.callback_query
-    if query is None or not query.data:
-        return
-
-    parts = query.data.split(":", 2)
-    if len(parts) != 3 or parts[0] != "u":
-        return
-    action, ticket = parts[1], parts[2]
-
-    entry = _business_tickets(context).get(ticket)
-    if entry is None:
-        await query.answer("This notification has expired.", show_alert=True)
-        return
-
-    if action == "x":
-        await query.answer()
-        try:
-            await query.message.delete()
-        except TelegramError:
-            pass
-        _business_tickets(context).pop(ticket, None)
-        return
-
-    if action == "d":
-        text, keyboard = entry["full"], _business_keyboard(ticket, showing_full=True)
-    elif action == "l":
-        text, keyboard = entry["short"], _business_keyboard(ticket, showing_full=False)
-    else:
-        return
-
-    await query.answer()
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown",
-        disable_web_page_preview=True,
-        reply_markup=keyboard,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Shared formatting helpers.
 # ---------------------------------------------------------------------------
-
-def _showcase_text(verdicts: list[dict]) -> str:
-    """Short, one-glance summary — the 'small showcase', not the full report."""
-    if len(verdicts) == 1:
-        v = verdicts[0]
-        pct, _ = _risk_percent_and_label(v["score"])
-        return f"{v['emoji']} *{v['label']}*  —  `{v['host']}`  ({pct}%)"
-    lines = []
-    for v in verdicts:
-        pct, _ = _risk_percent_and_label(v["score"])
-        lines.append(f"{v['emoji']} `{v['host']}` — {v['label']} ({pct}%)")
-    return "\n".join(lines)
-
 
 def _full_breakdown_text(verdicts: list[dict], include_evidence: bool = True) -> str:
     return "\n\n---\n\n".join(
@@ -205,12 +84,28 @@ def _full_breakdown_text(verdicts: list[dict], include_evidence: bool = True) ->
     )
 
 
-def _sender_header(sender, sent_at) -> str:
-    """Full name, id, and timestamp of whoever sent the link."""
+def _sender_header(sender, sent_at, lang: str = DEFAULT_LANG) -> str:
+    """👤/🆔/🕒 block for the "New Activity Detected" business notification -
+    direct user spec. The Telegram Bot API only ever gives message
+    timestamps in UTC (it has no concept of a real per-user timezone at
+    all) - see bot/config/config.py's DISPLAY_TIMEZONE_OFFSET_HOURS docstring for
+    why this is one project-wide offset, not a genuinely per-user one."""
     name = sender.full_name if sender else "Unknown sender"
     uid = sender.id if sender else "—"
-    when = sent_at.strftime("%Y-%m-%d %H:%M UTC") if sent_at else "—"
-    return f"👤 *{name}*  (`{uid}`)\n🕒 {when}"
+    if sent_at:
+        local_dt = sent_at + timedelta(hours=DISPLAY_TIMEZONE_OFFSET_HOURS)
+        when = f"{local_dt.strftime('%d %b %Y, %I:%M %p')} (UTC{DISPLAY_TIMEZONE_OFFSET_HOURS:+d})"
+    else:
+        when = "—"
+    return f"👤 `{name}`\n🆔 {uid}\n🕒 {when}"
+
+
+def _business_header(sender, sent_at, lang: str = DEFAULT_LANG) -> str:
+    """"👀 New Activity Detected" banner + sender block + divider, prepended
+    above the SAME unified verdict body every other surface renders -
+    direct user spec ("use the same format but with added this at the
+    top") for Business chat/Live Detect specifically."""
+    return f"{t(lang, 'business_new_activity')}\n\n{_sender_header(sender, sent_at, lang)}\n{SECTION_DIVIDER}\n"
 
 
 async def _owner_chat_id(context: ContextTypes.DEFAULT_TYPE, business_connection_id: str) -> int | None:
@@ -317,8 +212,8 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     sender = update.effective_user
     if not is_business and sender is not None and not subscription.can_scan_link_or_message(sender.id):
         # Inlined rather than importing text_handler.get_user_lang - that
-        # module already imports FROM this one (extract_text_link_entities/
-        # resolve_ticket), so the reverse import would be circular.
+        # module already imports FROM this one (extract_text_link_entities),
+        # so the reverse import would be circular.
         lang = str(context.user_data.get("lang", DEFAULT_LANG))
         await message.reply_text(
             t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
@@ -343,10 +238,19 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
                                 status, is_business: bool) -> None:
     """Once you have a list of verdicts, the business/private/group reply
-    branching is identical regardless of where the link(s) came from."""
+    branching is identical regardless of where the link(s) came from. No
+    buttons anywhere (direct user spec) - every surface just gets the
+    full breakdown straight away instead of a short showcase behind a
+    "see more"/toggle button, which is what the buttons existed for."""
     sender = update.effective_user
     for v in verdicts:
         log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
+
+    # No Technical Evidence section on any live reply - the spec'd
+    # template has no such section, unlike the old private-DM/group-detail
+    # split this replaced (private already hid it; group's old "See full
+    # details" button was the only place it ever showed).
+    full = _full_breakdown_text(verdicts, include_evidence=False)
 
     # --- Business chat: stay invisible to the customer, DM the owner. ---
     if is_business:
@@ -354,132 +258,91 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
         if owner_chat_id is None:
             return  # can't resolve the owner right now — nothing safe to do
 
-        header = f"👀 *New link detected in your business chat*\n\n{_sender_header(sender, message.date)}\n\n"
-        short_text = header + _showcase_text(verdicts)
-        full_text = header + _full_breakdown_text(verdicts)
-
-        ticket = _stash_business_ticket(context, short_text, full_text)
-        keyboard = _business_keyboard(ticket, showing_full=False)
-
+        owner_lang = _owner_lang(context, owner_chat_id)
+        body = _business_header(sender, message.date, owner_lang) + full
         await context.bot.send_message(
             chat_id=owner_chat_id,
-            text=short_text,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-            reply_markup=keyboard,
-        )
-        return
-
-    # --- Private DM with the bot itself: full breakdown right away, no button. ---
-    chat = update.effective_chat
-    is_private = chat is not None and chat.type == "private"
-
-    if is_private:
-        full = _full_breakdown_text(verdicts, include_evidence=False)
-        await status.edit_text(
-            full,
+            text=body,
             parse_mode="Markdown",
             disable_web_page_preview=True,
         )
         return
 
-    # --- Group/supergroup (channel as fallback): showcase in place, deep-link for details. ---
-    full = _full_breakdown_text(verdicts)
-    ticket = _stash_ticket(context, full)
-    risky = any(v["level"] != "safe" for v in verdicts)
-    label = "⚠️ Why is this sus?" if risky else "🔍 See full details"
-    deep_link = f"https://t.me/{context.bot.username}?start={ticket}"
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(label, url=deep_link)]])
-
+    # --- Private DM / group / supergroup: full breakdown right in place. ---
     await status.edit_text(
-        _showcase_text(verdicts),
+        full,
         parse_mode="Markdown",
         disable_web_page_preview=True,  # don't preview a possibly-bad link
-        reply_markup=keyboard,
     )
 
 
 # ---------------------------------------------------------------------------
 # Business chat automation: ONE unified text+link+file check per message,
-# reasoning over everything together (see bot/context_engine.py) instead of
+# reasoning over everything together (see bot/context_engine/context_engine.py) instead of
 # separate, uncoordinated per-signal checks. Telegram's Business API lets a
 # user connect Angket to their own business account so every customer
 # message gets checked automatically and privately reported to them.
 # ---------------------------------------------------------------------------
 
-def _file_header_lines(file_name: str | None) -> list[str]:
-    """📎 File: name / 📄 Type: EXT header block, shown above a unified
-    verdict whenever a document was actually part of what got checked -
-    direct teammate feedback, same block for both the private-DM
-    (format_unified_response) and business owner-DM replies. Empty list
-    when there's no file, so callers can unconditionally splice this in
-    without an extra branch at each call site.
-
-    Real, confirmed bug this fixes: this reply uses Telegram's legacy
-    Markdown (parse_mode="Markdown"), where a bare, unescaped "_" opens/
-    closes italics - a real filename with an odd number of underscores
-    ("Week4_DOM_Lab_Exercises.docx", confirmed live) broke entity
-    parsing entirely ("Can't parse entities: can't find end of the
-    entity..."), and since context.bot.send_message() wasn't wrapped in
-    a try/except, that exception propagated all the way up and killed
-    the WHOLE notification - the owner got nothing at all for that
-    message, not even a degraded reply. Same escape-bug class flagged
-    repeatedly elsewhere in this project's history. Backticks (inline
-    code) are the fix, not manual escaping - Markdown treats their
-    content as fully literal, no nested entity parsing at all, matching
-    the same pattern pipeline.py's own format_verdict_full already uses
-    for a scanned link's host (`{host}`), another arbitrary
-    external string in the exact same Markdown context."""
-    if not file_name:
-        return []
-    ext = file_name.rsplit(".", 1)[-1].upper() if "." in file_name else "Unknown"
-    return [f"📎 File: `{file_name}`", f"📄 Type: {ext}", SECTION_DIVIDER]
-
-
-def _format_unified_business_text(unified: dict, lang: str = DEFAULT_LANG, file_name: str | None = None) -> str:
+def _format_unified_business_text(
+    unified: dict, lang: str = DEFAULT_LANG,
+    has_link: bool = False, has_file: bool = False, has_text: bool = True,
+) -> str:
     """Markdown rendering of an analyze_unified() verdict for the business
-    owner-DM notification - same shape as text_handler.py's
-    format_unified_response, but Markdown instead of HTML to match every
-    other business notification in this file. `lang` here is the OWNER's
-    language (see _owner_lang), not the customer's.
+    owner-DM notification - SAME VERDICT/TYPE/risk/reasons/what-to-do/
+    disclaimer shape as text_handler.py's format_unified_response and
+    pipeline.py/file_handler.py's replies, direct user spec that all four
+    surfaces read as one consistent product. `lang` here is the OWNER's
+    language (see _owner_lang), not the customer's. has_link/has_file/
+    has_text feed the "📁 TYPE:" line, same convention as
+    format_unified_response - see that function's docstring.
 
     unified["ai_unavailable"] means there's no AI-authored reasons/
     recommendations text to show - see format_unified_response's
-    docstring for why this replaces the Key Reasons/What They Can Do
-    sections with one fixed, translated notice instead."""
-    verdict_icon, verdict_label = verdict_style(unified.get("verdict"), lang)
+    docstring for why this replaces the Key Reasons/What To Do sections
+    with one fixed, translated notice instead."""
+    verdict = unified.get("verdict")
+    verdict_icon, verdict_label = verdict_style(verdict, lang)
     risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
-    file_header = _file_header_lines(file_name)
+    scan_type = scan_type_label(has_text, has_link, has_file)
 
     if unified.get("ai_unavailable"):
-        return "\n".join(file_header + [
+        return "\n".join([
             f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
+            f"📁 *{t(lang, 'type_label')}: {scan_type}*",
             f"{risk_icon} *{percentage}  {risk_label.upper()}*",
             "",
             f"⚠️ {t(lang, 'ai_unavailable_notice')}",
             "",
             SECTION_DIVIDER,
-            t(lang, "business_disclaimer"),
+            t(lang, "verdict_disclaimer"),
         ])
 
     reason_lines = [
-        f"- {r.get('text', '')}{SOURCE_TAGS.get(r.get('source'), '')}"
+        f"• {r.get('text', '')}{SOURCE_TAGS.get(r.get('source'), '')}"
         for r in (unified.get("key_reasons") or [])
-    ] or [f"- {t(lang, 'none_provided')}"]
+    ] or [f"• {t(lang, 'none_provided')}"]
+    recs = unified.get("recommendations") or []
+    rec_lines = [f"✓ {r}" for r in recs] or [f"✓ {t(lang, 'none_provided')}"]
 
-    lines = file_header + [
+    lines = [
         f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
+        f"📁 *{t(lang, 'type_label')}: {scan_type}*",
+        summary_sentence(verdict, risk_percentage, lang),
+        "",
         f"{risk_icon} *{percentage}  {risk_label.upper()}*",
         "",
-        f"*{t(lang, 'key_reasons_header')}*",
+        f"🔍 *{t(lang, 'key_reasons_header')}*",
         "\n".join(reason_lines),
+        "",
+        f"💡 *{t(lang, 'what_to_do_header')}*",
+        "\n".join(rec_lines),
+        "",
+        SECTION_DIVIDER,
+        t(lang, "verdict_disclaimer"),
     ]
-    recs = unified.get("recommendations") or []
-    if recs:
-        lines += ["", f"*{t(lang, 'business_what_they_can_do_header')}*", "\n".join(f"- {r}" for r in recs)]
-    lines += ["", SECTION_DIVIDER, t(lang, "business_disclaimer")]
     return "\n".join(lines)
 
 
@@ -599,39 +462,31 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     if not link_verdicts and file_verdict is None and unified.get("verdict") == "Not a Scam":
         return
 
-    header = f"{t(owner_lang, 'business_new_activity')}\n\n{_sender_header(sender, message.date)}\n\n"
-    body = header + _format_unified_business_text(
-        unified, owner_lang, file_name=document.file_name if document is not None else None
-    )
-
-    # Reuses the toggle-oriented short/full ticket store with the SAME
-    # text in both slots - this notification never renders a "See full
-    # details" toggle (only Delete), so there's no distinct short/full
-    # content to store; the ticket only needs to exist for the "x"
-    # (delete) callback to find something to pop.
-    ticket = _stash_business_ticket(context, body, body)
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🗑️ Delete", callback_data=f"u:x:{ticket}")]]
+    body = _business_header(sender, message.date, owner_lang) + _format_unified_business_text(
+        unified, owner_lang,
+        has_link=bool(link_verdicts),
+        has_file=document is not None,
+        has_text=not _message_is_only_links(text, link_verdicts),
     )
 
     # Real, confirmed bug: this had no error handling at all - a
-    # Markdown-parsing failure (e.g. the filename bug _file_header_lines'
-    # docstring describes) previously killed the WHOLE notification
-    # silently, no matter how correct the underlying verdict was. Every
-    # OTHER failure mode in this handler already degrades gracefully
-    # (Gemini down, VirusTotal down, a file/link check itself failing) -
-    # this is the one place that didn't, despite being the very last
-    # step where all of that work could still be thrown away. Retrying
-    # once with parse_mode=None (plain text, Telegram does zero entity
-    # parsing) turns "the owner never even knew this happened" into "the
-    # owner still gets the real verdict, just without bold/formatting."
+    # Markdown-parsing failure (e.g. an odd number of underscores in a
+    # real filename, confirmed live) previously killed the WHOLE
+    # notification silently, no matter how correct the underlying verdict
+    # was. Every OTHER failure mode in this handler already degrades
+    # gracefully (Gemini down, VirusTotal down, a file/link check itself
+    # failing) - this is the one place that didn't, despite being the
+    # very last step where all of that work could still be thrown away.
+    # Retrying once with parse_mode=None (plain text, Telegram does zero
+    # entity parsing) turns "the owner never even knew this happened"
+    # into "the owner still gets the real verdict, just without bold
+    # formatting."
     try:
         await context.bot.send_message(
             chat_id=owner_chat_id,
             text=body,
             parse_mode="Markdown",
             disable_web_page_preview=True,
-            reply_markup=keyboard,
         )
     except TelegramError:
         logger.exception("Business notification failed to send with Markdown formatting - retrying as plain text")
@@ -640,7 +495,6 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
                 chat_id=owner_chat_id,
                 text=body,
                 disable_web_page_preview=True,
-                reply_markup=keyboard,
             )
         except TelegramError:
             logger.exception("Business notification failed even as plain text - giving up for this message")

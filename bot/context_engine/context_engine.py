@@ -1,6 +1,6 @@
 """
-bot/context_engine.py
-=======================
+bot/context_engine/context_engine.py
+=======================================
 Unified reasoning: merges the keyword/LLM text scan (detectors/text/
 keyword.py + detectors/text/llm.py) and the full link-checking pipeline
 (detectors/url/pipeline.py) into ONE Gemini call, so a message combining
@@ -35,8 +35,8 @@ import re
 from google import genai
 from google.genai import types
 
-from bot.config import GEMINI_API_KEY, GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
-from bot.i18n import DEFAULT_LANG
+from bot.config.config import GEMINI_API_KEY, GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
+from bot.translate.translate import DEFAULT_LANG
 from bot.detectors.text.offline.scam_patterns import nearest_scam_pattern, nearest_scam_pattern_live
 from bot.storage import subscription
 from bot.storage import health_alerts
@@ -94,8 +94,9 @@ _SYSTEM_PROMPT = (
 )
 
 # Private DM / Business chat only - the fixed labels around this content
-# (VERDICT/risk headers, etc.) are translated separately via i18n.py
-# (see verdict_style.py, text_handler.py's format_unified_response) -
+# (VERDICT/risk headers, etc.) are translated separately via
+# bot/translate/translate.py (see verdict_style.py, text_handler.py's
+# format_unified_response) -
 # this only asks Gemini to write its OWN dynamic text (key_reasons/
 # recommendations) in the user's chosen language, since that content is
 # generated fresh every call and can't be pre-translated the way a fixed
@@ -528,7 +529,8 @@ async def analyze_unified(
     no live AI at all), it just sets `ai_unavailable: True` so the
     caller's formatter shows one fixed, translated notice instead. The
     fixed labels around whatever either path returns are always
-    translated separately by the caller (verdict_style.py/i18n.py).
+    translated separately by the caller (verdict_style.py, which reaches
+    into bot/translate/translate.py and bot/button/start_button.py).
 
     `user_id`: when given, gates on the Freemium daily token budget
     (bot/storage/subscription.py) and records real usage from Gemini's

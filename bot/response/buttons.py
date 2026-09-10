@@ -1,8 +1,8 @@
 """
-bot/button/start_button.py
+bot/response/buttons.py
 =============================
 Main-menu button labels (BUTTONS) - what a keyboard button SAYS, as
-opposed to bot/translate/translate.py's TEXT - what a reply/menu page
+opposed to bot/response/translate/'s TEXT - what a reply/menu page
 SAYS. Split out of the old bot/i18n.py so the two concerns (buttons vs.
 reply content) live in separate modules; t()/label()/key_for_label()
 live here too since they're the lookup functions button-driven handlers
@@ -10,7 +10,7 @@ actually call (t() reaches into translate.py's TEXT for the reply-content
 half of the same lookup pattern).
 """
 
-from bot.translate.translate import DEFAULT_LANG, TEXT
+from bot.response.translate import DEFAULT_LANG, TEXT
 
 BUTTONS = {
     "en": {
@@ -20,7 +20,6 @@ BUTTONS = {
         "lang_km": "ខ្មែរ",
         "back": "↩️ Back",
         "how_to_use": "📖 How to Use",
-        "safety_tips": "🛡️ Safety Tips",
         "usage": "📈 Usage",
         "policy": "📜 Policy",
         "help": "❓ Help",
@@ -33,7 +32,6 @@ BUTTONS = {
         "lang_km": "ខ្មែរ",
         "back": "↩️ ត្រឡប់ក្រោយ",
         "how_to_use": "📖 របៀបប្រើប្រាស់",
-        "safety_tips": "🛡️ គន្លឹះសុវត្ថិភាព",
         "usage": "📈 ការប្រើប្រាស់",
         "policy": "📜 គោលការណ៍",
         "help": "❓ ជំនួយ",

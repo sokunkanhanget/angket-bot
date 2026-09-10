@@ -13,9 +13,9 @@ import pytest
 
 import bot.context_engine.context_engine as context_engine
 from bot.handlers.url_handler import handle_business_message
-from bot.button.start_button import t
+from bot.response.buttons import t
 from bot.storage import subscription
-from bot.verdict_style import SECTION_DIVIDER
+from bot.response.verdict_style import SECTION_DIVIDER
 
 
 def _business_update(text=None, has_document=False):
@@ -28,7 +28,10 @@ def _business_update(text=None, has_document=False):
     )
     update.effective_message.photo = None
     update.effective_message.date = None
-    update.effective_user = MagicMock(full_name="Customer", id=42)
+    # username=None explicitly - a bare MagicMock's unset attributes are
+    # themselves truthy MagicMocks, which would silently defeat
+    # _sender_header's "only show (@handle) when one really exists" check.
+    update.effective_user = MagicMock(full_name="Customer", id=42, username=None)
     return update
 
 
@@ -128,7 +131,7 @@ async def test_notifies_owner_for_suspicious_text():
     kwargs = context.bot.send_message.call_args.kwargs
     assert kwargs["chat_id"] == 555
     assert "LIKELY A SCAM" in kwargs["text"]
-    assert "📁 *TYPE: text*" in kwargs["text"]
+    assert "🗁 *TYPE: text*" in kwargs["text"]
     assert "Urgent money request" in kwargs["text"]
     # Direct teammate feedback: a divider directly above the disclaimer.
     assert f"{SECTION_DIVIDER}\n" in kwargs["text"]
@@ -137,6 +140,33 @@ async def test_notifies_owner_for_suspicious_text():
     # same body every other surface (text/link/file) renders.
     assert kwargs["text"].startswith(
         f"{t('en', 'business_new_activity')}\n\n👤 `Customer`\n🆔 42\n🕒 —\n{SECTION_DIVIDER}\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sender_header_shows_at_handle_when_one_exists():
+    # angket-bot-message.drawio spec: "From: username (@username)" - a
+    # real gap this session found, since _sender_header used to render
+    # only the display name, never the @handle at all.
+    update = _business_update(text="URGENT: send $800 now, don't call, just trust me")
+    update.effective_user = MagicMock(full_name="Customer", id=42, username="real_customer")
+    context = _context()
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam",
+             "risk_percentage": 95,
+             "key_reasons": [{"text": "Urgent money request", "source": "message_text"}],
+             "recommendations": ["Verify independently"],
+         })):
+        await handle_business_message(update, context)
+
+    kwargs = context.bot.send_message.call_args.kwargs
+    assert kwargs["text"].startswith(
+        f"{t('en', 'business_new_activity')}\n\n👤 `Customer (@real_customer)`\n🆔 42\n🕒 —\n{SECTION_DIVIDER}\n"
     )
 
 
@@ -224,9 +254,9 @@ async def test_attached_file_is_scanned_and_always_notifies():
     assert passed_file_verdict["malicious"] == 0
     sent_text = context.bot.send_message.call_args.kwargs["text"]
     # New spec: no filename/extension header any more (dropped project-wide
-    # in favor of the "📁 TYPE:" line) - a file being part of the check is
+    # in favor of the "🗁 TYPE:" line) - a file being part of the check is
     # now signalled there instead.
-    assert "📁 *TYPE: file*" in sent_text
+    assert "🗁 *TYPE: file*" in sent_text
 
 
 @pytest.mark.asyncio
@@ -236,7 +266,7 @@ async def test_a_filename_with_underscores_does_not_break_the_notification():
     # italics delimiter, and an odd number of underscores in a real
     # filename ("Week4_DOM_Lab_Exercises.docx") broke entity parsing
     # entirely. The filename is no longer rendered into this reply at
-    # all (superseded by the "📁 TYPE:" line - see the previous test), so
+    # all (superseded by the "🗁 TYPE:" line - see the previous test), so
     # that specific vector is gone; this just confirms an unusual
     # filename still can't break the notification some other way (e.g.
     # via scan_file/log_url_scan choking on it).

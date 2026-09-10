@@ -1685,7 +1685,7 @@ def test_format_verdict_full_has_a_divider_directly_above_the_disclaimer():
     # Direct teammate feedback: a divider belongs directly ABOVE the
     # disclaimer specifically (not the earlier, since-removed stray
     # divider that sat somewhere else - see SECTION_DIVIDER's own
-    # docstring in bot/verdict_style.py for that history). Zero prior
+    # docstring in bot/response/verdict_style.py for that history). Zero prior
     # direct coverage of this rendering function existed before this.
     v = {
         "host": "free-prize-winner.tk", "score": 85, "level": "dangerous",
@@ -1698,6 +1698,6 @@ def test_format_verdict_full_has_a_divider_directly_above_the_disclaimer():
     assert f"{pipeline.SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in reply
     assert reply.rstrip().endswith("Double-check important information before taking action.")
     assert "⚠️ *VERDICT: LIKELY A SCAM*" in reply
-    assert "📁 *TYPE: link*" in reply
+    assert "🗁 *TYPE: link*" in reply
 
 

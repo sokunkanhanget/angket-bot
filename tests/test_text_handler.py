@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from bot.button.start_button import key_for_label, label, t
+from bot.response.buttons import key_for_label, label, t
 from bot.handlers.text_handler import (
     MAIN_MENU_KEYBOARD,
     format_analysis_response,
@@ -12,7 +12,7 @@ from bot.handlers.text_handler import (
     handle_text,
 )
 from bot.storage import subscription
-from bot.verdict_style import SECTION_DIVIDER
+from bot.response.verdict_style import SECTION_DIVIDER
 
 
 def _result(risk_percentage, verdict="Scam"):
@@ -32,22 +32,22 @@ def test_format_analysis_response_uses_high_risk_style():
     assert "⚠️ <b>VERDICT: LIKELY A SCAM</b>" in response
     assert "This message shows strong signs of being unsafe." in response
     assert "🔴 <b>85%  HIGH RISK</b>" in response
-    assert "📁 <b>TYPE: text</b>" in response
+    assert "🗁 <b>TYPE: text</b>" in response
     assert "🔍 <b>KEY REASONS</b>" in response
-    assert "💡 <b>WHAT YOU SHOULD DO</b>" in response
+    assert "☉ <b>WHAT YOU SHOULD DO</b>" in response
     assert "• Uses an unrealistic offer &lt;now&gt;" in response
     assert "ⓘ Angket Bot may occasionally make mistakes." in response
     # Direct teammate feedback: a divider belongs directly ABOVE the
     # disclaimer specifically (not the earlier, since-removed stray
     # divider that sat somewhere else in the reply - see SECTION_DIVIDER's
-    # own docstring in bot/verdict_style.py for that history).
+    # own docstring in bot/response/verdict_style.py for that history).
     assert response.count(SECTION_DIVIDER) == 1
     assert f"{SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in response
     assert "1. Verdict" not in response
 
 
 def test_format_unified_response_type_line_reflects_what_was_actually_checked():
-    # Direct user spec: the "📁 TYPE:" line replaces the old dedicated
+    # Direct user spec: the "🗁 TYPE:" line replaces the old dedicated
     # file-name/type header - text/link/file combinations render as one
     # of exactly seven values (see verdict_style.scan_type_label).
     unified = {
@@ -60,14 +60,14 @@ def test_format_unified_response_type_line_reflects_what_was_actually_checked():
     )
 
     assert response.startswith(f"⚠️ <b>{t('en', 'verdict_label')}: {t('en', 'verdict_scam')}</b>\n")
-    assert "📁 <b>TYPE: all</b>" in response
+    assert "🗁 <b>TYPE: all</b>" in response
 
 
 def test_format_unified_response_type_line_is_text_only_by_default():
     unified = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
     response = format_unified_response(unified, {"suspicious": False, "matches": []})
 
-    assert "📁 <b>TYPE: text</b>" in response
+    assert "🗁 <b>TYPE: text</b>" in response
     assert response.startswith(f"✅ <b>{t('en', 'verdict_label')}")
 
 

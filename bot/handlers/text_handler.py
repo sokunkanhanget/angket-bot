@@ -8,29 +8,30 @@ from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.detectors.text.online.llm import analyze_text_with_llm
 from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
-from bot.translate.translate import DEFAULT_LANG
-from bot.button.start_button import BUTTONS, key_for_label, label, t
+from bot.response.translate import DEFAULT_LANG
+from bot.response.buttons import BUTTONS, key_for_label, label, t
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.handlers.url_handler import extract_text_link_entities
 from bot.storage import subscription
 from bot.detectors.url.pipeline import check_message_full
-from bot.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
 
 BTN_MENU = "MENU"
 
 # Menu items shown on the main menu, in canonical-key form (excludes "menu" itself).
+# "Safety Tips" removed per teammate's call (2026-09-10) - was an
+# unused/low-traffic menu item, not a bug fix.
 _MAIN_MENU_KEYS = [
     ["switch_language", "how_to_use"],
-    ["safety_tips", "usage"],
-    ["policy", "help"],
-    ["subscription"],
+    ["usage", "policy"],
+    ["help", "subscription"],
 ]
 
 # "usage" is deliberately NOT here - unlike every other menu item, its
 # reply is dynamic (real daily-quota numbers from subscription.py), not
 # a static translated string t() can render on its own. See its own
 # branch in handle_text below.
-_MENU_RESPONSE_KEYS = {"how_to_use", "safety_tips", "policy", "help", "subscription"}
+_MENU_RESPONSE_KEYS = {"how_to_use", "policy", "help", "subscription"}
 
 TRIGGER_MENU_KEYBOARD = ReplyKeyboardMarkup(
     [[BTN_MENU]],
@@ -137,11 +138,11 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
 
     lines = [
         f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n"
-        f"📁 <b>{t(lang, 'type_label')}: {scan_type_label(True, False, False)}</b>\n"
+        f"🗁 <b>{t(lang, 'type_label')}: {scan_type_label(True, False, False)}</b>\n"
         + summary_sentence(verdict, risk_percentage, lang),
         f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
-        f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
+        f"☉ <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(llm_result.get('recommendations', []), '✓', lang)}",
         f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
     ]
@@ -164,12 +165,12 @@ def format_unified_response(
     have produced on its own.
 
     Unlike format_analysis_response, this one IS lang-aware: the fixed
-    labels/headers come from bot/translate/translate.py, and the dynamic
+    labels/headers come from bot/response/translate/, and the dynamic
     key_reasons/recommendations text is expected to already be in the target
     language (analyze_unified asks Gemini to respond in it directly -
     see context_engine.py).
 
-    has_link/has_file/has_text feed the "📁 TYPE:" line - the caller
+    has_link/has_file/has_text feed the "🗁 TYPE:" line - the caller
     already knows exactly what was actually checked (link_verdicts,
     whether a document was attached, whether the message was more than
     just a bare pasted link), so it's computed there rather than
@@ -190,7 +191,7 @@ def format_unified_response(
 
     header = (
         f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n"
-        f"📁 <b>{t(lang, 'type_label')}: {scan_type_label(has_text, has_link, has_file)}</b>\n"
+        f"🗁 <b>{t(lang, 'type_label')}: {scan_type_label(has_text, has_link, has_file)}</b>\n"
         + summary_sentence(verdict, risk_percentage, lang)
     )
     risk_block = f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>"
@@ -221,7 +222,7 @@ def format_unified_response(
         header,
         f"{risk_block}\n\n"
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{reasons_block}",
-        f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
+        f"☉ <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(unified.get('recommendations', []), '✓', lang)}",
         f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
     ]

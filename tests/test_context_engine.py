@@ -316,7 +316,7 @@ async def test_analyze_unified_falls_back_on_malformed_json(fake_vector_store, m
     result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
 
     # ai_unavailable tells the caller's formatter to show one fixed,
-    # translated notice (bot/translate/translate.py's ai_unavailable_notice) instead of
+    # translated notice (bot/response/translate/'s ai_unavailable_notice) instead of
     # expecting AI-authored reasons text - see format_unified_response.
     assert result["ai_unavailable"] is True
 

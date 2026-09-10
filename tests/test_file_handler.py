@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from bot.handlers.file_handler import handle_file
-from bot.button.start_button import t
+from bot.response.buttons import t
 from bot.storage import subscription
-from bot.verdict_style import SECTION_DIVIDER
+from bot.response.verdict_style import SECTION_DIVIDER
 
 
 def _file_update(lang: str | None = None, file_name: str = "invoice.pdf"):
@@ -50,7 +50,7 @@ async def test_clean_scan_reports_safe_with_the_shared_reply_shape():
     assert "reply_markup" not in sent.edit_text.call_args.kwargs  # direct user spec: no buttons
     reply = sent.edit_text.call_args.args[0]
     assert "SAFE / LEGITIMATE" in reply
-    assert "📁 *TYPE: file*" in reply
+    assert "🗁 *TYPE: file*" in reply
     assert f"{SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in reply
 
 

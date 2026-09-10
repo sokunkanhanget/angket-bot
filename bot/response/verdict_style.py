@@ -1,5 +1,5 @@
 """
-bot/verdict_style.py
+bot/response/verdict_style.py
 ======================
 Shared verdict/risk display styling - used by both the private-DM reply
 (text_handler.py) and the business-owner-DM notification
@@ -8,7 +8,7 @@ diverge on what counts as "High Risk" or how a verdict is labelled.
 
 Both verdict_style() and risk_style() take a `lang` - the labels are
 FIXED text (not something Gemini generates per call), so they're
-translated once via bot/translate/translate.py instead of round-tripping through the model
+translated once via bot/response/translate/ instead of round-tripping through the model
 for a handful of words every single call. Group chat (bot/route.py's
 TEXT_FILTER path) deliberately keeps calling these with lang="en" -
 see text_handler.py's format_analysis_response - group replies are out
@@ -17,8 +17,8 @@ of scope for translation for now, unlike private DM/business chat.
 
 from __future__ import annotations
 
-from bot.translate.translate import DEFAULT_LANG
-from bot.button.start_button import t
+from bot.response.translate import DEFAULT_LANG
+from bot.response.buttons import t
 
 _VERDICT_ICONS = {
     "Scam": "⚠️",
@@ -48,13 +48,25 @@ SOURCE_TAGS = {
 # disclaimer doesn't read as just another paragraph of the verdict
 # itself. Plain Unicode box-drawing characters - render identically,
 # with no escaping needed, in both this project's parse modes
-# (Markdown: pipeline.py/file_handler.py; HTML: text_handler.py/
-# url_handler.py's business notification), unlike most punctuation.
+# (Markdown: pipeline.py/file_handler.py/url_handler.py, including its
+# business-owner notification; HTML: text_handler.py's private-DM
+# reply only - confirmed live 2026-09-10 while checking whether
+# spoiler/underline/strikethrough formatting could be added: those
+# three only work under HTML, not legacy Markdown, so they're
+# currently only possible in text_handler.py's reply, not the other
+# three surfaces), unlike most punctuation.
 # A stray divider was removed from a different, awkward position in an
 # earlier session (between the disclaimer and the rest of the reply) -
 # this is deliberately just ABOVE the disclaimer specifically, not a
-# repeat of that.
-SECTION_DIVIDER = "─" * 46
+# repeat of that. Iterated live over several lengths (46 -> 20 -> 28 ->
+# 18, 2026-09-10) via direct user feedback checking real replies on
+# both mobile and desktop Telegram clients - 18 is what read well on
+# both. See this module's own note above (and bot/config/config.py's
+# DISPLAY_TIMEZONE_OFFSET_HOURS docstring) for the general shape of
+# this problem: the Bot API gives no per-recipient device/client
+# signal at all, so one fixed length is genuinely the only lever
+# available - not a compromise made for lack of trying.
+SECTION_DIVIDER = "─" * 18
 
 
 def verdict_style(verdict: str | None, lang: str = DEFAULT_LANG) -> tuple[str, str]:
@@ -123,7 +135,7 @@ LEVEL_TO_VERDICT = {
 
 
 def scan_type_label(has_text: bool, has_link: bool, has_file: bool) -> str:
-    """The "📁 TYPE:" line's value - which of text/link/file this
+    """The "🗁 TYPE:" line's value - which of text/link/file this
     particular check actually covered. Direct user spec: seven exact
     combinations, not a generic sorted join (a bare link+file with no
     real text reads "file+link", not "link+file", while text always

@@ -36,7 +36,7 @@ from google import genai
 from google.genai import types
 
 from bot.config.config import GEMINI_API_KEY, GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
-from bot.translate.translate import DEFAULT_LANG
+from bot.response.translate import DEFAULT_LANG
 from bot.detectors.text.offline.scam_patterns import nearest_scam_pattern, nearest_scam_pattern_live
 from bot.storage import subscription
 from bot.storage import health_alerts
@@ -87,7 +87,24 @@ _SYSTEM_PROMPT = (
     "not to verify with the sender are strong scam signals on their own, "
     "and a high scam-script similarity score is corroborating evidence "
     "even on its own, but a LOW similarity score does not clear a "
-    "message - plenty of real scams don't match any known script. Weigh "
+    "message - plenty of real scams don't match any known script. When "
+    "a link finding names a specific host or domain (e.g. a redirect "
+    "destination, or the real target behind mismatched display text), "
+    "state that exact domain in your own key_reasons text rather than "
+    "generalizing it away (\"redirects to an external site\") - the "
+    "specific domain is exactly what lets a reader judge it for "
+    "themselves, and omitting it removes real information the evidence "
+    "already gave you. If the evidence includes a \"sender_identity\" "
+    "field (the VERIFIED sender's own name/username - only ever present "
+    "for Business-chat automation, where the sender is a real connected "
+    "customer, never spoofable the way a plain chat display name is), "
+    "and a link finding's mismatched-display or redirect-destination "
+    "domain is a plausible variation of that same name, you may treat "
+    "that as a mitigating signal weakening the 'deceptive redirect' "
+    "reading (e.g. someone's own vanity domain forwarding to their own "
+    "portfolio) - but this alone does not clear a heuristic finding; "
+    "still weigh it against the rest of the evidence and message intent "
+    "normally, the same as any other positive-context signal. Weigh "
     "the message text and all available evidence together and produce "
     "ONE unified verdict, risk percentage, key reasons, and "
     "recommendations for the message as a whole."
@@ -95,7 +112,7 @@ _SYSTEM_PROMPT = (
 
 # Private DM / Business chat only - the fixed labels around this content
 # (VERDICT/risk headers, etc.) are translated separately via
-# bot/translate/translate.py (see verdict_style.py, text_handler.py's
+# bot/response/translate/ (see verdict_style.py, text_handler.py's
 # format_unified_response) -
 # this only asks Gemini to write its OWN dynamic text (key_reasons/
 # recommendations) in the user's chosen language, since that content is
@@ -284,6 +301,7 @@ def _build_contents(
     link_verdicts: list[dict],
     file_verdict: dict | None,
     pattern_match: tuple[float, str] | None = None,
+    sender_identity: dict | None = None,
 ) -> str:
     evidence = {
         "keyword_prescan": keyword_result,
@@ -311,6 +329,11 @@ def _build_contents(
             "closest_known_scam_category": category,
             "similarity": round(similarity, 3),
         }
+    if sender_identity is not None:
+        # Business-chat automation only (see analyze_unified's own
+        # docstring and the system prompt) - private DM/group chat never
+        # pass this, so this field is simply absent there, not empty.
+        evidence["sender_identity"] = sender_identity
     return (
         "SYSTEM-GATHERED EVIDENCE (not written by the user; already gathered - "
         "do not re-derive it. Each link finding carries a \"confirmed\" flag - "
@@ -520,6 +543,7 @@ async def analyze_unified(
     file_verdict: dict | None = None,
     lang: str = DEFAULT_LANG,
     user_id: int | None = None,
+    sender_identity: dict | None = None,
 ) -> dict:
     """One Gemini call reasoning over the message text, every link's full
     pipeline verdict, and an optional file-scan result together -> one
@@ -530,7 +554,7 @@ async def analyze_unified(
     caller's formatter shows one fixed, translated notice instead. The
     fixed labels around whatever either path returns are always
     translated separately by the caller (verdict_style.py, which reaches
-    into bot/translate/translate.py and bot/button/start_button.py).
+    into bot/response/translate/ and bot/response/buttons.py).
 
     `user_id`: when given, gates on the Freemium daily token budget
     (bot/storage/subscription.py) and records real usage from Gemini's
@@ -538,7 +562,18 @@ async def analyze_unified(
     both - callers that don't have a real per-user identity (there
     currently are none in production, but this keeps the function
     usable standalone/in tests without forcing every caller to pass one)
-    just always get the live path if the client is configured."""
+    just always get the live path if the client is configured.
+
+    `sender_identity`: {"name": ..., "username": ...} for the VERIFIED
+    sender, e.g. {"name": sender.full_name, "username": sender.username}.
+    Business-chat automation ONLY (see the system prompt for why) - lets
+    Gemini treat a link's mismatched/redirect domain as less suspicious
+    when it plausibly matches the sender's own name (a real false
+    positive this fixed: a customer's own vanity-domain-to-Vercel-
+    portfolio redirect scored 65-80% "Scam" before this). Never pass
+    this for private DM/group chat - a plain chat display name is
+    trivially spoofable, unlike a Business connection's verified
+    customer identity, so the same leniency there would be exploitable."""
     # Only surfaced to the model once it clears the same calibrated
     # SCAM_PATTERN_THRESHOLD the fallback already trusts - a low,
     # near-every-message similarity number would just be noise in the
@@ -591,7 +626,9 @@ async def analyze_unified(
     try:
         response = await _client.aio.models.generate_content(
             model=GEMINI_MODEL,
-            contents=_build_contents(text, keyword_result, link_verdicts, file_verdict, pattern_match),
+            contents=_build_contents(
+                text, keyword_result, link_verdicts, file_verdict, pattern_match, sender_identity,
+            ),
             config=types.GenerateContentConfig(
                 system_instruction=_system_prompt(lang),
                 response_mime_type="application/json",

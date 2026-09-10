@@ -77,9 +77,9 @@ from bot.detectors.url.offline.lexical import (
 )
 from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
 from bot.storage import health_alerts
-from bot.translate.translate import DEFAULT_LANG
-from bot.button.start_button import t
-from bot.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.translate import DEFAULT_LANG
+from bot.response.buttons import t
+from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
 
 logger = logging.getLogger(__name__)
 
@@ -347,14 +347,23 @@ async def analyze_url(
         reasons = list(verdict["reasons"])
         detail: list[str] = []
 
-        # Network + DNS + RDAP + TLS cert concurrently; vector search is local CPU.
+        # Network + DNS + RDAP + TLS cert + vector search, all concurrently.
+        # The vector search (_safe_nearest) used to run AFTER this gather,
+        # sequentially - a stale comment here claimed it was "local CPU,"
+        # but it's actually a real Supabase pgvector network round trip
+        # (vectors.py's nearest()), same as the others, so it was paying
+        # its own real latency on top of the rest for no reason. Folded in
+        # here instead - _safe_nearest already never raises (catches its
+        # own errors and returns []), so return_exceptions=True is just
+        # defensive consistency with the other four, not load-bearing.
         net_task = asyncio.create_task(network.trace(normalized))
         dns_task = asyncio.create_task(resolve_host(host))
         age_task = asyncio.create_task(domain_age_days(host))
         cert_task = asyncio.create_task(cert_issued_days_ago(host))
+        sim_task = asyncio.create_task(_safe_nearest(normalized))
 
-        net, ips, age_days, cert_age_days = await asyncio.gather(
-            net_task, dns_task, age_task, cert_task, return_exceptions=True
+        net, ips, age_days, cert_age_days, sim_hits = await asyncio.gather(
+            net_task, dns_task, age_task, cert_task, sim_task, return_exceptions=True
         )
         if isinstance(net, Exception):
             net = None
@@ -364,9 +373,10 @@ async def analyze_url(
             age_days = None
         if isinstance(cert_age_days, Exception):
             cert_age_days = None
+        if isinstance(sim_hits, Exception):
+            sim_hits = []
 
         # --- Vector search over stored brand/phish embeddings -------------
-        sim_hits = await _safe_nearest(normalized)
         phish_sims = [s for s, kind, *_ in sim_hits if kind == "phish"]
         brand_sims = [s for s, kind, key, label in sim_hits if kind == "brand"]
         best_phish = max(phish_sims, default=0.0)
@@ -831,7 +841,7 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
 
     lines = [
         f"{verdict_icon} *{t(DEFAULT_LANG, 'verdict_label')}: {verdict_label}*",
-        f"📁 *{t(DEFAULT_LANG, 'type_label')}: {scan_type_label(has_text=False, has_link=True, has_file=False)}*",
+        f"🗁 *{t(DEFAULT_LANG, 'type_label')}: {scan_type_label(has_text=False, has_link=True, has_file=False)}*",
         summary_sentence(verdict, pct, DEFAULT_LANG),
         "",
         f"{risk_icon} *{pct}%  {risk_label.upper()}*",
@@ -841,7 +851,7 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
     lines += [f"• {r}" for r in v["reasons"]]
     lines += [
         "",
-        f"💡 *{t(DEFAULT_LANG, 'what_to_do_header')}*",
+        f"☉ *{t(DEFAULT_LANG, 'what_to_do_header')}*",
     ]
     lines += [f"✓ {r}" for r in recs]
     lines += [

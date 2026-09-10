@@ -60,13 +60,13 @@ from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
 from bot.config.config import DISPLAY_TIMEZONE_OFFSET_HOURS
-from bot.translate.translate import DEFAULT_LANG
-from bot.button.start_button import t
+from bot.response.translate import DEFAULT_LANG
+from bot.response.buttons import t
 from bot.detectors.url.pipeline import (
     check_message_full,
     format_verdict_full,
 )
-from bot.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.storage import subscription
@@ -86,11 +86,22 @@ def _full_breakdown_text(verdicts: list[dict], include_evidence: bool = True) ->
 
 def _sender_header(sender, sent_at, lang: str = DEFAULT_LANG) -> str:
     """👤/🆔/🕒 block for the "New Activity Detected" business notification -
-    direct user spec. The Telegram Bot API only ever gives message
-    timestamps in UTC (it has no concept of a real per-user timezone at
-    all) - see bot/config/config.py's DISPLAY_TIMEZONE_OFFSET_HOURS docstring for
-    why this is one project-wide offset, not a genuinely per-user one."""
-    name = sender.full_name if sender else "Unknown sender"
+    direct user spec ("From: username (@username)"), matching
+    next-gen-test/flow/angket-bot-message.drawio. The Telegram Bot API
+    only ever gives message timestamps in UTC (it has no concept of a
+    real per-user timezone at all) - see bot/config/config.py's
+    DISPLAY_TIMEZONE_OFFSET_HOURS docstring for why this is one
+    project-wide offset, not a genuinely per-user one."""
+    if sender:
+        name = sender.full_name
+        if sender.username:
+            # Many real users have no @username set at all (confirmed
+            # live via the user-registry sandbox test) - only append
+            # the handle when Telegram actually gave one, rather than
+            # rendering a literal "(@None)".
+            name = f"{name} (@{sender.username})"
+    else:
+        name = "Unknown sender"
     uid = sender.id if sender else "—"
     if sent_at:
         local_dt = sent_at + timedelta(hours=DISPLAY_TIMEZONE_OFFSET_HOURS)
@@ -294,7 +305,7 @@ def _format_unified_business_text(
     pipeline.py/file_handler.py's replies, direct user spec that all four
     surfaces read as one consistent product. `lang` here is the OWNER's
     language (see _owner_lang), not the customer's. has_link/has_file/
-    has_text feed the "📁 TYPE:" line, same convention as
+    has_text feed the "🗁 TYPE:" line, same convention as
     format_unified_response - see that function's docstring.
 
     unified["ai_unavailable"] means there's no AI-authored reasons/
@@ -311,7 +322,7 @@ def _format_unified_business_text(
     if unified.get("ai_unavailable"):
         return "\n".join([
             f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
-            f"📁 *{t(lang, 'type_label')}: {scan_type}*",
+            f"🗁 *{t(lang, 'type_label')}: {scan_type}*",
             f"{risk_icon} *{percentage}  {risk_label.upper()}*",
             "",
             f"⚠️ {t(lang, 'ai_unavailable_notice')}",
@@ -329,7 +340,7 @@ def _format_unified_business_text(
 
     lines = [
         f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
-        f"📁 *{t(lang, 'type_label')}: {scan_type}*",
+        f"🗁 *{t(lang, 'type_label')}: {scan_type}*",
         summary_sentence(verdict, risk_percentage, lang),
         "",
         f"{risk_icon} *{percentage}  {risk_label.upper()}*",
@@ -337,7 +348,7 @@ def _format_unified_business_text(
         f"🔍 *{t(lang, 'key_reasons_header')}*",
         "\n".join(reason_lines),
         "",
-        f"💡 *{t(lang, 'what_to_do_header')}*",
+        f"☉ *{t(lang, 'what_to_do_header')}*",
         "\n".join(rec_lines),
         "",
         SECTION_DIVIDER,
@@ -449,7 +460,17 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     # message - translate based on their language preference, not the
     # customer's (see _owner_lang's docstring for why those can differ).
     owner_lang = _owner_lang(context, owner_chat_id)
-    unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, owner_lang)
+    # sender is a VERIFIED connected customer here (a Business connection,
+    # not a spoofable plain chat display name) - safe to let Gemini weigh
+    # it as a mitigating signal for a mismatched/redirect domain. See
+    # analyze_unified's own docstring for why this is Business-chat-only.
+    sender_identity = (
+        {"name": sender.full_name, "username": sender.username} if sender else None
+    )
+    unified = await analyze_unified(
+        text, keyword_result, link_verdicts, file_verdict, owner_lang,
+        sender_identity=sender_identity,
+    )
 
     # A link or file is always worth telling the owner about (matches
     # handle_url/handle_file's "report every finding, even 'safe'"

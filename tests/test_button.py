@@ -1,13 +1,13 @@
 """
 tests/test_button.py
 ======================
-Coverage for bot/button/start_button.py - the BUTTONS dict (main-menu
+Coverage for bot/response/buttons.py - the BUTTONS dict (main-menu
 keyboard labels) and key_for_label()'s reverse lookup. Reply-content
 coverage (TEXT) lives in tests/test_translate.py, mirroring
-bot/button/ vs. bot/translate/'s split.
+bot/response/ vs. bot/response/'s split.
 """
 
-from bot.button.start_button import BUTTONS, key_for_label
+from bot.response.buttons import BUTTONS, key_for_label
 
 
 def test_every_button_key_exists_in_both_languages():

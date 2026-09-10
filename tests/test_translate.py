@@ -1,16 +1,16 @@
 """
 tests/test_translate.py
 =========================
-Coverage for bot/translate/translate.py - the TEXT dict (reply content:
+Coverage for bot/response/translate/ - the TEXT dict (reply content:
 verdicts, reasons headers, disclaimers, menu pages, etc.) and its en/km
 key parity. Button-label coverage (BUTTONS, key_for_label) lives in
-tests/test_button.py, mirroring bot/translate/ vs. bot/button/'s split.
+tests/test_button.py, mirroring bot/response/ vs. bot/response/'s split.
 """
 
 import pytest
 
-from bot.translate.translate import TEXT
-from bot.button.start_button import t
+from bot.response.translate import TEXT
+from bot.response.buttons import t
 
 NEW_TEXT_KEYS = ["type_label"]
 

@@ -7,9 +7,9 @@ from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.storage.scan_log import log_scan
 from bot.storage import subscription
 from bot.handlers.text_handler import get_user_lang
-from bot.translate.translate import DEFAULT_LANG
-from bot.button.start_button import t
-from bot.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.translate import DEFAULT_LANG
+from bot.response.buttons import t
+from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: 
 
     lines = [
         f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
-        f"📁 *{t(lang, 'type_label')}: {scan_type_label(has_text=False, has_link=False, has_file=True)}*",
+        f"🗁 *{t(lang, 'type_label')}: {scan_type_label(has_text=False, has_link=False, has_file=True)}*",
         summary_sentence(verdict, pct, lang),
         "",
         f"{risk_icon} *{risk_label.upper()}*" if pct is None else f"{risk_icon} *{pct}%  {risk_label.upper()}*",
@@ -133,7 +133,7 @@ def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: 
     lines += [f"• {r}" for r in reasons]
     lines += [
         "",
-        f"💡 *{t(lang, 'what_to_do_header')}*",
+        f"☉ *{t(lang, 'what_to_do_header')}*",
     ]
     lines += [f"✓ {r}" for r in recs]
     lines += [

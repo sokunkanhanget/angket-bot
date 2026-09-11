@@ -411,8 +411,7 @@ async def _grounded_fallback(
         if pattern_hits and pattern_hits[0][0] >= SCAM_PATTERN_THRESHOLD:
             pattern_similarity, _kind, _key, category = pattern_hits[0]
             reasons.append({
-                "text": f"Message text closely matches a known '{category}' scam script "
-                        f"(offline pattern match, {pattern_similarity:.2f} similarity).",
+                "text": f"Message text closely matches a known '{category}' scam script.",
                 "source": "message_text",
             })
 

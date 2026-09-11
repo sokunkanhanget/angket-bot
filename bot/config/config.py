@@ -7,6 +7,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Optional, like GEMINI_API_KEY itself - see bot/detectors/text/online/
+# gemini_retry.py. Only ever used as a one-shot retry when the primary
+# key hits a 429 (quota/rate-limit) specifically, not on other failures.
+GEMINI_API_KEY_BACKUP = os.getenv("GEMINI_API_KEY_BACKUP")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 SCAN_LOG_DB = os.getenv("SCAN_LOG_DB", "scan_logs.db")
 

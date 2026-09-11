@@ -14,7 +14,7 @@ from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_se
 from bot.handlers.url_handler import extract_text_link_entities
 from bot.storage import subscription
 from bot.detectors.url.pipeline import check_message_full
-from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 
 BTN_MENU = "MENU"
@@ -88,7 +88,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def _format_list(items: list, prefix: str, lang: str = DEFAULT_LANG) -> str:
     if not items:
         return f"{prefix} {t(lang, 'none_provided')}"
-    return "\n".join(f"{prefix} {escape(str(item))}" for item in items)
+    # defang_domains AFTER escape() - see that function's own docstring
+    # for why this order matters (domain characters survive escaping
+    # unchanged, so matching post-escape is safe; matching first and
+    # escaping after would escape away the <code> tags this adds).
+    return "\n".join(f"{prefix} {defang_domains(escape(str(item)))}" for item in items)
 
 
 def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
@@ -113,7 +117,7 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
         + summary_sentence(verdict, risk_percentage, lang),
         f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
-        f"☉ <b>{t(lang, 'what_to_do_header')}</b>\n"
+        f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(llm_result.get('recommendations', []), '✓', lang)}",
         f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
     ]
@@ -150,18 +154,20 @@ def format_unified_response(
     such bookkeeping itself.
 
     unified["ai_unavailable"] (set by context_engine.py's
-    _grounded_fallback) means there's no AI-authored reasons/
-    recommendations text to show at all - the Key Reasons/What To Do
-    sections are replaced with one fixed, translated notice instead of
-    a body that would otherwise mix raw English boilerplate into an
-    otherwise-Khmer reply, or a "None provided" What To Do section.
+    _grounded_fallback) is internal/log-only now - direct user spec
+    (2026-09-11): a degraded (no-AI) reply shows its own real
+    key_reasons/recommendations exactly like any other verdict, not a
+    generic "AI reasoning was unavailable" admission. _grounded_fallback
+    already computes real reasons from offline evidence (keyword
+    matches, scam-pattern similarity, link/file findings) and its own
+    verdict-appropriate recommendations - nothing special to render here.
 
     evidence_degraded: True when any link's vector-similarity search
     (Supabase) failed AND the check ended up too thin without it to be
     confident (see pipeline.py's analyze_url - not raised on every
     Supabase blip, only when it could plausibly have mattered) - appends
     one small fixed notice near the end, additive rather than replacing
-    the real content the way ai_unavailable does."""
+    the real content."""
     verdict = unified.get("verdict")
     verdict_icon, verdict_label = verdict_style(verdict, lang)
     risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
@@ -175,26 +181,13 @@ def format_unified_response(
     )
     risk_block = f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>"
 
-    if unified.get("ai_unavailable"):
-        lines = [
-            header,
-            f"{risk_block}\n\n⚠️ {escape(t(lang, 'ai_unavailable_notice'))}",
-            f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
-        ]
-        if keyword_result["suspicious"]:
-            matches = escape(", ".join(keyword_result["matches"]))
-            lines.insert(2, f"⚠️ <b>{t(lang, 'keyword_match_label')}:</b> <code>{matches}</code>")
-        if evidence_degraded:
-            lines.insert(-1, f"⚠️ {escape(t(lang, 'evidence_degraded_notice'))}")
-        return "\n\n".join(lines)
-
     reason_items = unified.get("key_reasons") or []
     if reason_items:
         reason_lines = []
         for r in reason_items:
             text, source = (r.get("text", ""), r.get("source")) if isinstance(r, dict) else (str(r), None)
             tag = SOURCE_TAGS.get(source, "")
-            reason_lines.append(f"• {escape(text)}{tag}")
+            reason_lines.append(f"• {defang_domains(escape(text))}{tag}")
         reasons_block = "\n".join(reason_lines)
     else:
         reasons_block = f"• {t(lang, 'none_provided')}"
@@ -203,7 +196,7 @@ def format_unified_response(
         header,
         f"{risk_block}\n\n"
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{reasons_block}",
-        f"☉ <b>{t(lang, 'what_to_do_header')}</b>\n"
+        f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(unified.get('recommendations', []), '✓', lang)}",
         f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
     ]

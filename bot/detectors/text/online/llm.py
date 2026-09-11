@@ -1,10 +1,10 @@
 import json
 import logging
 
-from google import genai
 from google.genai import types
 
-from bot.config.config import GEMINI_API_KEY, GEMINI_MODEL
+from bot.config.config import GEMINI_MODEL
+from bot.detectors.text.online.gemini_retry import build_clients, generate_content_with_backup
 from bot.storage import subscription
 from bot.storage import health_alerts
 
@@ -87,7 +87,7 @@ _RESPONSE_SCHEMA = {
     ],
 }
 
-_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+_client, _backup_client = build_clients()
 
 
 def _unavailable(reason: str, error: str) -> dict:
@@ -113,7 +113,8 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
         return _unavailable("Daily AI token budget exhausted.", "token_budget_exhausted")
 
     try:
-        response = await _client.aio.models.generate_content(
+        response = await generate_content_with_backup(
+            _client, _backup_client,
             model=GEMINI_MODEL,
             contents=text,
             config=types.GenerateContentConfig(

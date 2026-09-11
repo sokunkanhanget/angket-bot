@@ -334,6 +334,37 @@ async def test_ensure_seeded_is_idempotent_once_it_succeeds(fake_vector_store, m
     assert called["n"] == 0
 
 
+@pytest.mark.asyncio
+async def test_ensure_seeded_serializes_concurrent_callers(monkeypatch):
+    # Real, confirmed bug (2026-09-11): right after a restart, EVERY
+    # handler calls ensure_seeded() before its real work - a burst of
+    # messages arriving in that window (a queued backlog delivering all
+    # at once, seen live repeatedly this session) used to see
+    # bot_data['_vectors_seeded'] still unset in EVERY concurrent call
+    # and each launch its own full seed() - several concurrent 144+-row
+    # batch upserts competing for the pool's 5 connections at once, a
+    # real, confirmed cause of the "Supabase pool exhausted" admin
+    # alerts. _seed_lock must ensure only ONE seed() actually runs even
+    # when many callers race for it.
+    called = {"n": 0}
+
+    async def _slow_seed():
+        # A real seed() call is genuinely slow (network round trips) -
+        # the delay here is what actually exercises the race window;
+        # without the lock, every concurrent caller would see the flag
+        # still unset and all call this concurrently.
+        called["n"] += 1
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(vectors, "seed", _slow_seed)
+
+    bot_data = {}
+    await asyncio.gather(*(vectors.ensure_seeded(bot_data) for _ in range(10)))
+
+    assert called["n"] == 1
+    assert bot_data["_vectors_seeded"] is True
+
+
 # --- MinHash LSH ---------------------------------------------------------
 
 def test_minhash_detects_near_duplicate_pages():

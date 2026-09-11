@@ -10,7 +10,7 @@ from bot.storage import subscription
 from bot.handlers.text_handler import get_user_lang
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
-from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 
 logger = logging.getLogger(__name__)
@@ -132,12 +132,12 @@ def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: 
         "",
         f"🔍 *{t(lang, 'key_reasons_header')}*",
     ]
-    lines += [f"• {r}" for r in reasons]
+    lines += [f"• {defang_domains(r, style='markdown')}" for r in reasons]
     lines += [
         "",
-        f"☉ *{t(lang, 'what_to_do_header')}*",
+        f"💡 *{t(lang, 'what_to_do_header')}*",
     ]
-    lines += [f"✓ {r}" for r in recs]
+    lines += [f"✓ {defang_domains(r, style='markdown')}" for r in recs]
     lines += [
         "",
         SECTION_DIVIDER,

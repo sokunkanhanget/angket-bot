@@ -24,7 +24,7 @@ TEXT = {
         "You’ll receive:\n\n"
         "• 📊 <b>Risk Level:</b> How risky the content may be.\n"
         "• 🔍 <b>Key Reasons:</b> Why it was flagged.\n"
-        "• ☉ <b>What To Do:</b> What you should do next.\n\n"
+        "• 💡 <b>What To Do:</b> What you should do next.\n\n"
         "<b>Risk Levels</b>\n"
         "🟢 <b>Low Risk:</b> No significant threat detected.\n"
         "🟡 <b>Medium Risk:</b> Some suspicious signs detected. Be cautious.\n"

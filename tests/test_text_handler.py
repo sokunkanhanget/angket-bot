@@ -34,7 +34,7 @@ def test_format_analysis_response_uses_high_risk_style():
     assert "🔴 <b>85%  HIGH RISK</b>" in response
     assert "🗁 <b>TYPE: text</b>" in response
     assert "🔍 <b>KEY REASONS</b>" in response
-    assert "☉ <b>WHAT YOU SHOULD DO</b>" in response
+    assert "💡 <b>WHAT YOU SHOULD DO</b>" in response
     assert "• Uses an unrealistic offer &lt;now&gt;" in response
     assert "ⓘ Angket Bot may occasionally make mistakes." in response
     # Direct teammate feedback: a divider belongs directly ABOVE the
@@ -74,8 +74,7 @@ def test_format_unified_response_type_line_is_text_only_by_default():
 def test_format_unified_response_shows_evidence_degraded_notice():
     # 2026-09-11 spec: a Supabase/vector-search outage that could
     # plausibly have mattered (see pipeline.py's analyze_url) appends a
-    # small fixed notice - additive, unlike ai_unavailable which replaces
-    # the whole reasons/recommendations section.
+    # small fixed notice, additive to the real reasons/recommendations.
     unified = {
         "verdict": "Uncertain", "risk_percentage": 40,
         "key_reasons": [{"text": "Some lexical concern", "source": None}],
@@ -95,6 +94,25 @@ def test_format_unified_response_omits_evidence_degraded_notice_by_default():
     response = format_unified_response(unified, {"suspicious": False, "matches": []})
 
     assert t("en", "evidence_degraded_notice") not in response
+
+
+def test_format_unified_response_shows_real_reasons_not_ai_unavailable_admission():
+    # 2026-09-11 spec: a degraded (no-AI, ai_unavailable=True) result
+    # shows _grounded_fallback's own real reasons/recommendations like
+    # any other verdict - NOT the old "AI reasoning was unavailable"
+    # generic notice, which used to replace the whole section.
+    unified = {
+        "verdict": "Uncertain", "risk_percentage": 60,
+        "key_reasons": [{"text": "example.tk: flagged suspicious", "source": "link_evidence"}],
+        "recommendations": ["Verify with the sender through a separate channel before acting."],
+        "ai_unavailable": True,
+    }
+    response = format_unified_response(unified, {"suspicious": False, "matches": []})
+
+    assert t("en", "ai_unavailable_notice") not in response
+    # Domain wrapped non-clickable (2026-09-11 spec) - see defang_domains.
+    assert "<code>example.tk</code>: flagged suspicious" in response
+    assert "Verify with the sender through a separate channel before acting." in response
 
 
 def test_format_analysis_response_uses_medium_and_low_thresholds():

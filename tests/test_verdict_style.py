@@ -6,7 +6,7 @@ translated via bot/response/translate/ - covers the lang parameter added when pr
 business-chat verdict content became translatable.
 """
 
-from bot.response.verdict_style import risk_style, verdict_style
+from bot.response.verdict_style import defang_domains, risk_style, verdict_style
 
 
 def test_verdict_style_defaults_to_english():
@@ -37,3 +37,35 @@ def test_risk_style_translates_all_buckets_to_khmer():
 
 def test_risk_style_defaults_to_english():
     assert risk_style(90)[1] == "High Risk"
+
+
+def test_defang_domains_wraps_html_style():
+    # Direct user spec (2026-09-11): a reply warning about a link
+    # shouldn't hand the reader a one-tap way to open it.
+    text = defang_domains("bit.ly: Shortened link")
+    assert text == "<code>bit.ly</code>: Shortened link"
+
+
+def test_defang_domains_wraps_markdown_style():
+    text = defang_domains("bit.ly: Shortened link", style="markdown")
+    assert text == "`bit.ly`: Shortened link"
+
+
+def test_defang_domains_wraps_multiple_domains_in_one_string():
+    text = defang_domains("redirects from evil.tk to kimtech-portfolio.vercel.app")
+    assert text == "redirects from <code>evil.tk</code> to <code>kimtech-portfolio.vercel.app</code>"
+
+
+def test_defang_domains_leaves_plain_text_untouched():
+    text = defang_domains("No strong scam signals were found here.")
+    assert text == "No strong scam signals were found here."
+
+
+def test_defang_domains_works_after_html_escape():
+    # The real call order this is always used in - html.escape() first,
+    # then defang_domains() on the already-escaped text (see the
+    # function's own docstring for why that order is required).
+    from html import escape
+    text = defang_domains(escape("<script>evil.tk</script>"))
+    assert "<script>" not in text  # still safely escaped
+    assert "<code>evil.tk</code>" in text  # domain still wrapped

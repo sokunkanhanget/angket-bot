@@ -452,22 +452,40 @@ async def seed() -> None:
         await _mark_seeded(conn, fingerprint)
 
 
+_seed_lock = asyncio.Lock()
+
+
 async def ensure_seeded(bot_data: dict) -> None:
     """Idempotent, crash-safe seeding for handlers to call instead of
     checking bot_data['_vectors_seeded'] and calling seed() directly.
     A Supabase outage here must never crash the calling handler - the
     same principle context_engine.py's _grounded_fallback already
     applies to its own vector lookup, now applied to seeding too. If
-    seeding fails, don't mark it done - the next message simply retries."""
+    seeding fails, don't mark it done - the next message simply retries.
+
+    _seed_lock closes a real race, not a hypothetical one: right after
+    a restart, EVERY handler (text/url/business) calls this before its
+    real work, and a burst of messages arriving in that window (a
+    queued backlog delivering all at once - confirmed live, seen
+    repeatedly this session) would previously all see `_vectors_seeded`
+    still unset and each launch their OWN full seed() - several
+    concurrent 144+-row batch upserts competing for the pool's 5
+    connections at once, a real, confirmed cause of the "Supabase pool
+    exhausted" admin alerts. Double-checked locking: the flag check
+    happens again AFTER acquiring the lock, so a caller that waited
+    simply finds the work already done instead of redoing it."""
     if bot_data.get("_vectors_seeded"):
         return
-    start = time.perf_counter()
-    try:
-        await seed()
-        bot_data["_vectors_seeded"] = True
-        logger.info("[first-message] Vector store seeded in %.3fs", time.perf_counter() - start)
-    except Exception:                       # noqa: BLE001 - must never crash the calling handler
-        logger.exception(
-            "[first-message] Vector store seeding failed after %.3fs - will retry on next message",
-            time.perf_counter() - start,
-        )
+    async with _seed_lock:
+        if bot_data.get("_vectors_seeded"):
+            return  # another concurrent caller already finished while we waited
+        start = time.perf_counter()
+        try:
+            await seed()
+            bot_data["_vectors_seeded"] = True
+            logger.info("[first-message] Vector store seeded in %.3fs", time.perf_counter() - start)
+        except Exception:                       # noqa: BLE001 - must never crash the calling handler
+            logger.exception(
+                "[first-message] Vector store seeding failed after %.3fs - will retry on next message",
+                time.perf_counter() - start,
+            )

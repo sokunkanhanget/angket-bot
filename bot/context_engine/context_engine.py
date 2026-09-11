@@ -32,10 +32,10 @@ import json
 import logging
 import re
 
-from google import genai
 from google.genai import types
 
-from bot.config.config import GEMINI_API_KEY, GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
+from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
+from bot.detectors.text.online.gemini_retry import build_clients, generate_content_with_backup
 from bot.response.translate import DEFAULT_LANG
 from bot.detectors.text.offline.scam_patterns import nearest_scam_pattern, nearest_scam_pattern_live
 from bot.storage import subscription
@@ -162,7 +162,7 @@ _RESPONSE_SCHEMA = {
     "required": ["verdict", "risk_percentage", "key_reasons", "recommendations"],
 }
 
-_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+_client, _backup_client = build_clients()
 
 # A risk_percentage this high reads to a user as near-certainty. That's
 # only defensible when backed by independently-confirmed evidence (a
@@ -344,6 +344,24 @@ def _build_contents(
     )
 
 
+# Same voice/tone as pipeline.py's own _RECOMMENDATIONS (dangerous/
+# suspicious/safe) - this fallback's verdict vocabulary is Scam/
+# Uncertain/Not a Scam instead, matching every other surface's.
+_FALLBACK_RECOMMENDATIONS = {
+    "Scam": [
+        "Do not click any links, open any files, or share personal or financial details.",
+        "Block and report the sender - this pattern matches known scam tactics.",
+    ],
+    "Uncertain": [
+        "Don't share personal details, click links, or send money until you're sure this is legitimate.",
+        "Verify with the sender through a separate channel before acting.",
+    ],
+    "Not a Scam": [
+        "No strong scam signals were found, but stay cautious with anything unexpected.",
+    ],
+}
+
+
 async def _grounded_fallback(
     reason: str,
     text: str,
@@ -359,10 +377,12 @@ async def _grounded_fallback(
     add suspicion, never to clear a message (see SCAM_PATTERN_THRESHOLD).
 
     `reason` is a diagnostic string for logs only (why the live call
-    wasn't used) - it never reaches the user. The caller instead shows
-    a single, properly translated `ai_unavailable_notice` (see
-    text_handler.py's format_unified_response), so a degraded reply in
-    Khmer doesn't mix in raw English boilerplate.
+    wasn't used) - it never reaches the user. Direct user spec
+    (2026-09-11): the reply shows this fallback's OWN real key_reasons/
+    recommendations as if it were any other verdict, not a generic "AI
+    reasoning was unavailable" admission - `ai_unavailable` stays in the
+    returned dict (useful for logs/tests) but the formatters no longer
+    branch the DISPLAY on it.
     """
     logger.info("Falling back to offline detection: %s", reason)
     reasons: list[dict] = []
@@ -432,10 +452,9 @@ async def _grounded_fallback(
         "verdict": verdict,
         "risk_percentage": risk_percentage,
         "key_reasons": reasons,
-        "recommendations": [],
-        # Tells the caller's formatter to show one clean, properly
-        # translated notice instead of expecting AI-authored reasons/
-        # recommendations text (there are none - this IS the no-AI path).
+        "recommendations": _FALLBACK_RECOMMENDATIONS[verdict],
+        # Internal/log-only now - see this function's own docstring for
+        # why the formatters no longer special-case display on this.
         "ai_unavailable": True,
     }
 
@@ -624,7 +643,8 @@ async def analyze_unified(
         )
 
     try:
-        response = await _client.aio.models.generate_content(
+        response = await generate_content_with_backup(
+            _client, _backup_client,
             model=GEMINI_MODEL,
             contents=_build_contents(
                 text, keyword_result, link_verdicts, file_verdict, pattern_match, sender_identity,

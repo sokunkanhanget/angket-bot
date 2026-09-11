@@ -111,6 +111,22 @@ async def test_grounded_fallback_returns_not_a_scam_when_nothing_found(fake_vect
 
 
 @pytest.mark.asyncio
+async def test_grounded_fallback_returns_real_verdict_appropriate_recommendations(fake_vector_store):
+    # 2026-09-11 spec: the fallback's own recommendations, not an empty
+    # list papered over by a generic "AI unavailable" notice at display
+    # time - each verdict level gets real, distinct advice.
+    keyword_result = {"suspicious": True, "matches": ["urgent"]}
+    link_verdicts = [{"host": "evil.tk", "level": "dangerous", "score": 90, "reasons": ["bad"]}]
+    scam_result = await _grounded_fallback("x", "", keyword_result, link_verdicts)
+    assert scam_result["verdict"] in ("Scam", "Uncertain")
+    assert scam_result["recommendations"]  # never empty for a real concern
+
+    safe_result = await _grounded_fallback("x", "hey, lunch tomorrow?", {"suspicious": False, "matches": []}, [])
+    assert safe_result["verdict"] == "Not a Scam"
+    assert safe_result["recommendations"]  # "Not a Scam" still gets real advice, not []
+
+
+@pytest.mark.asyncio
 async def test_grounded_fallback_flags_malicious_file(fake_vector_store):
     file_verdict = {"found": True, "malicious": 5, "suspicious": 0, "total": 70}
     result = await _grounded_fallback("x", "", {"suspicious": False, "matches": []}, [], file_verdict)
@@ -315,9 +331,9 @@ async def test_analyze_unified_falls_back_on_malformed_json(fake_vector_store, m
 
     result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
 
-    # ai_unavailable tells the caller's formatter to show one fixed,
-    # translated notice (bot/response/translate/'s ai_unavailable_notice) instead of
-    # expecting AI-authored reasons text - see format_unified_response.
+    # ai_unavailable is internal/log-only (2026-09-11 spec) - the reply
+    # shows _grounded_fallback's own real key_reasons/recommendations,
+    # not a generic notice - see format_unified_response's docstring.
     assert result["ai_unavailable"] is True
 
 

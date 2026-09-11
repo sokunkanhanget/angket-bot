@@ -79,7 +79,7 @@ from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
 from bot.storage import health_alerts
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
-from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 
 logger = logging.getLogger(__name__)
 
@@ -877,12 +877,12 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
         "",
         f"🔍 *{t(DEFAULT_LANG, 'key_reasons_header')}*",
     ]
-    lines += [f"• {r}" for r in v["reasons"]]
+    lines += [f"• {defang_domains(r, style='markdown')}" for r in v["reasons"]]
     lines += [
         "",
-        f"☉ *{t(DEFAULT_LANG, 'what_to_do_header')}*",
+        f"💡 *{t(DEFAULT_LANG, 'what_to_do_header')}*",
     ]
-    lines += [f"✓ {r}" for r in recs]
+    lines += [f"✓ {defang_domains(r, style='markdown')}" for r in recs]
     if v.get("evidence_degraded"):
         lines += ["", f"⚠️ {t(DEFAULT_LANG, 'evidence_degraded_notice')}"]
     lines += [
@@ -894,7 +894,7 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
     detail = v.get("detail") or []
     if include_evidence and detail:
         lines += ["", "🧾 *Technical Evidence*"]
-        lines += [f"- {d}" for d in detail]
+        lines += [f"- {defang_domains(d, style='markdown')}" for d in detail]
 
     return "\n".join(lines)
 

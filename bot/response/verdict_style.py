@@ -17,6 +17,7 @@ of scope for translation for now, unlike private DM/business chat.
 
 from __future__ import annotations
 
+from bot.detectors.url.offline.lexical import URL_REGEX
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
 
@@ -67,6 +68,27 @@ SOURCE_TAGS = {
 # signal at all, so one fixed length is genuinely the only lever
 # available - not a compromise made for lack of trying.
 SECTION_DIVIDER = "─" * 18
+
+
+def defang_domains(text: str, style: str = "html") -> str:
+    """Wraps any URL/domain-like substring in a non-clickable code span,
+    direct user spec (2026-09-11): a reply warning about a link
+    shouldn't itself hand the reader a one-tap way to open it. Reuses
+    URL_REGEX - the SAME pattern this whole project already uses to
+    decide what counts as a link when SCANNING - so anything worth
+    flagging as a link when checking is also worth not making clickable
+    when displaying it, one definition for both.
+
+    style="html": wraps with <code>...</code> - call this AFTER
+    html.escape() has already run on the surrounding text, not before.
+    Domain characters (letters/digits/dots/hyphens/colons) are untouched
+    by escaping, so matching against already-escaped text is safe, and
+    the <code> tags this adds are real markup, not further escaped.
+    style="markdown": wraps with backticks instead, for the legacy-
+    Markdown surfaces (pipeline.py/file_handler.py/url_handler.py's
+    business notification)."""
+    wrap = (lambda s: f"<code>{s}</code>") if style == "html" else (lambda s: f"`{s}`")
+    return URL_REGEX.sub(lambda m: wrap(m.group(0)), text)
 
 
 def verdict_style(verdict: str | None, lang: str = DEFAULT_LANG) -> tuple[str, str]:

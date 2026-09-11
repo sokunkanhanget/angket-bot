@@ -66,7 +66,7 @@ from bot.detectors.url.pipeline import (
     check_message_full,
     format_verdict_full,
 )
-from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
@@ -320,10 +320,11 @@ def _format_unified_business_text(
     has_text feed the "🗁 TYPE:" line, same convention as
     format_unified_response - see that function's docstring.
 
-    unified["ai_unavailable"] means there's no AI-authored reasons/
-    recommendations text to show - see format_unified_response's
-    docstring for why this replaces the Key Reasons/What To Do sections
-    with one fixed, translated notice instead.
+    unified["ai_unavailable"] is internal/log-only now - see
+    format_unified_response's docstring: direct user spec (2026-09-11),
+    a degraded (no-AI) reply shows its own real key_reasons/
+    recommendations exactly like any other verdict, not a generic
+    admission that AI reasoning was unavailable.
 
     evidence_degraded: see format_unified_response's own docstring -
     same "Supabase failed AND it could plausibly have mattered" gate,
@@ -336,25 +337,12 @@ def _format_unified_business_text(
     scan_type = scan_type_label(has_text, has_link, has_file)
     degraded_line = [f"⚠️ {t(lang, 'evidence_degraded_notice')}", ""] if evidence_degraded else []
 
-    if unified.get("ai_unavailable"):
-        return "\n".join([
-            f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
-            f"🗁 *{t(lang, 'type_label')}: {scan_type}*",
-            f"{risk_icon} *{percentage}  {risk_label.upper()}*",
-            "",
-            f"⚠️ {t(lang, 'ai_unavailable_notice')}",
-            "",
-            *degraded_line,
-            SECTION_DIVIDER,
-            t(lang, "verdict_disclaimer"),
-        ])
-
     reason_lines = [
-        f"• {r.get('text', '')}{SOURCE_TAGS.get(r.get('source'), '')}"
+        f"• {defang_domains(r.get('text', ''), style='markdown')}{SOURCE_TAGS.get(r.get('source'), '')}"
         for r in (unified.get("key_reasons") or [])
     ] or [f"• {t(lang, 'none_provided')}"]
     recs = unified.get("recommendations") or []
-    rec_lines = [f"✓ {r}" for r in recs] or [f"✓ {t(lang, 'none_provided')}"]
+    rec_lines = [f"✓ {defang_domains(r, style='markdown')}" for r in recs] or [f"✓ {t(lang, 'none_provided')}"]
 
     lines = [
         f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
@@ -366,7 +354,7 @@ def _format_unified_business_text(
         f"🔍 *{t(lang, 'key_reasons_header')}*",
         "\n".join(reason_lines),
         "",
-        f"☉ *{t(lang, 'what_to_do_header')}*",
+        f"💡 *{t(lang, 'what_to_do_header')}*",
         "\n".join(rec_lines),
         "",
         *degraded_line,

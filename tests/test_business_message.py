@@ -376,7 +376,13 @@ async def test_notifies_owner_for_near_exact_scam_script_during_a_real_gemini_ou
         await handle_business_message(update, context)
 
     context.bot.send_message.assert_awaited_once()
-    assert "offline pattern matching only" in context.bot.send_message.call_args.kwargs["text"]
+    # 2026-09-11 spec: a degraded (no-AI) reply shows its OWN real
+    # reasons/recommendations, not a generic "AI unavailable" admission
+    # - see context_engine.py's _grounded_fallback and _FALLBACK_RECOMMENDATIONS.
+    text = context.bot.send_message.call_args.kwargs["text"]
+    assert "offline pattern matching only" not in text
+    assert "closely matches a known" in text  # the real scam-script-match reason
+    assert "Verify with the sender through a separate channel" in text  # real recommendation
 
 
 @pytest.mark.asyncio

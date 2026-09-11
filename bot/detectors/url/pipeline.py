@@ -870,7 +870,7 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
 
     lines = [
         f"{verdict_icon} *{t(DEFAULT_LANG, 'verdict_label')}: {verdict_label}*",
-        f"🗁 *{t(DEFAULT_LANG, 'type_label')}: {scan_type_label(has_text=False, has_link=True, has_file=False)}*",
+        f"📁 *{t(DEFAULT_LANG, 'type_label')}: {scan_type_label(has_text=False, has_link=True, has_file=False)}*",
         summary_sentence(verdict, pct, DEFAULT_LANG),
         "",
         f"{risk_icon} *{pct}%  {risk_label.upper()}*",

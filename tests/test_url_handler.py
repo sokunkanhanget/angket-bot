@@ -16,6 +16,7 @@ import pytest
 from bot.handlers.url_handler import handle_url
 from bot.response.buttons import t
 from bot.response.translate import DEFAULT_LANG
+from bot.storage import subscription
 
 
 def _group_update(text):
@@ -57,3 +58,29 @@ async def test_handle_url_stops_animation_and_replies_on_unexpected_error():
 
     mock_stop.assert_awaited_once()
     status_message.edit_text.assert_awaited_once_with(t(DEFAULT_LANG, "scan_failed"))
+
+
+@pytest.mark.asyncio
+async def test_handle_url_checks_quota_before_seeding_vectors():
+    # Regression: quota used to be checked AFTER ensure_vectors_seeded()
+    # - a real Supabase call - so a sender who's already over their daily
+    # limit still triggered it for nothing. handle_file/handle_text
+    # already check quota first; this brings handle_url in line with
+    # that same "quota gate is the first real work a handler does"
+    # pattern instead of being the one inconsistent case.
+    update = _group_update("claim now http://free-prize-winner.tk/claim")
+    update.effective_message.reply_text = AsyncMock()
+    context = _context()
+
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(42)
+
+    with patch("bot.handlers.url_handler.ensure_vectors_seeded", AsyncMock()) as mock_seed, \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock()) as mock_check:
+        await handle_url(update, context)
+
+    mock_seed.assert_not_awaited()
+    mock_check.assert_not_awaited()
+    update.effective_message.reply_text.assert_awaited_once_with(
+        t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
+    )

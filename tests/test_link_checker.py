@@ -1832,6 +1832,6 @@ def test_format_verdict_full_has_a_divider_directly_above_the_disclaimer():
     assert f"{pipeline.SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in reply
     assert reply.rstrip().endswith("Double-check important information before taking action.")
     assert "⚠️ *VERDICT: LIKELY A SCAM*" in reply
-    assert "🗁 *TYPE: link*" in reply
+    assert "📁 *TYPE: link*" in reply
 
 

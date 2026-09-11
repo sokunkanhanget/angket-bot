@@ -5,6 +5,12 @@ from google.genai import types
 
 from bot.config.config import GEMINI_MODEL
 from bot.detectors.text.online.gemini_retry import build_clients, generate_content_with_backup
+from bot.detectors.text.offline.keyword import analyze_text
+# Deliberate cross-module reuse of context_engine's offline fallback
+# (leading underscore is this project's "internal to its own reasoning
+# module" convention, not real Python privacy) - see _fallback's own
+# docstring below for why duplicating that logic here would be worse.
+from bot.context_engine.context_engine import _grounded_fallback
 from bot.storage import subscription
 from bot.storage import health_alerts
 
@@ -90,13 +96,42 @@ _RESPONSE_SCHEMA = {
 _client, _backup_client = build_clients()
 
 
-def _unavailable(reason: str, error: str) -> dict:
+def _risk_label(risk_percentage: int | None) -> str:
+    if risk_percentage is None:
+        return "Unknown"
+    if risk_percentage <= 30:
+        return "Low"
+    if risk_percentage <= 60:
+        return "Medium"
+    return "High"
+
+
+async def _fallback(reason: str, error: str, text: str) -> dict:
+    """Gemini unavailable (no key / budget exhausted / call failed) ->
+    degrade to the SAME offline evidence context_engine.py's unified path
+    already falls back to, instead of a blank "Uncertain, N/A risk" with
+    no real reasons. This group-chat path only ever has message text (no
+    link/file evidence - that's handle_url's own separate reply), so
+    link_verdicts/file_verdict are empty/None; _grounded_fallback already
+    handles that shape (keyword match + offline scam-pattern similarity
+    only) - see its own docstring in context_engine.py. Direct user spec
+    (2026-09-11): a single unavailable online service (Gemini here, VT
+    for files) shouldn't blank a verdict out to "unknown" when other real
+    detectors already ran and have something to say.
+
+    key_reasons here is flattened to plain strings - unlike
+    context_engine.py's {text, source}-object schema (format_unified_
+    response's contract), this function's only real caller
+    (format_analysis_response) has always expected plain strings, same
+    as Gemini's own live JSON response above."""
+    keyword_result = analyze_text(text)
+    fallback = await _grounded_fallback(reason, text, keyword_result, [], None)
     return {
-        "verdict": "Uncertain",
-        "risk_level": "Unknown",
-        "risk_percentage": None,
-        "key_reasons": [reason],
-        "recommendations": [],
+        "verdict": fallback["verdict"],
+        "risk_level": _risk_label(fallback["risk_percentage"]),
+        "risk_percentage": fallback["risk_percentage"],
+        "key_reasons": [r["text"] for r in fallback["key_reasons"]],
+        "recommendations": fallback["recommendations"],
         "error": error,
     }
 
@@ -107,10 +142,10 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
     analyze_unified for the same pattern applied to the private-DM/
     business-chat path. None skips both, same reasoning as there."""
     if not _client:
-        return _unavailable("LLM analysis is not configured.", "missing_api_key")
+        return await _fallback("LLM analysis is not configured.", "missing_api_key", text)
 
     if user_id is not None and not subscription.has_token_budget(user_id):
-        return _unavailable("Daily AI token budget exhausted.", "token_budget_exhausted")
+        return await _fallback("Daily AI token budget exhausted.", "token_budget_exhausted", text)
 
     try:
         response = await generate_content_with_backup(
@@ -138,6 +173,6 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
         logger.exception("Gemini text analysis failed")
         health_alerts.record_failure("Gemini", str(error))
         await health_alerts.maybe_alert("Gemini", str(error))
-        return _unavailable(
-            "LLM analysis failed, please try again later.", str(error)
+        return await _fallback(
+            "LLM analysis failed, please try again later.", str(error), text
         )

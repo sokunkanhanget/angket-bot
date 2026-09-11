@@ -116,7 +116,7 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
 
     lines = [
         f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n"
-        f"🗁 <b>{t(lang, 'type_label')}: {scan_type_label(True, False, False)}</b>\n"
+        f"📁 <b>{t(lang, 'type_label')}: {scan_type_label(True, False, False)}</b>\n"
         + summary_sentence(verdict, risk_percentage, lang),
         f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>\n\n"
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
@@ -149,7 +149,7 @@ def format_unified_response(
     language (analyze_unified asks Gemini to respond in it directly -
     see context_engine.py).
 
-    has_link/has_file/has_text feed the "🗁 TYPE:" line - the caller
+    has_link/has_file/has_text feed the "📁 TYPE:" line - the caller
     already knows exactly what was actually checked (link_verdicts,
     whether a document was attached, whether the message was more than
     just a bare pasted link), so it's computed there rather than
@@ -179,7 +179,7 @@ def format_unified_response(
 
     header = (
         f"{verdict_icon} <b>{t(lang, 'verdict_label')}: {escape(verdict_label)}</b>\n"
-        f"🗁 <b>{t(lang, 'type_label')}: {scan_type_label(has_text, has_link, has_file)}</b>\n"
+        f"📁 <b>{t(lang, 'type_label')}: {scan_type_label(has_text, has_link, has_file)}</b>\n"
         + summary_sentence(verdict, risk_percentage, lang)
     )
     risk_block = f"{risk_icon} <b>{percentage}  {risk_label.upper()}</b>"

@@ -50,7 +50,7 @@ async def test_clean_scan_reports_safe_with_the_shared_reply_shape():
     assert "reply_markup" not in sent.edit_text.call_args.kwargs  # direct user spec: no buttons
     reply = sent.edit_text.call_args.args[0]
     assert "SAFE / LEGITIMATE" in reply
-    assert "🗁 *TYPE: file*" in reply
+    assert "📁 *TYPE: file*" in reply
     assert f"{SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in reply
 
 
@@ -75,10 +75,15 @@ async def test_malicious_scan_reports_a_scam_verdict():
 
 
 @pytest.mark.asyncio
-async def test_unknown_signature_reports_uncertain():
+async def test_unknown_signature_with_clean_filename_reports_safe():
     # checked=True here specifically means VT itself confirmed it has
     # never seen this hash - a real (if weak) answer, distinct from
     # "VT couldn't be reached" below, which used to be indistinguishable.
+    # 2026-09-11 spec: no VT signal AND a clean filename (no disguise, no
+    # risky extension) is "safe" (nothing we checked flagged it), not the
+    # old blanket "uncertain, N/A risk" - a single unavailable/silent
+    # service shouldn't blank out a real verdict when the offline
+    # filename check already ran and found nothing.
     update, context, sent = _file_update()
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="c" * 64)), \
@@ -89,20 +94,22 @@ async def test_unknown_signature_reports_uncertain():
         await handle_file(update, context)
 
     reply = sent.edit_text.call_args.args[0]
-    assert "SUSPICIOUS" in reply
+    assert "SAFE / LEGITIMATE" in reply
     assert "never been seen by VirusTotal" in reply
+    assert "No filename red flags were found either" in reply
 
 
 @pytest.mark.asyncio
-async def test_virustotal_outage_still_gives_a_real_verdict_not_a_generic_failure():
+async def test_virustotal_outage_with_clean_filename_still_reports_safe():
     # Real fix, matching the text/link checkers' own resilience: before
     # this session, ANY scan_file failure (a genuine VT outage included)
-    # showed a bare "couldn't scan, try again later" with zero signal -
-    # very different from how a Gemini outage still produces a real
-    # degraded verdict from whatever offline evidence remains. Now
-    # scan_vt_hash() itself never raises - a VT outage comes back as
-    # checked=False, and the handler builds a real (if honest,
-    # "uncertain") verdict from it instead of a dead end.
+    # showed a bare "couldn't scan, try again later" with zero signal.
+    # Now scan_vt_hash() itself never raises - a VT outage comes back as
+    # checked=False, and the handler builds a real verdict from whatever
+    # offline evidence remains. 2026-09-11 spec: a clean filename here
+    # means "safe" (the filename check ran and found nothing), not the
+    # old blanket "uncertain, N/A risk" that treated VT's own outage as
+    # if nothing at all had been checked.
     update, context, sent = _file_update()
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="e" * 64)), \
@@ -114,9 +121,34 @@ async def test_virustotal_outage_still_gives_a_real_verdict_not_a_generic_failur
         await handle_file(update, context)
 
     reply = sent.edit_text.call_args.args[0]
-    assert "SUSPICIOUS" in reply
-    assert "VirusTotal could not be reached" in reply
+    assert "SAFE / LEGITIMATE" in reply
+    assert "based on the file name only" in reply
+    assert "VirusTotal" not in reply  # 2026-09-11 spec: don't name the failing backend service to the user
     mock_log.assert_called_once()  # this DID complete a real (degraded) scan, unlike a download failure
+
+
+@pytest.mark.asyncio
+async def test_virustotal_outage_with_a_bare_executable_flags_it_suspicious():
+    # New offline signal (2026-09-11 spec): an executable/script sent
+    # with no document-like disguise at all still gets flagged on its
+    # own - a bare ".exe"/".apk" is a real scam vector (fake banking
+    # apps, fake installers) even with zero VirusTotal signal and no
+    # double-extension trick.
+    update, context, sent = _file_update(file_name="totally_legit_app.apk")
+
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="g" * 64)), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
+             "checked": False, "found": False, "error": "503 UNAVAILABLE",
+             "filename_warning": "This is a '.apk' executable/script file — a common "
+                                  "malware vector, especially when unsolicited.",
+             "filename_risk_score": 35,
+         })), \
+         patch("bot.handlers.file_handler.log_scan"):
+        await handle_file(update, context)
+
+    reply = sent.edit_text.call_args.args[0]
+    assert "SUSPICIOUS" in reply
+    assert "executable/script file" in reply
 
 
 @pytest.mark.asyncio
@@ -138,7 +170,6 @@ async def test_virustotal_outage_with_a_disguised_filename_still_flags_it():
     reply = sent.edit_text.call_args.args[0]
     assert "LIKELY A SCAM" in reply
     assert "disguises an executable" in reply
-    assert "VirusTotal could not be reached" in reply
 
 
 @pytest.mark.asyncio

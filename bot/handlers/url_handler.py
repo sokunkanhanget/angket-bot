@@ -209,10 +209,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if text is None:
         return
 
-    # Full pipeline: lexical + network trace + DNS/domain age + vector
-    # search + LSH. Brand/phish vectors are seeded once per process.
-    await ensure_vectors_seeded(context.bot_data)
-
     # Network tracing can take a few seconds — show progress first
     # (normal chats only; business flow stays invisible).
     is_business = bool(message.business_connection_id)
@@ -221,6 +217,13 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # sender's daily quota - the sender there is a CUSTOMER messaging
     # the business, not the subscriber whose plan this is. A normal
     # chat's sender IS the subscriber, so their own daily quota applies.
+    #
+    # Checked BEFORE ensure_vectors_seeded() below - a real Supabase call
+    # - on purpose: no point triggering it for a sender who's about to be
+    # quota-blocked anyway. handle_file/handle_text already check their
+    # own quota first; this one used to seed first and check quota
+    # second, the one real inconsistency in an otherwise-consistent
+    # "quota gate is the first real work a handler does" pattern.
     sender = update.effective_user
     if not is_business and sender is not None and not subscription.can_scan_link_or_message(sender.id):
         # Inlined rather than importing text_handler.get_user_lang - that
@@ -231,6 +234,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
         )
         return
+
+    # Full pipeline: lexical + network trace + DNS/domain age + vector
+    # search + LSH. Brand/phish vectors are seeded once per process.
+    await ensure_vectors_seeded(context.bot_data)
 
     # Group chat stays English-only (DEFAULT_LANG), same established
     # scope as format_analysis_response - see bot.py's TEXT_FILTER notes.
@@ -329,7 +336,7 @@ def _format_unified_business_text(
     pipeline.py/file_handler.py's replies, direct user spec that all four
     surfaces read as one consistent product. `lang` here is the OWNER's
     language (see _owner_lang), not the customer's. has_link/has_file/
-    has_text feed the "🗁 TYPE:" line, same convention as
+    has_text feed the "📁 TYPE:" line, same convention as
     format_unified_response - see that function's docstring.
 
     unified["ai_unavailable"] is internal/log-only now - see
@@ -358,7 +365,7 @@ def _format_unified_business_text(
 
     lines = [
         f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
-        f"🗁 *{t(lang, 'type_label')}: {scan_type}*",
+        f"📁 *{t(lang, 'type_label')}: {scan_type}*",
         summary_sentence(verdict, risk_percentage, lang),
         "",
         f"{risk_icon} *{percentage}  {risk_label.upper()}*",

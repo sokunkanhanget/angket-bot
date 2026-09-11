@@ -79,11 +79,10 @@ from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
 from bot.storage import health_alerts
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
-from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import LEVEL_TO_VERDICT, DISCLAIMER_SPACER, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 
 logger = logging.getLogger(__name__)
 
-# Thresholds & caps ----------------------------------------------------
 
 PHISH_SIM_THRESHOLD = 0.55     # cosine vs known-phish pattern worth flagging
 PHISH_SIM_STRONG = 0.80        # near-certain impersonation
@@ -382,7 +381,6 @@ async def analyze_url(
         else:
             sim_hits, vector_search_unavailable = sim_result
 
-        # --- Vector search over stored brand/phish embeddings -------------
         phish_sims = [s for s, kind, *_ in sim_hits if kind == "phish"]
         brand_sims = [s for s, kind, key, label in sim_hits if kind == "brand"]
         best_phish = max(phish_sims, default=0.0)
@@ -401,14 +399,12 @@ async def analyze_url(
                 reasons.append("Resembles patterns seen in phishing links.")
                 detail.append(f"vector search: phishing-pattern similarity {best_phish:.2f}")
 
-        # --- DNS ----------------------------------------------------------
         if ips is None:
             score += 25
             reasons.append("The host name does not resolve in DNS at all — nothing is really there.")
         elif len(ips) <= 5:
             detail.append(f"DNS resolves to: {', '.join(ips[:3])}")
 
-        # --- Domain registration age ---------------------------------------
         age_scored = score_domain_age(age_days)
         if age_scored:
             score += age_scored[0]
@@ -416,7 +412,6 @@ async def analyze_url(
         elif age_days:
             detail.append(f"Domain first registered {age_days}.")
 
-        # --- TLS certificate issuance age -----------------------------------
         cert_scored = score_cert_age(cert_age_days)
         if cert_scored:
             score += cert_scored[0]
@@ -424,7 +419,6 @@ async def analyze_url(
         elif cert_age_days:
             detail.append(f"TLS certificate issued {cert_age_days} day(s) ago.")
 
-        # --- Network-derived signals ---------------------------------------
         network_points = 0
 
         def add_network(points: int, reason: str):
@@ -504,7 +498,6 @@ async def analyze_url(
                                     f"— a classic credential-theft pattern.")
                     detail.append(f"form action targets: {exfil_target}")
 
-        # --- Match against links we've already flagged from Telegram -------
         # Gated by the brand whitelist so one mislabelled scan can never
         # poison the memory for official domains. Reuses sim_hits (already
         # fetched above for brand/phish) instead of a second _safe_nearest
@@ -521,7 +514,6 @@ async def analyze_url(
                            "as suspicious or dangerous.")
             detail.append(f"similarity {seen_sim:.2f} to an earlier flagged link")
 
-        # --- LSH near-duplicate page check (any fetched page) --------------
         # Gated on a minimum length: a bot-blocked/CAPTCHA/JS-only page
         # (common on sites with real anti-bot defenses - Amazon, Google...)
         # returns near-empty text after tag-stripping, and MinHash on
@@ -540,7 +532,6 @@ async def analyze_url(
                                f"seen on {other_host}.")
                 detail.append(f"LSH near-duplicate similarity {similarity:.2f} with {other_host}")
 
-        # --- Flow 3: VirusTotal threat intelligence ------------------------
         # Quota-first: only spend a live API call when our own flows are
         # already suspicious; clean links answer from cache or not at all.
         # Official brand domains skip VT entirely — they never need it.
@@ -564,7 +555,6 @@ async def analyze_url(
         # returned to the caller.
         intrinsic_level, _, _ = _verdict_labels(score)
 
-        # --- Remember this scan in the vector DB ---------------------------
         # Every link detected on Telegram is stored as kind='seen' with its
         # verdict level, so future lookalikes match against it. This must
         # happen AFTER the similarity query above, or a link would match
@@ -887,7 +877,7 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
         lines += ["", f"⚠️ {t(DEFAULT_LANG, 'evidence_degraded_notice')}"]
     lines += [
         "",
-        SECTION_DIVIDER,
+        DISCLAIMER_SPACER,
         t(DEFAULT_LANG, "verdict_disclaimer"),
     ]
 

@@ -44,30 +44,10 @@ SOURCE_TAGS = {
     "file_evidence": " 📄",
 }
 
-# Direct user/teammate feedback on the reply's visual layout: a clean
-# separator between the real content and the disclaimer footer, so the
-# disclaimer doesn't read as just another paragraph of the verdict
-# itself. Plain Unicode box-drawing characters - render identically,
-# with no escaping needed, in both this project's parse modes
-# (Markdown: pipeline.py/file_handler.py/url_handler.py, including its
-# business-owner notification; HTML: text_handler.py's private-DM
-# reply only - confirmed live 2026-09-10 while checking whether
-# spoiler/underline/strikethrough formatting could be added: those
-# three only work under HTML, not legacy Markdown, so they're
-# currently only possible in text_handler.py's reply, not the other
-# three surfaces), unlike most punctuation.
-# A stray divider was removed from a different, awkward position in an
-# earlier session (between the disclaimer and the rest of the reply) -
-# this is deliberately just ABOVE the disclaimer specifically, not a
-# repeat of that. Iterated live over several lengths (46 -> 20 -> 28 ->
-# 18, 2026-09-10) via direct user feedback checking real replies on
-# both mobile and desktop Telegram clients - 18 is what read well on
-# both. See this module's own note above (and bot/config/config.py's
-# DISPLAY_TIMEZONE_OFFSET_HOURS docstring) for the general shape of
-# this problem: the Bot API gives no per-recipient device/client
-# signal at all, so one fixed length is genuinely the only lever
-# available - not a compromise made for lack of trying.
-SECTION_DIVIDER = "─" * 18
+# Keep one blank row above the disclaimer. Telegram does not expose
+# text-centering controls through the Bot API, and a horizontal line is
+# unnecessary visual noise on narrow screens.
+DISCLAIMER_SPACER = ""
 
 
 def defang_domains(text: str, style: str = "html") -> str:

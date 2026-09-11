@@ -93,7 +93,6 @@ async def seed() -> None:
     await upsert_vectors_batch(_seed_rows())
 
 
-# --- Local, in-memory search (no Supabase round trip) -------------------
 # The whole SCAM_MESSAGE_PATTERNS corpus is ~17 hand-written examples,
 # static at runtime (only changes when a developer edits this file and
 # re-seeds) - far too small to justify a real DB query every time it's

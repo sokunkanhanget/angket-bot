@@ -70,14 +70,6 @@ TEXT = {
         "⏰ Your 7-day free trial of Live Detect (automatic scanning in your "
         "business chats) has ended. Upgrade to keep it active."
     ),
-    # --- Verdict reply content (private DM / business chat only -
-    # group chat stays English, see bot/route.py's TEXT_FILTER scope
-    # notes) - the FIXED labels/headers around Gemini's own dynamic
-    # key_reasons/recommendations text. Gemini generates those in the
-    # target language directly (see context_engine.py's lang param);
-    # these are the surrounding static strings, translated once here
-    # instead of round-tripping through the model for a handful of
-    # fixed words every single call. -----------------------------
     "checking_status": "🔍 Checking",
     # Multi-stage status animation (bot/response/status_animation.py) -
     # a timed fake sequence, not synced to real internal steps. Used by

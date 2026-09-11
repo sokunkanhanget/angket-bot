@@ -54,8 +54,6 @@ from psycopg_pool import AsyncConnectionPool
 
 from bot.config.config import SCAN_LOG_DB, SUPABASE_DB_URL
 
-# --- Embedding (unchanged) ---------------------------------------------
-
 DIM = 256          # vector dimensionality
 NGRAM = 4          # character n-gram size
 # [a-z0-9]+ alone left this completely blind to Khmer-only text - a

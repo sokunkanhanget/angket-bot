@@ -47,7 +47,6 @@ SUBMIT_SETTLE_SECONDS = 5     # VT needs a few seconds to analyse a fresh submis
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
-# --- Scoring ----------------------------------------------------------
 
 def score(stats: dict) -> tuple[int, str] | None:
     """Turn VT stats into (points, reason). None = VT sees nothing bad."""
@@ -70,7 +69,6 @@ def score(stats: dict) -> tuple[int, str] | None:
     return None
 
 
-# --- Cache ------------------------------------------------------------
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(SCAN_LOG_DB)
@@ -121,7 +119,6 @@ def _cache_put(url_id: str, stats: dict) -> None:
         conn.close()
 
 
-# --- Lookup -----------------------------------------------------------
 
 def _url_identifier(url: str) -> str:
     """VirusTotal v3 identifies a URL by its unpadded base64url encoding."""

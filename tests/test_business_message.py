@@ -15,7 +15,6 @@ import bot.context_engine.context_engine as context_engine
 from bot.handlers.url_handler import handle_business_message
 from bot.response.buttons import t
 from bot.storage import subscription
-from bot.response.verdict_style import SECTION_DIVIDER
 
 
 def _business_update(text=None, has_document=False):
@@ -133,13 +132,12 @@ async def test_notifies_owner_for_suspicious_text():
     assert "LIKELY A SCAM" in kwargs["text"]
     assert "🗁 *TYPE: text*" in kwargs["text"]
     assert "Urgent money request" in kwargs["text"]
-    # Direct teammate feedback: a divider directly above the disclaimer.
-    assert f"{SECTION_DIVIDER}\n" in kwargs["text"]
+    assert "─" not in kwargs["text"]
     assert kwargs["text"].rstrip().endswith("Double-check important information before taking action.")
     # New spec: "👀 New Activity Detected" header + 👤/🆔/🕒 block above the
     # same body every other surface (text/link/file) renders.
     assert kwargs["text"].startswith(
-        f"{t('en', 'business_new_activity')}\n\n👤 `Customer`\n🆔 42\n🕒 —\n{SECTION_DIVIDER}\n"
+        f"{t('en', 'business_new_activity')}\n\n👤 `Customer`\n🆔 42\n🕒 —\n\n"
     )
 
 
@@ -166,7 +164,7 @@ async def test_sender_header_shows_at_handle_when_one_exists():
 
     kwargs = context.bot.send_message.call_args.kwargs
     assert kwargs["text"].startswith(
-        f"{t('en', 'business_new_activity')}\n\n👤 `Customer (@real_customer)`\n🆔 42\n🕒 —\n{SECTION_DIVIDER}\n"
+        f"{t('en', 'business_new_activity')}\n\n👤 `Customer (@real_customer)`\n🆔 42\n🕒 —\n\n"
     )
 
 

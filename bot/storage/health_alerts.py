@@ -30,13 +30,13 @@ from datetime import datetime, timedelta, timezone
 import httpx
 
 from bot.config.config import ADMIN_CHAT_ID, DISPLAY_TIMEZONE_OFFSET_HOURS, TELEGRAM_BOT_TOKEN
-from bot.response.verdict_style import SECTION_DIVIDER
+from bot.response.verdict_style import DISCLAIMER_SPACER
 
 logger = logging.getLogger(__name__)
 
-FAILURE_THRESHOLD = 3            # alert once this many failures happen...
-FAILURE_WINDOW_SECONDS = 60 * 60      # ...within this rolling window
-ALERT_COOLDOWN_SECONDS = 60 * 60      # don't re-alert the same service more than once per hour
+FAILURE_THRESHOLD = 3
+FAILURE_WINDOW_SECONDS = 60 * 60
+ALERT_COOLDOWN_SECONDS = 60 * 60
 
 # In-process only - resets on restart, which is already a natural
 # "start fresh" point, same reasoning as not persisting this to SQLite.
@@ -69,14 +69,14 @@ def _format_alert(service: str, count: int, detail: str) -> str:
         detail[:_MAX_ERROR_MESSAGE_CHARS].rstrip() + "…"
     )
     # Direct user spec (2026-09-11): the SAME box-drawing divider real
-    # user-facing replies use (SECTION_DIVIDER), not plain ASCII dashes -
+    # user-facing replies use the same blank disclaimer spacer as verdicts.
     # and each field's content sits on its own "- " bullet line below the
     # label, not inline after a colon.
     return (
         f"🚨 Error Detected\n"
         f"Type: {service}\n"
         f"Datetime: {when}\n"
-        f"\n{SECTION_DIVIDER}\n\n"
+        f"\n{DISCLAIMER_SPACER}\n\n"
         f"Error status: \n"
         f"- {count} failures in the last hour (bot is still degrading "
         f"gracefully via offline fallback)\n"

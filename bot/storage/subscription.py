@@ -29,8 +29,6 @@ from datetime import datetime, timezone
 
 from bot.config.config import SCAN_LOG_DB
 
-# --- Tier limits, per the team's plan ------------------------------------
-
 FREEMIUM_DAILY_FILES = 3
 FREEMIUM_DAILY_LINKS_MESSAGES = 8
 FREEMIUM_DAILY_TOKENS = 20_000
@@ -198,7 +196,6 @@ def usage_summary(user_id: int) -> dict:
         conn.close()
 
 
-# --- 7-day Live Detect trial (business-chat automation) ------------------
 
 def ensure_trial_started(user_id: int) -> None:
     """Idempotent - call every time a business connection is seen;

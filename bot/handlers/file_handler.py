@@ -10,18 +10,12 @@ from bot.storage import subscription
 from bot.handlers.text_handler import get_user_lang
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
-from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import DISCLAIMER_SPACER, LEVEL_TO_VERDICT, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 
 logger = logging.getLogger(__name__)
 
 
-# Recommendation text per internal file-scan level - "uncertain" is the
-# one level neither of pipeline.py's own maps has - files genuinely can
-# end up with no real signal either way (a brand-new hash VirusTotal has
-# never seen, no filename disguise, or a VT outage with nothing else to
-# go on) - see _classify_file_result below. Maps onto the shared
-# Scam/Not a Scam/Uncertain verdict vocabulary via LEVEL_TO_VERDICT.
 _FILE_RECOMMENDATIONS = {
     "dangerous": [
         "Do not open this file, run it, or extract its contents.",
@@ -72,8 +66,6 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
                 reasons.append(filename_warning)
             return "dangerous", pct, reasons
 
-        # VT has actually scanned this EXACT file before and found nothing -
-        # real, fairly strong evidence, even if the filename still looks off.
         if filename_warning:
             reasons.append(
                 f"VirusTotal found no threats in this exact file ({total} engines checked), "
@@ -84,9 +76,6 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
         reasons.append(f"No security engine out of {total} on VirusTotal flags this file.")
         return "safe", 0, reasons
 
-    # Either VirusTotal has genuinely never seen this hash before, or it
-    # couldn't be reached at all right now - either way, there's no real
-    # AV signal, only whatever the file's NAME suggests.
     if not result.get("checked"):
         reasons.append(
             "VirusTotal could not be reached right now, so this result is based on the "
@@ -103,21 +92,12 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
 
 
 def _with_disclaimer(message: str, lang: str = DEFAULT_LANG) -> str:
-    """Every other reply path (text/link, including their own Gemini-failure
-    fallbacks) keeps the divider + disclaimer even when degraded - file
-    scanning's download/scan failure replies were the one path that
-    returned early and skipped it entirely."""
-    return f"{message}\n\n{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}"
+    """Append the standard disclaimer to a file-scan failure message."""
+    return f"{message}\n\n{DISCLAIMER_SPACER}\n{t(lang, 'verdict_disclaimer')}"
 
 
 def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: str = DEFAULT_LANG) -> str:
-    """Same VERDICT/TYPE/risk/reasons/what-to-do/disclaimer shape as
-    text_handler.py's unified reply and pipeline.py's link verdict -
-    direct user spec that text/link/file (and the business notification)
-    all read as one consistent product. `file_name` no longer appears in
-    the body itself (the TYPE line replaces the old "Scanned File" line
-    project-wide) - per the same spec, which gives an exact template with
-    no scanned-target line."""
+    """Format the file verdict using the shared scan-response layout."""
     verdict = LEVEL_TO_VERDICT[level]
     verdict_icon, verdict_label = verdict_style(verdict, lang)
     risk_icon, risk_label = risk_style(pct, lang)
@@ -140,7 +120,7 @@ def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: 
     lines += [f"✓ {defang_domains(r, style='markdown')}" for r in recs]
     lines += [
         "",
-        SECTION_DIVIDER,
+        DISCLAIMER_SPACER,
         t(lang, "verdict_disclaimer"),
     ]
     return "\n".join(lines)
@@ -162,36 +142,19 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     message = await update.message.reply_text(
         f"{t(lang, STATUS_STAGE_KEYS[0])}{status_suffix}", parse_mode="Markdown",
     )
-    # Real bug this fixed: a large/slow file scan (13MB+, or a stalled
-    # VirusTotal call) previously showed this ONE static message with no
-    # further feedback at all until it either finished or errored - no
-    # way to tell "still working" from "actually stuck". Same concurrent
-    # animate-while-awaiting pattern as text_handler.py's original
-    # animation, generalized - see status_animation.py's own docstring
-    # for why this doesn't slow down the real download/scan work below.
-    # suffix keeps the filename visible across every stage, not just the
-    # first frame (the file name was real signal the old static message
-    # gave that a bare stage label alone would otherwise have lost).
     animation_task = asyncio.create_task(animate_status(message, lang, status_suffix))
 
     try:
         sha256 = await download_and_hash(context, document.file_id)
-    except Exception:                          # noqa: BLE001 - a Telegram-side download failure must still get a reply
+    except Exception:                          # noqa: BLE001
         logger.exception("File download failed for %s", file_name)
         await stop_status_animation(animation_task)
         await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))
         return
 
-    # scan_file() isn't SUPPOSED to raise - a VirusTotal outage comes back
-    # as a real dict (checked=False), not an exception, which is what
-    # makes the fallback-instead-of-silence verdict below possible at
-    # all (see scan_file/scan_vt_hash's own docstrings). This try/except
-    # is defense-in-depth for a genuinely unexpected bug in that chain,
-    # not the normal "VT is down" path anymore - that path is now a real
-    # degraded verdict, not a generic failure message.
     try:
         result = await scan_file(sha256, file_name)
-    except Exception:                          # noqa: BLE001 - must never break the reply path
+    except Exception:                          # noqa: BLE001
         logger.exception("Unexpected error scanning %s", file_name)
         await stop_status_animation(animation_task)
         await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))

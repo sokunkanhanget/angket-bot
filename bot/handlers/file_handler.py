@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from telegram import Update
@@ -10,6 +11,7 @@ from bot.handlers.text_handler import get_user_lang
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
 from bot.response.verdict_style import LEVEL_TO_VERDICT, SECTION_DIVIDER, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 
 logger = logging.getLogger(__name__)
 
@@ -156,15 +158,27 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    status_suffix = f" `{file_name}`..."
     message = await update.message.reply_text(
-        f"📥 *Scanning `{file_name}`...*",
-        parse_mode="Markdown",
+        f"{t(lang, STATUS_STAGE_KEYS[0])}{status_suffix}", parse_mode="Markdown",
     )
+    # Real bug this fixed: a large/slow file scan (13MB+, or a stalled
+    # VirusTotal call) previously showed this ONE static message with no
+    # further feedback at all until it either finished or errored - no
+    # way to tell "still working" from "actually stuck". Same concurrent
+    # animate-while-awaiting pattern as text_handler.py's original
+    # animation, generalized - see status_animation.py's own docstring
+    # for why this doesn't slow down the real download/scan work below.
+    # suffix keeps the filename visible across every stage, not just the
+    # first frame (the file name was real signal the old static message
+    # gave that a bare stage label alone would otherwise have lost).
+    animation_task = asyncio.create_task(animate_status(message, lang, status_suffix))
 
     try:
         sha256 = await download_and_hash(context, document.file_id)
     except Exception:                          # noqa: BLE001 - a Telegram-side download failure must still get a reply
         logger.exception("File download failed for %s", file_name)
+        await stop_status_animation(animation_task)
         await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))
         return
 
@@ -179,8 +193,11 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         result = await scan_file(sha256, file_name)
     except Exception:                          # noqa: BLE001 - must never break the reply path
         logger.exception("Unexpected error scanning %s", file_name)
+        await stop_status_animation(animation_task)
         await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))
         return
+
+    await stop_status_animation(animation_task)
 
     subscription.record_file_scan(user_id)
 

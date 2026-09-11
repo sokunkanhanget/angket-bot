@@ -338,6 +338,10 @@ async def analyze_url(
     # discover those redirects - see LINK_VERDICT_CACHE_TTL_SECONDS.
     cached = None if is_official_brand else _verdict_cache_get(normalized.lower())
 
+    # Only ever set True inside the non-cached branch below (a cache hit
+    # never touches Supabase for THIS request) - see EVIDENCE_DEGRADED_NOTICE.
+    vector_search_unavailable = False
+
     if cached is not None:
         score = cached["score"]
         reasons = list(cached["reasons"])
@@ -362,7 +366,7 @@ async def analyze_url(
         cert_task = asyncio.create_task(cert_issued_days_ago(host))
         sim_task = asyncio.create_task(_safe_nearest(normalized))
 
-        net, ips, age_days, cert_age_days, sim_hits = await asyncio.gather(
+        net, ips, age_days, cert_age_days, sim_result = await asyncio.gather(
             net_task, dns_task, age_task, cert_task, sim_task, return_exceptions=True
         )
         if isinstance(net, Exception):
@@ -373,8 +377,10 @@ async def analyze_url(
             age_days = None
         if isinstance(cert_age_days, Exception):
             cert_age_days = None
-        if isinstance(sim_hits, Exception):
-            sim_hits = []
+        if isinstance(sim_result, Exception):
+            sim_hits, vector_search_unavailable = [], True
+        else:
+            sim_hits, vector_search_unavailable = sim_result
 
         # --- Vector search over stored brand/phish embeddings -------------
         phish_sims = [s for s, kind, *_ in sim_hits if kind == "phish"]
@@ -587,6 +593,21 @@ async def analyze_url(
     # message's own context signals).
     level, emoji, label = _verdict_labels(score)
 
+    # "Genuinely too thin to be confident" - direct user/mentor spec
+    # (2026-09-11): Supabase is only ONE of several signal sources, so
+    # every failure showing a "having difficulties" notice would overstate
+    # how broken things actually are on checks that still came back
+    # confident from lexical/network/domain-age/TLS/VT alone. Only surface
+    # it when losing that one source could plausibly have mattered: the
+    # verdict isn't already "safe" (a clean result doesn't need hedging),
+    # and nothing INDEPENDENTLY CONFIRMED it either way (a real VirusTotal
+    # hit already makes the verdict solid regardless of vector similarity).
+    evidence_degraded = (
+        vector_search_unavailable
+        and level != "safe"
+        and not any("VirusTotal" in r for r in reasons)
+    )
+
     logger.info("verdict %s (%d) for %s", level, score, host)
     return {
         **verdict,
@@ -596,6 +617,7 @@ async def analyze_url(
         "label": label,
         "reasons": reasons,
         "detail": detail,
+        "evidence_degraded": evidence_degraded,
     }
 
 
@@ -616,18 +638,25 @@ async def _remember(normalized: str, net, level: str) -> None:
         pass
 
 
-async def _safe_nearest(text: str):
+async def _safe_nearest(text: str) -> tuple[list, bool]:
     # Explicitly scoped to link-relevant kinds only - url_vectors now also
     # holds 'scam_pattern' rows (message-text-shaped, seeded for
     # context_engine.py's offline fallback), which would otherwise compete
     # for this global top-4 window and could crowd out a real phish/brand/
     # seen match, silently zeroing the similarity score below.
+    #
+    # Returns (hits, unavailable) - unavailable=True lets analyze_url tell
+    # "Supabase failed, zero matches" apart from "Supabase answered, there
+    # genuinely were none" - previously both looked identical ([]), so a
+    # real outage could silently degrade a verdict with no way for the
+    # user-facing reply to ever mention it (see EVIDENCE_DEGRADED_NOTICE).
     try:
-        return await vectors.nearest(text, k=4, kinds=("brand", "phish", "seen"))
+        hits = await vectors.nearest(text, k=4, kinds=("brand", "phish", "seen"))
+        return hits, False
     except Exception as error:                 # noqa: BLE001 - DB trouble must not kill checks
         health_alerts.record_failure("Supabase", str(error))
         await health_alerts.maybe_alert("Supabase", str(error))
-        return []
+        return [], True
 
 
 def _safe_near_dup(host: str, page_text: str):
@@ -854,6 +883,8 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
         f"☉ *{t(DEFAULT_LANG, 'what_to_do_header')}*",
     ]
     lines += [f"✓ {r}" for r in recs]
+    if v.get("evidence_degraded"):
+        lines += ["", f"⚠️ {t(DEFAULT_LANG, 'evidence_degraded_notice')}"]
     lines += [
         "",
         SECTION_DIVIDER,

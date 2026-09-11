@@ -533,6 +533,75 @@ def test_analyze_url_does_not_flag_same_origin_login_form(seeded_vectors, monkey
     assert not any("credential-theft pattern" in r for r in verdict["reasons"])
 
 
+def test_analyze_url_marks_evidence_degraded_when_supabase_down_and_result_uncertain(seeded_vectors, monkeypatch):
+    # Real user/mentor spec (2026-09-11): a Supabase/vector-search outage
+    # should only surface a "server had difficulties" notice to the user
+    # when it could plausibly have mattered - not on every blip, since
+    # it's only ONE of several signal sources and most checks stay
+    # confident without it. This is the "could have mattered" case: no
+    # VirusTotal confirmation, and the level ends up non-safe.
+    async def failing_nearest(text, k=4, kinds=None):
+        raise ConnectionError("Supabase pool exhausted")
+
+    _stub_out_network(monkeypatch, tls_valid=True)
+    monkeypatch.setattr(pipeline.vectors, "nearest", failing_nearest)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url(
+        "http://totally-not-a-bank-login.tk/verify-account", malformed_protocol=True,
+    ))
+
+    assert verdict["level"] != "safe"
+    assert not any("VirusTotal" in r for r in verdict["reasons"])
+    assert verdict["evidence_degraded"] is True
+    # And the actual reply text carries the fixed, translated notice -
+    # not just an internal flag nobody ever surfaces.
+    reply = pipeline.format_verdict_full(verdict, include_evidence=False)
+    assert "server has experienced some difficulties" in reply
+
+
+def test_analyze_url_does_not_mark_evidence_degraded_when_verdict_is_confident(seeded_vectors, monkeypatch):
+    # Same Supabase outage, but VirusTotal independently confirms the
+    # link is malicious - the verdict is already fully confident, so the
+    # notice would be misleading noise, not real information.
+    async def failing_nearest(text, k=4, kinds=None):
+        raise ConnectionError("Supabase pool exhausted")
+
+    async def fake_lookup(url, api_key, live=True):
+        return {"malicious": 5, "suspicious": 0, "harmless": 10, "total": 15}
+
+    _stub_out_network(monkeypatch, tls_valid=True)
+    monkeypatch.setattr(pipeline.vectors, "nearest", failing_nearest)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", "fake-key")
+    monkeypatch.setattr(pipeline.threat_intel, "lookup", fake_lookup)
+
+    verdict = asyncio.run(pipeline.analyze_url("http://real-malware-host.tk/payload"))
+
+    assert any("VirusTotal" in r for r in verdict["reasons"])
+    assert verdict["evidence_degraded"] is False
+
+
+def test_analyze_url_does_not_mark_evidence_degraded_when_result_is_safe(seeded_vectors, monkeypatch):
+    # Same Supabase outage, but nothing else found anything wrong either
+    # - a clean result doesn't need hedging just because one of several
+    # signal sources was briefly unavailable.
+    async def failing_nearest(text, k=4, kinds=None):
+        raise ConnectionError("Supabase pool exhausted")
+
+    async def fake_age(host):
+        return 900  # long-established domain
+
+    _stub_out_network(monkeypatch, tls_valid=True)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline.vectors, "nearest", failing_nearest)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    verdict = asyncio.run(pipeline.analyze_url("https://www.some-real-shop.com/"))
+
+    assert verdict["level"] == "safe"
+    assert verdict["evidence_degraded"] is False
+
+
 def test_analyze_url_flags_brand_page_spoof(seeded_vectors, monkeypatch):
     # _brand_page_spoof: the page CLAIMS to be a protected brand (ABA
     # Bank mentioned 3+ times) while living on an unrelated domain -

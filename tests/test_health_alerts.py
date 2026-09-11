@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from bot.response import verdict_style
 from bot.storage import health_alerts as alerts
 
 
@@ -127,6 +128,31 @@ async def test_missing_admin_chat_id_logs_but_never_raises(monkeypatch):
 
     # Must complete without raising even though no admin chat is configured.
     await alerts.maybe_alert("Gemini", "quota exceeded")
+
+
+def test_format_alert_uses_the_short_scannable_template():
+    # Direct user/mentor spec (2026-09-11): admin alerts should be a
+    # short, scannable template (SECTION_DIVIDER, same as real user-facing
+    # replies, plus one "- " bullet line per field), not a wall of raw
+    # error text.
+    text = alerts._format_alert("Gemini", 3, "503 UNAVAILABLE - high demand")
+
+    assert text.startswith("🚨 Error Detected\nType: Gemini\nDatetime: ")
+    assert f"\n{verdict_style.SECTION_DIVIDER}\n\n" in text
+    assert "Error status: \n- 3 failures in the last hour" in text
+    assert "Error message: \n- 503 UNAVAILABLE - high demand" in text
+    assert "To do: \n-" in text
+
+
+def test_format_alert_truncates_a_very_long_error_message():
+    # A real Gemini error body is a long single-line JSON dump - must be
+    # shortened, not dropped (the full text is still in the real log
+    # line record_failure() writes separately).
+    long_detail = "x" * 1000
+    text = alerts._format_alert("Supabase", 5, long_detail)
+
+    assert "x" * 1000 not in text
+    assert "…" in text
 
 
 @pytest.mark.asyncio

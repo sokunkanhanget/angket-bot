@@ -79,6 +79,15 @@ TEXT = {
     # instead of round-tripping through the model for a handful of
     # fixed words every single call. -----------------------------
     "checking_status": "🔍 Checking",
+    # Multi-stage status animation (bot/response/status_animation.py) -
+    # a timed fake sequence, not synced to real internal steps. Used by
+    # text/link/file scans; group chat only ever shows these (never
+    # translated content) too, per bot.py's TEXT_FILTER scope.
+    "status_checking": "🔍 Checking",
+    "status_searching": "🔎 Searching",
+    "status_constructing": "⚙️ Constructing",
+    "status_formatting": "🗂️ Formatting",
+    "status_generating": "✨ Generating",
     "verdict_label": "VERDICT",
     "type_label": "TYPE",
     "key_reasons_header": "KEY REASONS",
@@ -88,6 +97,10 @@ TEXT = {
     "ai_unavailable_notice": (
         "AI reasoning was unavailable for this check - this result uses "
         "offline pattern matching only and may be less accurate than usual."
+    ),
+    "evidence_degraded_notice": (
+        "The server has experienced some difficulties and will be back "
+        "shortly - this result may be less complete than usual."
     ),
     "summary_warning_signs": "This message has warning signs. Verify it before taking action.",
     "summary_strong_unsafe": "This message shows strong signs of being unsafe.",

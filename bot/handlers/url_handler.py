@@ -67,6 +67,7 @@ from bot.detectors.url.pipeline import (
     format_verdict_full,
 )
 from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.storage import subscription
@@ -231,10 +232,20 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    status = None if is_business else await message.reply_text("🔍 Checking link...", parse_mode="Markdown")
+    # Group chat stays English-only (DEFAULT_LANG), same established
+    # scope as format_analysis_response - see bot.py's TEXT_FILTER notes.
+    status = None
+    animation_task = None
+    if not is_business:
+        status = await message.reply_text(t(DEFAULT_LANG, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
+        animation_task = asyncio.create_task(animate_status(status, DEFAULT_LANG))
 
     hidden_links = extract_text_link_entities(message)
     verdicts = await check_message_full(text, hidden_links)
+
+    if animation_task is not None:
+        await stop_status_animation(animation_task)
+
     if not verdicts:
         if status is not None:
             await status.delete()
@@ -298,6 +309,7 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
 def _format_unified_business_text(
     unified: dict, lang: str = DEFAULT_LANG,
     has_link: bool = False, has_file: bool = False, has_text: bool = True,
+    evidence_degraded: bool = False,
 ) -> str:
     """Markdown rendering of an analyze_unified() verdict for the business
     owner-DM notification - SAME VERDICT/TYPE/risk/reasons/what-to-do/
@@ -311,13 +323,18 @@ def _format_unified_business_text(
     unified["ai_unavailable"] means there's no AI-authored reasons/
     recommendations text to show - see format_unified_response's
     docstring for why this replaces the Key Reasons/What To Do sections
-    with one fixed, translated notice instead."""
+    with one fixed, translated notice instead.
+
+    evidence_degraded: see format_unified_response's own docstring -
+    same "Supabase failed AND it could plausibly have mattered" gate,
+    additive rather than replacing the real content."""
     verdict = unified.get("verdict")
     verdict_icon, verdict_label = verdict_style(verdict, lang)
     risk_icon, risk_label = risk_style(unified.get("risk_percentage"), lang)
     risk_percentage = unified.get("risk_percentage")
     percentage = f"{risk_percentage}%" if risk_percentage is not None else "N/A"
     scan_type = scan_type_label(has_text, has_link, has_file)
+    degraded_line = [f"⚠️ {t(lang, 'evidence_degraded_notice')}", ""] if evidence_degraded else []
 
     if unified.get("ai_unavailable"):
         return "\n".join([
@@ -327,6 +344,7 @@ def _format_unified_business_text(
             "",
             f"⚠️ {t(lang, 'ai_unavailable_notice')}",
             "",
+            *degraded_line,
             SECTION_DIVIDER,
             t(lang, "verdict_disclaimer"),
         ])
@@ -351,6 +369,7 @@ def _format_unified_business_text(
         f"☉ *{t(lang, 'what_to_do_header')}*",
         "\n".join(rec_lines),
         "",
+        *degraded_line,
         SECTION_DIVIDER,
         t(lang, "verdict_disclaimer"),
     ]
@@ -488,6 +507,7 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         has_link=bool(link_verdicts),
         has_file=document is not None,
         has_text=not _message_is_only_links(text, link_verdicts),
+        evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
     )
 
     # Real, confirmed bug: this had no error handling at all - a

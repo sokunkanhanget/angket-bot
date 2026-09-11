@@ -71,6 +71,32 @@ def test_format_unified_response_type_line_is_text_only_by_default():
     assert response.startswith(f"✅ <b>{t('en', 'verdict_label')}")
 
 
+def test_format_unified_response_shows_evidence_degraded_notice():
+    # 2026-09-11 spec: a Supabase/vector-search outage that could
+    # plausibly have mattered (see pipeline.py's analyze_url) appends a
+    # small fixed notice - additive, unlike ai_unavailable which replaces
+    # the whole reasons/recommendations section.
+    unified = {
+        "verdict": "Uncertain", "risk_percentage": 40,
+        "key_reasons": [{"text": "Some lexical concern", "source": None}],
+        "recommendations": ["Be cautious"],
+    }
+    response = format_unified_response(
+        unified, {"suspicious": False, "matches": []}, evidence_degraded=True,
+    )
+
+    assert t("en", "evidence_degraded_notice") in response
+    # Still additive - the real reasons/recommendations are still there.
+    assert "Some lexical concern" in response
+
+
+def test_format_unified_response_omits_evidence_degraded_notice_by_default():
+    unified = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
+    response = format_unified_response(unified, {"suspicious": False, "matches": []})
+
+    assert t("en", "evidence_degraded_notice") not in response
+
+
 def test_format_analysis_response_uses_medium_and_low_thresholds():
     medium = format_analysis_response(
         _result(31, verdict="Uncertain"), {"suspicious": False, "matches": []}

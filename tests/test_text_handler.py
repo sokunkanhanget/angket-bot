@@ -279,6 +279,34 @@ async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link(
 
 
 @pytest.mark.asyncio
+async def test_handle_text_stops_animation_and_replies_on_unexpected_error():
+    # Regression: analyze_unified (or format_unified_response/
+    # record_link_or_message_scan) raising used to propagate straight out
+    # of handle_text with the animation task never stopped - it would
+    # keep editing the status message every 1.5s forever with no way to
+    # reach it again, and the user would never get any reply at all. See
+    # status_animation.py's own docstring for the underlying asyncio
+    # gotcha this whole helper exists to avoid.
+    update = _private_update("free bitcoin now, click nowhere")
+    context = _private_context()
+
+    status_message = AsyncMock()
+    update.message.reply_text = AsyncMock(return_value=status_message)
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(
+        "bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])
+    ), patch(
+        "bot.handlers.text_handler.analyze_unified", AsyncMock(side_effect=RuntimeError("boom")),
+    ), patch(
+        "bot.handlers.text_handler.stop_status_animation", AsyncMock()
+    ) as mock_stop:
+        await handle_text(update, context)
+
+    mock_stop.assert_awaited_once()
+    status_message.edit_text.assert_awaited_once_with(t("en", "scan_failed"))
+
+
+@pytest.mark.asyncio
 async def test_usage_menu_button_shows_real_recorded_counts():
     # "usage" replaced "live_scan" as a main-menu item - unlike every
     # other menu item, its reply is dynamic (real numbers from

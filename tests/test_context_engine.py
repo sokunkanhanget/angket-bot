@@ -127,6 +127,28 @@ async def test_grounded_fallback_returns_real_verdict_appropriate_recommendation
 
 
 @pytest.mark.asyncio
+async def test_grounded_fallback_recommendations_are_not_the_shared_constant(fake_vector_store):
+    # Regression (found by /code-review): _grounded_fallback used to
+    # return _FALLBACK_RECOMMENDATIONS[verdict] BY REFERENCE - the same
+    # list object every call. Nothing mutates it today, but the first
+    # future caller that does (e.g. appending a translated hint) would
+    # permanently corrupt that verdict's recommendations for every
+    # subsequent fallback reply for the life of the process. Two separate
+    # calls for the same verdict must return independent list objects.
+    keyword_result = {"suspicious": False, "matches": []}
+    first = await _grounded_fallback("x", "hey, lunch tomorrow?", keyword_result, [])
+    second = await _grounded_fallback("x", "hey, lunch tomorrow?", keyword_result, [])
+
+    assert first["verdict"] == "Not a Scam"
+    assert second["verdict"] == "Not a Scam"
+    assert first["recommendations"] == second["recommendations"]
+    assert first["recommendations"] is not second["recommendations"]
+
+    first["recommendations"].append("mutated by caller")
+    assert "mutated by caller" not in second["recommendations"]
+
+
+@pytest.mark.asyncio
 async def test_grounded_fallback_flags_malicious_file(fake_vector_store):
     file_verdict = {"found": True, "malicious": 5, "suspicious": 0, "total": 70}
     result = await _grounded_fallback("x", "", {"suspicious": False, "matches": []}, [], file_verdict)

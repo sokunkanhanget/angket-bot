@@ -58,6 +58,9 @@ TEXT = {
         "⚠️ Could not finish scanning this file right now (the download or "
         "the virus-check service failed). Please try again in a moment."
     ),
+    "scan_failed": (
+        "⚠️ Could not finish checking this right now. Please try again in a moment."
+    ),
     "daily_file_limit_reached": (
         "🚫 You've reached today's free file-scan limit ({limit} files/day). "
         "It resets tomorrow, or upgrade for a higher daily limit."

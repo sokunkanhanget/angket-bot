@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from html import escape
 
 from telegram import ReplyKeyboardMarkup, Update
@@ -16,6 +17,8 @@ from bot.storage import subscription
 from bot.detectors.url.pipeline import check_message_full
 from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
+
+logger = logging.getLogger(__name__)
 
 BTN_MENU = "MENU"
 
@@ -339,16 +342,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if document is not None:
             file_verdict = results[1] if not isinstance(results[1], Exception) else None
 
-        unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
-        reply_text = format_unified_response(
-            unified, keyword_result, lang,
-            has_link=bool(link_verdicts),
-            has_file=document is not None,
-            has_text=not _message_is_only_links(text, link_verdicts),
-            evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
-        )
-        if user_id is not None:
-            subscription.record_link_or_message_scan(user_id)
+        # try/finally so the animation task can never outlive this handler -
+        # without it, an exception here (e.g. a "database is locked" SQLite
+        # conflict from record_link_or_message_scan) would leave
+        # animation_task running forever, editing the status message every
+        # 1.5s for the rest of the process with no way to reach it again,
+        # and the user would never get a real reply. Same defense-in-depth
+        # pattern file_handler.py's handle_file already uses around its own
+        # risky awaits.
+        try:
+            unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
+            reply_text = format_unified_response(
+                unified, keyword_result, lang,
+                has_link=bool(link_verdicts),
+                has_file=document is not None,
+                has_text=not _message_is_only_links(text, link_verdicts),
+                evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
+            )
+            if user_id is not None:
+                subscription.record_link_or_message_scan(user_id)
+        except Exception:                          # noqa: BLE001 - must still stop the animation and reply
+            logger.exception("Unified analysis failed for a private-DM message")
+            await stop_status_animation(animation_task)
+            await status.edit_text(t(lang, "scan_failed"))
+            return
 
         await stop_status_animation(animation_task)
 

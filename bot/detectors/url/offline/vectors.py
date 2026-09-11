@@ -452,7 +452,37 @@ async def seed() -> None:
         await _mark_seeded(conn, fingerprint)
 
 
-_seed_lock = asyncio.Lock()
+_seed_lock: asyncio.Lock | None = None
+_seed_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_seed_lock() -> asyncio.Lock:
+    """A fresh asyncio.Lock per event loop instead of one shared
+    module-level instance. asyncio.Lock only actually binds itself to a
+    loop the first time it is CONTENDED (see CPython's
+    _LoopBoundMixin/Lock.acquire fast path) - so a single shared lock
+    works by accident right up until two callers genuinely race for it,
+    at which point it permanently binds to whichever loop won that race.
+    A later contender from a DIFFERENT loop then crashes with "Lock is
+    bound to a different event loop." Harmless in production (one
+    long-lived event loop for the whole process) but a real landmine for
+    tests - pytest-asyncio gives each test its own fresh loop by
+    default, and any test after the first one that genuinely contends
+    this lock would fail non-deterministically depending on collection
+    order, with an error that looks unrelated to the real cause.
+    Confirmed via a standalone repro, not hypothetical.
+
+    Safe to call from two "concurrent" callers on the same loop without
+    creating two different locks: this function has no internal await,
+    so asyncio's cooperative scheduling runs it to completion (through
+    Lock.acquire()'s own uncontended fast path, itself sync/non-yielding)
+    before any other coroutine on this loop gets a turn."""
+    global _seed_lock, _seed_lock_loop
+    loop = asyncio.get_running_loop()
+    if _seed_lock is None or _seed_lock_loop is not loop:
+        _seed_lock = asyncio.Lock()
+        _seed_lock_loop = loop
+    return _seed_lock
 
 
 async def ensure_seeded(bot_data: dict) -> None:
@@ -476,7 +506,7 @@ async def ensure_seeded(bot_data: dict) -> None:
     simply finds the work already done instead of redoing it."""
     if bot_data.get("_vectors_seeded"):
         return
-    async with _seed_lock:
+    async with _get_seed_lock():
         if bot_data.get("_vectors_seeded"):
             return  # another concurrent caller already finished while we waited
         start = time.perf_counter()

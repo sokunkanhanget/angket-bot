@@ -241,7 +241,19 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         animation_task = asyncio.create_task(animate_status(status, DEFAULT_LANG))
 
     hidden_links = extract_text_link_entities(message)
-    verdicts = await check_message_full(text, hidden_links)
+    # try/except so animation_task can never outlive this handler - an
+    # unhandled exception here used to leave it running forever, editing
+    # the status message every 1.5s with no way to reach it again. Same
+    # defense-in-depth pattern file_handler.py's handle_file already uses.
+    try:
+        verdicts = await check_message_full(text, hidden_links)
+    except Exception:                          # noqa: BLE001 - must still stop the animation and reply
+        logger.exception("check_message_full failed for a link-check message")
+        if animation_task is not None:
+            await stop_status_animation(animation_task)
+        if status is not None:
+            await status.edit_text(t(DEFAULT_LANG, "scan_failed"))
+        return
 
     if animation_task is not None:
         await stop_status_animation(animation_task)

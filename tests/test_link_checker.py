@@ -1782,11 +1782,7 @@ def test_web_urls_allows_bare_domains():
 # --- format_verdict_full ----------------------------------------------
 
 def test_format_verdict_full_has_a_divider_directly_above_the_disclaimer():
-    # Direct teammate feedback: a divider belongs directly ABOVE the
-    # disclaimer specifically (not the earlier, since-removed stray
-    # divider that sat somewhere else - see SECTION_DIVIDER's own
-    # docstring in bot/response/verdict_style.py for that history). Zero prior
-    # direct coverage of this rendering function existed before this.
+    # The disclaimer is separated from the verdict by a blank row.
     v = {
         "host": "free-prize-winner.tk", "score": 85, "level": "dangerous",
         "reasons": ["Domain ends in .tk, a free TLD heavily used for scams."],
@@ -1794,8 +1790,8 @@ def test_format_verdict_full_has_a_divider_directly_above_the_disclaimer():
     }
     reply = pipeline.format_verdict_full(v)
 
-    assert reply.count(pipeline.SECTION_DIVIDER) == 1
-    assert f"{pipeline.SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in reply
+    assert "─" not in reply
+    assert "\n\nⓘ Angket Bot may occasionally make mistakes." in reply
     assert reply.rstrip().endswith("Double-check important information before taking action.")
     assert "⚠️ *VERDICT: LIKELY A SCAM*" in reply
     assert "🗁 *TYPE: link*" in reply

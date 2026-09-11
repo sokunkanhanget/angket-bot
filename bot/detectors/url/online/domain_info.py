@@ -37,7 +37,6 @@ RDAP_TIMEOUT = 8.0
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
-# --- DNS --------------------------------------------------------------
 
 def _resolve_sync(host: str) -> list[str] | None:
     try:
@@ -54,7 +53,6 @@ async def resolve_host(host: str) -> list[str] | None:
     return await asyncio.to_thread(_resolve_sync, host)
 
 
-# --- RDAP domain age ---------------------------------------------------
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(SCAN_LOG_DB)
@@ -166,7 +164,6 @@ async def domain_age_days(host: str) -> int | None:
     return max((datetime.now(timezone.utc) - created_dt).days, 0)
 
 
-# --- Scoring ----------------------------------------------------------
 
 def score_domain_age(age_days: int | None) -> tuple[int, str] | None:
     """Turn an age into (points, reason); None adds nothing."""

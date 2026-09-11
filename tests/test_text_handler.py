@@ -12,7 +12,6 @@ from bot.handlers.text_handler import (
     handle_text,
 )
 from bot.storage import subscription
-from bot.response.verdict_style import SECTION_DIVIDER
 
 
 def _result(risk_percentage, verdict="Scam"):
@@ -37,12 +36,8 @@ def test_format_analysis_response_uses_high_risk_style():
     assert "💡 <b>WHAT YOU SHOULD DO</b>" in response
     assert "• Uses an unrealistic offer &lt;now&gt;" in response
     assert "ⓘ Angket Bot may occasionally make mistakes." in response
-    # Direct teammate feedback: a divider belongs directly ABOVE the
-    # disclaimer specifically (not the earlier, since-removed stray
-    # divider that sat somewhere else in the reply - see SECTION_DIVIDER's
-    # own docstring in bot/response/verdict_style.py for that history).
-    assert response.count(SECTION_DIVIDER) == 1
-    assert f"{SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in response
+    assert "─" not in response
+    assert "\n\nⓘ Angket Bot may occasionally make mistakes." in response
     assert "1. Verdict" not in response
 
 

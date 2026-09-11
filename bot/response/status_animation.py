@@ -1,19 +1,12 @@
 """
 bot/response/status_animation.py
 =====================================
-Shared "what is the bot doing right now" status animation - a TIMED
-FAKE SEQUENCE (direct user choice, 2026-09-10): cycles through stage
-labels (Checking -> Searching -> Constructing -> Formatting ->
-Generating -> back to Checking) on a fixed timer while the real async
-work runs concurrently, rather than being genuinely synced to actual
-internal steps. Generalizes text_handler.py's original dot-only
-"Checking . . ." animation (still the same concurrency shape: launched
-via asyncio.create_task alongside the real work, cancelled once it's
-done) to real stage names, and extends the same visibility to file
-scans and the group-chat link checker, which previously showed either
-no animation or nothing at all - the file-scan case is what surfaced
-this: a slow/stalled file download or VirusTotal call gave zero
-visual feedback beyond one static "Scanning..." message.
+Shared waiting status for scans. The message stays on the existing
+"Checking" label while the real async work runs, rather than cycling
+through guessed internal stages that are not synchronized with the
+actual work. The task is still launched via asyncio.create_task
+alongside the real work and cancelled once it is done, so all scan
+surfaces keep the same concurrency and cleanup behavior.
 
 Confirmed this does NOT slow down the real work it runs alongside:
 this task spends ~100% of its time inside asyncio.sleep (yielding to
@@ -31,15 +24,13 @@ import asyncio
 
 from bot.response.buttons import t
 
-# Order matters - this is the actual cycle shown to the user. Keys must
-# exist in bot/response/translate/*.py's TEXT dicts.
+# Keep this list for the existing handler call sites. Only the checking
+# label is shown while a scan is waiting for its final response; the dots
+# below are the only animation.
 STATUS_STAGE_KEYS = [
     "status_checking",
-    "status_searching",
-    "status_constructing",
-    "status_formatting",
-    "status_generating",
 ]
+CHECKING_DOTS = ("", ".", "..", "...")
 STATUS_STAGE_INTERVAL_SECONDS = 1.5
 
 
@@ -49,20 +40,21 @@ async def animate_status(status_message, lang: str, suffix: str = "") -> None:
     (NOT a bare `task.cancel(); await task`) once that work is done -
     see stop_status_animation's own docstring for why.
 
-    `suffix`: appended after each stage label (e.g. file_handler.py
+    `suffix`: appended after the checking dots (e.g. file_handler.py
     passes " `filename.pdf`..." so which file is in progress stays
-    visible across every frame, not just the first one)."""
-    i = 0
+    visible throughout the animation)."""
+    dot_index = 0
     try:
         while True:
             await asyncio.sleep(STATUS_STAGE_INTERVAL_SECONDS)
-            i = (i + 1) % len(STATUS_STAGE_KEYS)
+            dot_index = (dot_index + 1) % len(CHECKING_DOTS)
             try:
                 await status_message.edit_text(
-                    f"{t(lang, STATUS_STAGE_KEYS[i])}{suffix}", parse_mode="Markdown",
+                    f"{t(lang, STATUS_STAGE_KEYS[0])}{CHECKING_DOTS[dot_index]}{suffix}",
+                    parse_mode="Markdown",
                 )
             except Exception:
-                pass  # transient edit failure (e.g. rate limit) - just skip this frame
+                pass  # transient edit failure (e.g. rate limit) - skip this frame
     except asyncio.CancelledError:
         pass
 

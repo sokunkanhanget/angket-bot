@@ -6,7 +6,11 @@ translated via bot/response/translate/ - covers the lang parameter added when pr
 business-chat verdict content became translatable.
 """
 
-from bot.response.verdict_style import defang_domains, risk_style, verdict_style
+from bot.response.verdict_style import DISCLAIMER_SPACER, defang_domains, risk_style, verdict_style
+
+
+def test_disclaimer_spacer_is_empty():
+    assert DISCLAIMER_SPACER == ""
 
 
 def test_verdict_style_defaults_to_english():

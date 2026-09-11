@@ -30,7 +30,6 @@ from bot.detectors.url.offline.reference_data import (
     URL_SHORTENERS,
 )
 
-# --- Tuning constants --------------------------------------------------
 # Kept here, not in reference_data.py: these are calibration parameters
 # for domain_entropy()'s own algorithm below, not independent facts
 # about the world - they belong next to the logic they tune.
@@ -108,7 +107,6 @@ URL_REGEX = re.compile(
 )
 
 
-# --- Helpers ---------------------------------------------------------
 
 def levenshtein(a: str, b: str) -> int:
     """Edit distance — used to catch typosquats like ababamk.com."""
@@ -239,7 +237,6 @@ def _verdict_labels(score: int):
     return "safe", "🟢", "Looks OK"
 
 
-# --- Checks ----------------------------------------------------------
 
 def _brand_check(host: str, reg: str):
     # A domain that's ITSELF a listed official brand domain can never be

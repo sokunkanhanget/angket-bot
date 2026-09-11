@@ -47,7 +47,6 @@ def log_scan(user_id: int, item_name: str, sha256: str, malicious: int) -> None:
     finally:
         conn.close()
 
-# URL logs table
 def init_url_db() -> None:
     connection = sqlite3.connect(SCAN_LOG_DB)
     try:

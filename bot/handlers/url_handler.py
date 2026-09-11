@@ -66,18 +66,13 @@ from bot.detectors.url.pipeline import (
     check_message_full,
     format_verdict_full,
 )
-from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.storage import subscription
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Shared formatting helpers.
-# ---------------------------------------------------------------------------
 
 def _full_breakdown_text(verdicts: list[dict], include_evidence: bool = True) -> str:
     return "\n\n---\n\n".join(
@@ -117,7 +112,7 @@ def _business_header(sender, sent_at, lang: str = DEFAULT_LANG) -> str:
     above the SAME unified verdict body every other surface renders -
     direct user spec ("use the same format but with added this at the
     top") for Business chat/Live Detect specifically."""
-    return f"{t(lang, 'business_new_activity')}\n\n{_sender_header(sender, sent_at, lang)}\n{SECTION_DIVIDER}\n"
+    return f"{t(lang, 'business_new_activity')}\n\n{_sender_header(sender, sent_at, lang)}\n{DISCLAIMER_SPACER}\n"
 
 
 async def _owner_chat_id(context: ContextTypes.DEFAULT_TYPE, business_connection_id: str) -> int | None:
@@ -274,7 +269,6 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
     # details" button was the only place it ever showed).
     full = _full_breakdown_text(verdicts, include_evidence=False)
 
-    # --- Business chat: stay invisible to the customer, DM the owner. ---
     if is_business:
         owner_chat_id = await _owner_chat_id(context, message.business_connection_id)
         if owner_chat_id is None:
@@ -290,21 +284,12 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
         )
         return
 
-    # --- Private DM / group / supergroup: full breakdown right in place. ---
     await status.edit_text(
         full,
         parse_mode="Markdown",
         disable_web_page_preview=True,  # don't preview a possibly-bad link
     )
 
-
-# ---------------------------------------------------------------------------
-# Business chat automation: ONE unified text+link+file check per message,
-# reasoning over everything together (see bot/context_engine/context_engine.py) instead of
-# separate, uncoordinated per-signal checks. Telegram's Business API lets a
-# user connect Angket to their own business account so every customer
-# message gets checked automatically and privately reported to them.
-# ---------------------------------------------------------------------------
 
 def _format_unified_business_text(
     unified: dict, lang: str = DEFAULT_LANG,
@@ -358,7 +343,7 @@ def _format_unified_business_text(
         "\n".join(rec_lines),
         "",
         *degraded_line,
-        SECTION_DIVIDER,
+        DISCLAIMER_SPACER,
         t(lang, "verdict_disclaimer"),
     ]
     return "\n".join(lines)

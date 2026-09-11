@@ -14,7 +14,6 @@ import pytest
 from bot.handlers.file_handler import handle_file
 from bot.response.buttons import t
 from bot.storage import subscription
-from bot.response.verdict_style import SECTION_DIVIDER
 
 
 def _file_update(lang: str | None = None, file_name: str = "invoice.pdf"):
@@ -51,7 +50,8 @@ async def test_clean_scan_reports_safe_with_the_shared_reply_shape():
     reply = sent.edit_text.call_args.args[0]
     assert "SAFE / LEGITIMATE" in reply
     assert "🗁 *TYPE: file*" in reply
-    assert f"{SECTION_DIVIDER}\nⓘ Angket Bot may occasionally make mistakes." in reply
+    assert "─" not in reply
+    assert "\n\nⓘ Angket Bot may occasionally make mistakes." in reply
 
 
 @pytest.mark.asyncio
@@ -158,7 +158,7 @@ async def test_scan_failure_replies_gracefully_instead_of_crashing():
 
     reply = sent.edit_text.call_args.args[0]
     assert t("en", "file_scan_failed") in reply
-    assert SECTION_DIVIDER in reply  # real bug: this failure path used to skip the disclaimer entirely
+    assert "\n\nⓘ Angket Bot may occasionally make mistakes." in reply
     assert "Angket Bot may occasionally make mistakes" in reply
     mock_log.assert_not_called()  # nothing to log - the scan never completed
 
@@ -174,7 +174,8 @@ async def test_download_failure_also_replies_gracefully():
 
     reply = sent.edit_text.call_args.args[0]
     assert t("km", "file_scan_failed") in reply
-    assert SECTION_DIVIDER in reply
+    assert t("km", "verdict_disclaimer") in reply
+    assert "─" not in reply
     mock_log.assert_not_called()
 
 

@@ -14,7 +14,7 @@ from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_se
 from bot.handlers.url_handler import extract_text_link_entities
 from bot.storage import subscription
 from bot.detectors.url.pipeline import check_message_full
-from bot.response.verdict_style import SECTION_DIVIDER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 
 BTN_MENU = "MENU"
@@ -119,7 +119,7 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(llm_result.get('recommendations', []), '✓', lang)}",
-        f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
+        f"{DISCLAIMER_SPACER}\n{t(lang, 'verdict_disclaimer')}",
     ]
 
     if keyword_result["suspicious"]:
@@ -198,7 +198,7 @@ def format_unified_response(
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{reasons_block}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(unified.get('recommendations', []), '✓', lang)}",
-        f"{SECTION_DIVIDER}\n{t(lang, 'verdict_disclaimer')}",
+        f"{DISCLAIMER_SPACER}\n{t(lang, 'verdict_disclaimer')}",
     ]
 
     if keyword_result["suspicious"]:

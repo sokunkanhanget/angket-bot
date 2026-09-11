@@ -40,25 +40,8 @@ from bot.handlers.url_handler import (
 )
 from bot.storage.scan_log import init_db, init_url_db
 
-# Feature ownership:
-#   bot/detectors/url/ + bot/handlers/url_handler.py — link checking (BB)
-#   bot/detectors/text/ + bot/handlers/text_handler.py,
-#   bot/detectors/file/ + bot/handlers/file_handler.py — teammates' text & file scanning
-#   bot/context_engine/context_engine.py — merges both, for plain private DM and Business
-#     chat automation (see below)
-# Shared infra lives in bot/storage/scan_log.py so both log to one DB.
-
-# Routing policy for handler group 2 (text/LLM scanner), used below AND
-# by tests/test_route.py directly - was its own bot/route.py file (one
-# constant, misleadingly named like it owned all routing when the real
-# dispatch is everything in main() below) - folded in here, its only
-# real consumer, as part of the domain-first reorg. GROUP/supergroup and
-# plain PRIVATE chat only. Business chat is excluded entirely: it's
-# fully owned by handle_business_message (group 3 below), which checks
-# text, links, AND files together in one call and reports privately to
-# the owner - handle_text firing here too would either duplicate that
-# (link-free messages) or reply directly in the business chat where the
-# customer could see it (handle_text has no owner-DM logic at all).
+# Routing policy for the text/LLM scanner. Group/supergroup and plain
+# private chat only; Business chat is handled by handle_business_message.
 TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.UpdateType.BUSINESS_MESSAGE
 
 # Handler groups (PTB runs every group per update, independently; within
@@ -152,9 +135,6 @@ def main():
     logger.info("[startup] Application built in %.3fs", time.perf_counter() - step_start)
 
     async def _log_every_update(update, context):
-        # Temporarily bumped from .debug to .info for live troubleshooting
-        # of a real "business messages aren't arriving" report - revert to
-        # .debug once resolved, this is noisy for every update type.
         logger.info(
             "update: message=%s edited=%s business=%s callback=%s",
             update.message, update.edited_message,

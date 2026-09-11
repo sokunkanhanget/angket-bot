@@ -132,13 +132,13 @@ async def test_missing_admin_chat_id_logs_but_never_raises(monkeypatch):
 
 def test_format_alert_uses_the_short_scannable_template():
     # Direct user/mentor spec (2026-09-11): admin alerts should be a
-    # short, scannable template (SECTION_DIVIDER, same as real user-facing
+    # short, scannable template (blank spacer, same as real user-facing
     # replies, plus one "- " bullet line per field), not a wall of raw
     # error text.
     text = alerts._format_alert("Gemini", 3, "503 UNAVAILABLE - high demand")
 
     assert text.startswith("🚨 Error Detected\nType: Gemini\nDatetime: ")
-    assert f"\n{verdict_style.SECTION_DIVIDER}\n\n" in text
+    assert "\n\n\n" in text
     assert "Error status: \n- 3 failures in the last hour" in text
     assert "Error message: \n- 503 UNAVAILABLE - high demand" in text
     assert "To do: \n-" in text

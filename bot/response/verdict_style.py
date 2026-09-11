@@ -137,7 +137,7 @@ LEVEL_TO_VERDICT = {
 
 
 def scan_type_label(has_text: bool, has_link: bool, has_file: bool) -> str:
-    """The "🗁 TYPE:" line's value - which of text/link/file this
+    """The "📁 TYPE:" line's value - which of text/link/file this
     particular check actually covered. Direct user spec: seven exact
     combinations, not a generic sorted join (a bare link+file with no
     real text reads "file+link", not "link+file", while text always

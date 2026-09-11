@@ -369,7 +369,14 @@ async def _grounded_fallback(
     link_verdicts: list[dict],
     file_verdict: dict | None = None,
 ) -> dict:
-    """No API key / call failed -> degrade to real local evidence instead
+    """Also imported directly by bot/detectors/text/online/llm.py (the
+    separate group-chat text-only Gemini call) - the leading underscore
+    is this module's own "internal to its reasoning pipeline" convention,
+    not real Python privacy; that reuse is deliberate (see llm.py's
+    _fallback docstring) rather than duplicating this logic a second
+    time. Keep both call shapes in mind before changing this signature.
+
+    No API key / call failed -> degrade to real local evidence instead
     of a bare error message. Uses the offline scam-message pattern
     similarity (see detectors/text/scam_patterns.py) as an extra local
     signal alongside the keyword prescan, so a degraded-mode check is
@@ -452,7 +459,12 @@ async def _grounded_fallback(
         "verdict": verdict,
         "risk_percentage": risk_percentage,
         "key_reasons": reasons,
-        "recommendations": _FALLBACK_RECOMMENDATIONS[verdict],
+        # list(...) - _FALLBACK_RECOMMENDATIONS[verdict] is a shared
+        # module-level constant; handing back the same list object by
+        # reference would let any future in-place mutation by a caller
+        # (e.g. appending a translated hint) permanently corrupt it for
+        # every subsequent fallback reply for the life of the process.
+        "recommendations": list(_FALLBACK_RECOMMENDATIONS[verdict]),
         # Internal/log-only now - see this function's own docstring for
         # why the formatters no longer special-case display on this.
         "ai_unavailable": True,

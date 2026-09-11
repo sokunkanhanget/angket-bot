@@ -365,6 +365,40 @@ async def test_ensure_seeded_serializes_concurrent_callers(monkeypatch):
     assert bot_data["_vectors_seeded"] is True
 
 
+def test_ensure_seeded_lock_works_across_separate_event_loops(monkeypatch):
+    # Regression (found by /code-review): _seed_lock used to be a single
+    # asyncio.Lock() created once at import time. asyncio.Lock only
+    # actually binds itself to an event loop the first time it's
+    # genuinely CONTENDED - harmless in production (one long-lived event
+    # loop for the whole process) but a real landmine here: pytest-asyncio
+    # gives every test its own fresh event loop by default, and the test
+    # above this one already contends this exact lock. Without a per-loop
+    # rebind, a later contention from a DIFFERENT loop crashes with
+    # "Lock is bound to a different event loop" - a failure that looks
+    # completely unrelated to its real cause. Reproduces the two-separate
+    # -loops scenario directly rather than relying on test collection
+    # order to happen to trigger it.
+    called = {"n": 0}
+
+    async def _slow_seed():
+        called["n"] += 1
+        await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(vectors, "seed", _slow_seed)
+
+    async def _contend():
+        bot_data = {}
+        await asyncio.gather(*(vectors.ensure_seeded(bot_data) for _ in range(5)))
+        return bot_data
+
+    first = asyncio.run(_contend())   # binds the lock to loop #1
+    second = asyncio.run(_contend())  # must not crash against loop #1's binding
+
+    assert first["_vectors_seeded"] is True
+    assert second["_vectors_seeded"] is True
+    assert called["n"] == 2
+
+
 # --- MinHash LSH ---------------------------------------------------------
 
 def test_minhash_detects_near_duplicate_pages():
@@ -1794,6 +1828,6 @@ def test_format_verdict_full_has_a_divider_directly_above_the_disclaimer():
     assert "\n\nⓘ Angket Bot may occasionally make mistakes." in reply
     assert reply.rstrip().endswith("Double-check important information before taking action.")
     assert "⚠️ *VERDICT: LIKELY A SCAM*" in reply
-    assert "🗁 *TYPE: link*" in reply
+    assert "📁 *TYPE: link*" in reply
 
 

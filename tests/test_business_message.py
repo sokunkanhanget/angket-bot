@@ -130,7 +130,7 @@ async def test_notifies_owner_for_suspicious_text():
     kwargs = context.bot.send_message.call_args.kwargs
     assert kwargs["chat_id"] == 555
     assert "LIKELY A SCAM" in kwargs["text"]
-    assert "🗁 *TYPE: text*" in kwargs["text"]
+    assert "📁 *TYPE: text*" in kwargs["text"]
     assert "Urgent money request" in kwargs["text"]
     assert "─" not in kwargs["text"]
     assert kwargs["text"].rstrip().endswith("Double-check important information before taking action.")
@@ -252,9 +252,9 @@ async def test_attached_file_is_scanned_and_always_notifies():
     assert passed_file_verdict["malicious"] == 0
     sent_text = context.bot.send_message.call_args.kwargs["text"]
     # New spec: no filename/extension header any more (dropped project-wide
-    # in favor of the "🗁 TYPE:" line) - a file being part of the check is
+    # in favor of the "📁 TYPE:" line) - a file being part of the check is
     # now signalled there instead.
-    assert "🗁 *TYPE: file*" in sent_text
+    assert "📁 *TYPE: file*" in sent_text
 
 
 @pytest.mark.asyncio
@@ -264,7 +264,7 @@ async def test_a_filename_with_underscores_does_not_break_the_notification():
     # italics delimiter, and an odd number of underscores in a real
     # filename ("Week4_DOM_Lab_Exercises.docx") broke entity parsing
     # entirely. The filename is no longer rendered into this reply at
-    # all (superseded by the "🗁 TYPE:" line - see the previous test), so
+    # all (superseded by the "📁 TYPE:" line - see the previous test), so
     # that specific vector is gone; this just confirms an unusual
     # filename still can't break the notification some other way (e.g.
     # via scan_file/log_url_scan choking on it).

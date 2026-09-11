@@ -55,8 +55,10 @@ TEXT = {
     "help": "❓ <b>Help</b>\n\nNeed assistance? Just send your question and we'll do our best to help.",
     "subscription": "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
     "file_scan_failed": (
-        "⚠️ Could not finish scanning this file right now (the download or "
-        "the virus-check service failed). Please try again in a moment."
+        "⚠️ Could not finish scanning this file right now. Please try again in a moment."
+    ),
+    "scan_failed": (
+        "⚠️ Could not finish checking this right now. Please try again in a moment."
     ),
     "daily_file_limit_reached": (
         "🚫 You've reached today's free file-scan limit ({limit} files/day). "

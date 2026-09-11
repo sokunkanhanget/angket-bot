@@ -153,6 +153,35 @@ def _subscription_reset_conn(isolated_scan_log_db):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_admin_alerts(monkeypatch):
+    """CONFIRMED REAL BUG, not a hypothetical (2026-09-11): several tests
+    (test_link_checker.py's Supabase-outage tests, e.g.
+    test_analyze_url_marks_evidence_degraded_when_supabase_down_and_result_uncertain)
+    monkeypatch a LOW-level call (vectors.nearest) to raise, then exercise
+    the REAL pipeline.analyze_url() above it to verify the resulting
+    verdict - they never touch health_alerts at all directly. But
+    _safe_nearest()'s except block calls the REAL health_alerts.
+    record_failure()/maybe_alert() on that same real exception, and
+    maybe_alert() was never mocked in those tests - only test_health_alerts.py's
+    OWN tests were careful to fake ADMIN_CHAT_ID/httpx. The result: running
+    those 3 tests together (any full-suite or single-file run) sent REAL
+    "Supabase pool exhausted" Telegram messages to the REAL admin group
+    using the REAL bot token from .env, repeatedly, all session - the
+    exact alerts that derailed a live debugging session before the actual
+    cause (this) was found.
+
+    ADMIN_CHAT_ID=None makes maybe_alert()'s own early-return fire
+    unconditionally, so no test can ever reach the real httpx call by
+    accident, no matter how indirectly it's triggered. Tests that
+    deliberately exercise the real alert-sending path (test_health_alerts.py)
+    already monkeypatch their own ADMIN_CHAT_ID locally, which overrides
+    this default for their own scope - this fixture only closes the gap
+    for every OTHER test that doesn't expect to touch alerting at all."""
+    from bot.storage import health_alerts
+    monkeypatch.setattr(health_alerts, "ADMIN_CHAT_ID", None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_subscription_usage(_subscription_reset_conn):
     """Per-test (unlike the session-scoped fixture above): many existing
     handler tests reuse the same hardcoded fake user id (e.g.

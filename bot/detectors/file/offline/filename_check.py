@@ -34,7 +34,7 @@ DOCUMENT_LIKE_EXTENSIONS = {
 }
 
 
-def check_filename(file_name: str) -> tuple[int, str] | None:
+def _double_extension_disguise(name: str) -> tuple[int, str] | None:
     """Flags the classic double-extension disguise ("invoice.pdf.exe",
     "Document.pdf.z"): a document-looking extension followed by a
     second, real extension that determines how the file actually
@@ -42,7 +42,6 @@ def check_filename(file_name: str) -> tuple[int, str] | None:
     document/media type - two unrelated extensions on a file that isn't
     trying to look safe (e.g. "archive.tar.gz") isn't this pattern.
     """
-    name = (file_name or "").lower()
     parts = name.rsplit(".", 2)
     if len(parts) < 3:
         return None
@@ -58,3 +57,36 @@ def check_filename(file_name: str) -> tuple[int, str] | None:
                     f"archive — this bot cannot see inside archives, so the real "
                     f"content is unverified.")
     return None
+
+
+def _lone_executable_extension(name: str) -> tuple[int, str] | None:
+    """A bare executable/script extension with no document-like disguise
+    at all ('setup.exe', 'invoice.apk') - a weaker signal than the
+    double-extension trick above (nothing here pretends to be something
+    else), but still real and worth flagging on its own: an unsolicited
+    executable/installer/script is one of this bot's core scam vectors
+    (fake banking apps, fake "invoice viewer" installers) even when
+    VirusTotal has nothing to say about this exact file yet. Scored
+    below the disguise case (35 < 50, so "suspicious" not "dangerous")
+    since a bare installer someone genuinely meant to share also looks
+    like this - the double-extension trick is the one pattern that's
+    inherently deceptive.
+    """
+    parts = name.rsplit(".", 1)
+    if len(parts) < 2:
+        return None
+    ext = parts[1]
+    if ext in EXECUTABLE_EXTENSIONS:
+        return (35, f"This is a '.{ext}' executable/script file — a common "
+                    f"malware vector, especially when unsolicited.")
+    return None
+
+
+def check_filename(file_name: str) -> tuple[int, str] | None:
+    """Pure filename-pattern check: the double-extension disguise trick
+    first (most specific / highest severity), falling back to a bare
+    risky extension with no disguise at all. Returns the first (score,
+    warning) that fires, or None when nothing about the name looks off.
+    """
+    name = (file_name or "").lower()
+    return _double_extension_disguise(name) or _lone_executable_extension(name)

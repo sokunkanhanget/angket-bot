@@ -76,10 +76,15 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
         reasons.append(f"No security engine out of {total} on VirusTotal flags this file.")
         return "safe", 0, reasons
 
+    # Either VirusTotal has genuinely never seen this hash before, or it
+    # couldn't be reached at all right now - either way, there's no real
+    # AV signal, only whatever the file's NAME suggests. Direct user spec
+    # (2026-09-11): don't tell the user a specific backend service is
+    # down/unreachable - just state the real limitation (no antivirus
+    # engine data backing this particular result) without naming why.
     if not result.get("checked"):
         reasons.append(
-            "VirusTotal could not be reached right now, so this result is based on the "
-            "file name only, not a real antivirus scan."
+            "This result is based on the file name only, not a full antivirus scan."
         )
     else:
         reasons.append("This file's signature has never been seen by VirusTotal before — no track record either way.")
@@ -88,7 +93,15 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
         reasons.append(filename_warning)
         return ("dangerous" if filename_score >= 50 else "suspicious"), filename_score, reasons
 
-    return "uncertain", None, reasons
+    # No VT signal AND nothing about the name looks off - the filename
+    # check DID run and found nothing, so this isn't "we have no idea"
+    # (the old "uncertain"/None here), it's "nothing we checked flagged
+    # it", the same honest "safe" this function already returns when VT
+    # itself confirms a clean file. Direct user spec: a single unavailable
+    # service (VT) shouldn't be enough to blank out a real verdict when
+    # the offline check already ran.
+    reasons.append("No filename red flags were found either.")
+    return "safe", 0, reasons
 
 
 def _with_disclaimer(message: str, lang: str = DEFAULT_LANG) -> str:
@@ -105,7 +118,7 @@ def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: 
 
     lines = [
         f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
-        f"🗁 *{t(lang, 'type_label')}: {scan_type_label(has_text=False, has_link=False, has_file=True)}*",
+        f"📁 *{t(lang, 'type_label')}: {scan_type_label(has_text=False, has_link=False, has_file=True)}*",
         summary_sentence(verdict, pct, lang),
         "",
         f"{risk_icon} *{risk_label.upper()}*" if pct is None else f"{risk_icon} *{pct}%  {risk_label.upper()}*",

@@ -31,7 +31,7 @@ def test_format_analysis_response_uses_high_risk_style():
     assert "⚠️ <b>VERDICT: LIKELY A SCAM</b>" in response
     assert "This message shows strong signs of being unsafe." in response
     assert "🔴 <b>85%  HIGH RISK</b>" in response
-    assert "🗁 <b>TYPE: text</b>" in response
+    assert "📁 <b>TYPE: text</b>" in response
     assert "🔍 <b>KEY REASONS</b>" in response
     assert "💡 <b>WHAT YOU SHOULD DO</b>" in response
     assert "• Uses an unrealistic offer &lt;now&gt;" in response
@@ -42,7 +42,7 @@ def test_format_analysis_response_uses_high_risk_style():
 
 
 def test_format_unified_response_type_line_reflects_what_was_actually_checked():
-    # Direct user spec: the "🗁 TYPE:" line replaces the old dedicated
+    # Direct user spec: the "📁 TYPE:" line replaces the old dedicated
     # file-name/type header - text/link/file combinations render as one
     # of exactly seven values (see verdict_style.scan_type_label).
     unified = {
@@ -55,14 +55,14 @@ def test_format_unified_response_type_line_reflects_what_was_actually_checked():
     )
 
     assert response.startswith(f"⚠️ <b>{t('en', 'verdict_label')}: {t('en', 'verdict_scam')}</b>\n")
-    assert "🗁 <b>TYPE: all</b>" in response
+    assert "📁 <b>TYPE: all</b>" in response
 
 
 def test_format_unified_response_type_line_is_text_only_by_default():
     unified = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
     response = format_unified_response(unified, {"suspicious": False, "matches": []})
 
-    assert "🗁 <b>TYPE: text</b>" in response
+    assert "📁 <b>TYPE: text</b>" in response
     assert response.startswith(f"✅ <b>{t('en', 'verdict_label')}")
 
 
@@ -271,6 +271,34 @@ async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link(
     reply = status_message.edit_text.call_args[0][0]
     assert "VERDICT: LIKELY A SCAM" in reply
     assert "Promises free money" in reply
+
+
+@pytest.mark.asyncio
+async def test_handle_text_stops_animation_and_replies_on_unexpected_error():
+    # Regression: analyze_unified (or format_unified_response/
+    # record_link_or_message_scan) raising used to propagate straight out
+    # of handle_text with the animation task never stopped - it would
+    # keep editing the status message every 1.5s forever with no way to
+    # reach it again, and the user would never get any reply at all. See
+    # status_animation.py's own docstring for the underlying asyncio
+    # gotcha this whole helper exists to avoid.
+    update = _private_update("free bitcoin now, click nowhere")
+    context = _private_context()
+
+    status_message = AsyncMock()
+    update.message.reply_text = AsyncMock(return_value=status_message)
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(
+        "bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])
+    ), patch(
+        "bot.handlers.text_handler.analyze_unified", AsyncMock(side_effect=RuntimeError("boom")),
+    ), patch(
+        "bot.handlers.text_handler.stop_status_animation", AsyncMock()
+    ) as mock_stop:
+        await handle_text(update, context)
+
+    mock_stop.assert_awaited_once()
+    status_message.edit_text.assert_awaited_once_with(t("en", "scan_failed"))
 
 
 @pytest.mark.asyncio

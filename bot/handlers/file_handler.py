@@ -106,7 +106,7 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
 
 def _with_disclaimer(message: str, lang: str = DEFAULT_LANG) -> str:
     """Append the standard disclaimer to a file-scan failure message."""
-    return f"{message}\n\n{DISCLAIMER_SPACER}\n{t(lang, 'verdict_disclaimer')}"
+    return f"{message}\n\n{DISCLAIMER_SPACER}{t(lang, 'verdict_disclaimer')}"
 
 
 def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: str = DEFAULT_LANG) -> str:
@@ -132,7 +132,6 @@ def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: 
     ]
     lines += [f"✓ {defang_domains(r, style='markdown')}" for r in recs]
     lines += [
-        "",
         DISCLAIMER_SPACER,
         t(lang, "verdict_disclaimer"),
     ]

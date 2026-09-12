@@ -362,7 +362,6 @@ def _format_unified_business_text(
         "\n".join(rec_lines),
         "",
         *degraded_line,
-        DISCLAIMER_SPACER,
         t(lang, "verdict_disclaimer"),
     ]
     return "\n".join(lines)

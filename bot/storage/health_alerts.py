@@ -76,7 +76,7 @@ def _format_alert(service: str, count: int, detail: str) -> str:
         f"🚨 Error Detected\n"
         f"Type: {service}\n"
         f"Datetime: {when}\n"
-        f"\n{DISCLAIMER_SPACER}\n\n"
+        f"{DISCLAIMER_SPACER}\n"
         f"Error status: \n"
         f"- {count} failures in the last hour (bot is still degrading "
         f"gracefully via offline fallback)\n"

@@ -122,7 +122,7 @@ def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{_format_list(llm_result.get('key_reasons', []), '•', lang)}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(llm_result.get('recommendations', []), '✓', lang)}",
-        f"{DISCLAIMER_SPACER}\n{t(lang, 'verdict_disclaimer')}",
+        f"{DISCLAIMER_SPACER}{t(lang, 'verdict_disclaimer')}",
     ]
 
     if keyword_result["suspicious"]:
@@ -201,7 +201,7 @@ def format_unified_response(
         f"🔍 <b>{t(lang, 'key_reasons_header')}</b>\n{reasons_block}",
         f"💡 <b>{t(lang, 'what_to_do_header')}</b>\n"
         f"{_format_list(unified.get('recommendations', []), '✓', lang)}",
-        f"{DISCLAIMER_SPACER}\n{t(lang, 'verdict_disclaimer')}",
+        f"{DISCLAIMER_SPACER}{t(lang, 'verdict_disclaimer')}",
     ]
 
     if keyword_result["suspicious"]:

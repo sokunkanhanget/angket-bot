@@ -876,7 +876,6 @@ def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
     if v.get("evidence_degraded"):
         lines += ["", f"⚠️ {t(DEFAULT_LANG, 'evidence_degraded_notice')}"]
     lines += [
-        "",
         DISCLAIMER_SPACER,
         t(DEFAULT_LANG, "verdict_disclaimer"),
     ]

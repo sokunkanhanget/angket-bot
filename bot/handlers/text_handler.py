@@ -37,6 +37,14 @@ _MAIN_MENU_KEYS = [
 # branch in handle_text below.
 _MENU_RESPONSE_KEYS = {"how_to_use", "policy", "help", "subscription"}
 
+COMMAND_KEYS = {
+    "language": "switch_language",
+    "howto": "how_to_use",
+    "usage": "usage",
+    "policy": "policy",
+    "subscription": "subscription",
+}
+
 TRIGGER_MENU_KEYBOARD = ReplyKeyboardMarkup(
     [[BTN_MENU]],
     resize_keyboard=True,
@@ -381,6 +389,50 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await message.reply_text(
         format_analysis_response(llm_result, keyword_result),
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard,
+    )
+
+
+async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message is None or not message.text:
+        return
+
+    command_name = message.text.split(maxsplit=1)[0].lstrip("/").split("@", 1)[0].lower()
+    canonical_key = COMMAND_KEYS.get(command_name)
+    if canonical_key is None:
+        return
+
+    lang = get_user_lang(context)
+    main_menu_keyboard = MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD)
+
+    if canonical_key == "switch_language":
+        await message.reply_text(
+            t(lang, "switch_language"),
+            parse_mode="HTML",
+            reply_markup=get_language_keyboard(lang),
+        )
+        return
+
+    if canonical_key == "usage":
+        user_id = update.effective_user.id if update.effective_user else None
+        if user_id is None:
+            return
+        summary = subscription.usage_summary(user_id)
+        await message.reply_text(
+            t(lang, "usage").format(
+                files_used=summary["files_used"], files_limit=summary["files_limit"],
+                links_used=summary["links_messages_used"], links_limit=summary["links_messages_limit"],
+                tokens_used=summary["tokens_used"], tokens_limit=summary["tokens_limit"],
+            ),
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard,
+        )
+        return
+
+    await message.reply_text(
+        t(lang, canonical_key),
         parse_mode="HTML",
         reply_markup=main_menu_keyboard,
     )

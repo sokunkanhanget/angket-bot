@@ -9,6 +9,7 @@ from bot.handlers.text_handler import (
     format_unified_response,
     get_language_keyboard,
     get_user_lang,
+    handle_command,
     handle_text,
 )
 from bot.storage import subscription
@@ -239,6 +240,27 @@ def _private_context():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/language", "Switch Language"),
+        ("/howto", "How to Use Angket Bot"),
+        ("/usage", "Daily Usage"),
+        ("/policy", "Angket Bot Policy"),
+        ("/subscription", "View Premium Plans"),
+    ],
+)
+async def test_handle_command_dispatches_help_commands(command, expected):
+    update = _private_update(command)
+    context = _private_context()
+
+    await handle_command(update, context)
+
+    response = update.message.reply_text.call_args[0][0]
+    assert expected in response
+
+
+@pytest.mark.asyncio
 async def test_handle_text_uses_unified_reasoning_in_plain_private_chat_no_link():
     # Plain private chat, no link: context-engineering path still fires
     # (unconditionally, per bot/context_engine/context_engine.py), just with zero link
@@ -321,7 +343,7 @@ async def test_usage_menu_button_shows_real_recorded_counts():
     reply = update.message.reply_text.call_args[0][0]
     assert f"1/{subscription.FREEMIUM_DAILY_FILES}" in reply
     assert f"2/{subscription.FREEMIUM_DAILY_LINKS_MESSAGES}" in reply
-    assert f"0/{subscription.FREEMIUM_DAILY_TOKENS}" in reply
+    assert f"0/{subscription.FREEMIUM_DAILY_TOKENS:,} tokens" in reply
 
 
 @pytest.mark.asyncio

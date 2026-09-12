@@ -31,11 +31,13 @@ TEXT = {
         "🔴 <b>High Risk:</b> Strong signs of a potential threat. Avoid interacting with it."
     ),
     "usage": (
-        "📈 <b>Usage</b>\n\n"
-        "📄 Files scanned today: {files_used}/{files_limit}\n"
-        "🔗 Links/messages scanned today: {links_used}/{links_limit}\n"
-        "🤖 AI tokens used today: {tokens_used}/{tokens_limit}\n\n"
-        "Resets daily. Upgrade for higher limits."
+        "📈 <b>Daily Usage</b>\n\n"
+        "📄 Files scanned: <b>{files_used}/{files_limit}</b>\n"
+        "🔗 Links & messages scanned: <b>{links_used}/{links_limit}</b>\n"
+        "🤖 AI usage: <b>{tokens_used}/{tokens_limit:,} tokens</b>\n\n"
+        "🔄 <b>Want more scans?</b>\n"
+        "Upgrade to Premium for higher limits.\n"
+        "👉 <b>[ Upgrade to Premium ]</b>"
     ),
     "policy": (
         "📋 <b>Angket Bot Policy</b>\n\n"
@@ -52,25 +54,50 @@ TEXT = {
         "⚠️ <b>Important</b>\n"
         "Angket is a security-assistance tool. It does not guarantee that every threat or scam will be detected."
     ),
-    "help": "❓ <b>Help</b>\n\nNeed assistance? Just send your question and we'll do our best to help.",
-    "subscription": "⭐ <b>Subscription</b>\n\nSubscription plans are coming soon.",
+    "help": (
+        "❓ <b>Help</b>\n\n"
+        "Here are the available commands:\n\n"
+        "🌐 <b>/language</b> — Switch between English and Khmer.\n"
+        "📖 <b>/howtouse</b> — Learn how to use Angket to check suspicious content.\n"
+        "📈 <b>/usage</b> — Check your daily scan.\n"
+        "🔒 <b>/policy</b> — View Angket’s Privacy Policy and Terms of Use.\n"
+        "⭐️ <b>/subscription</b> — View Premium plans and upgrade for higher limits."
+    ),
+    "subscription": (
+        "⭐️ <b>Subscription</b>\n\n"
+        "Want to get more out of Angket? Upgrade to Premium for higher daily scan limits and more access to our security features.\n\n"
+        "Choose a plan that fits your needs and continue checking suspicious links, messages, and files with fewer limitations.\n\n"
+        "👉 <b>[ View Premium Plans ]</b>"
+    ),
     "file_scan_failed": (
-        "⚠️ Could not finish scanning this file right now. Please try again in a moment."
+        "⚠️ We couldn't finish scanning this file right now. "
+        "Please try again in a moment."
     ),
+
     "scan_failed": (
-        "⚠️ Could not finish checking this right now. Please try again in a moment."
+        "⚠️ We couldn't finish checking this right now. "
+        "Please try again in a moment."
     ),
+
     "daily_file_limit_reached": (
-        "🚫 You've reached today's free file-scan limit ({limit} files/day). "
-        "It resets tomorrow, or upgrade for a higher daily limit."
+        "🚫 You've reached today's free file-scan limit ({limit} files/day).\n\n"
+        "Your limit will reset tomorrow. Want to scan more files today? "
+        "Check our subscription plans for higher daily limits."
+        "👉 <b>[ View Premium Plans ]</b>"
     ),
+
     "daily_scan_limit_reached": (
-        "🚫 You've reached today's free link/message-scan limit ({limit}/day). "
-        "It resets tomorrow, or upgrade for a higher daily limit."
+        "🚫 You've reached today's free link/message-scan limit ({limit}/day).\n\n"
+        "Your limit will reset tomorrow. Want to keep scanning today? "
+        "Check our subscription plans for higher daily limits."
+        "👉 <b>[ View Premium Plans ]</b>"
     ),
+
     "live_detect_trial_ended": (
-        "⏰ Your 7-day free trial of Live Detect (automatic scanning in your "
-        "business chats) has ended. Upgrade to keep it active."
+        "⏰ Your 7-day free trial of Live Detect has ended.\n\n"
+        "Live Detect automatically scans messages in your business chats. "
+        "Subscribe to keep Live Detect active and continue protecting your chats."
+        "👉 <b>[ View Premium Plans ]</b>"
     ),
     "checking_status": "🔍 Checking",
     # Multi-stage status animation (bot/response/status_animation.py) -

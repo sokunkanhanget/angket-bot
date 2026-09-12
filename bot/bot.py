@@ -20,7 +20,7 @@ _import_start = time.perf_counter()
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
     BusinessConnectionHandler,
@@ -32,7 +32,7 @@ from telegram.ext import (
 
 from bot.config.config import GEMINI_API_KEY, SUPABASE_DB_URL, TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
 from bot.handlers.file_handler import handle_file
-from bot.handlers.text_handler import handle_text, start
+from bot.handlers.text_handler import COMMAND_KEYS, handle_command, handle_text, start
 from bot.handlers.url_handler import (
     handle_business_message,
     handle_url,
@@ -119,6 +119,18 @@ def validate_config() -> bool:
     return True
 
 
+async def set_bot_commands(application: Application) -> None:
+    await application.bot.set_my_commands(
+        [BotCommand(command, description) for command, description in (
+            ("language", "Switch between English and Khmer"),
+            ("howto", "Learn how to use Angket"),
+            ("usage", "Check your daily scan"),
+            ("policy", "View Angket's policy"),
+            ("subscription", "View Premium plans"),
+        )]
+    )
+
+
 
 def main():
     main_start = time.perf_counter()
@@ -131,7 +143,7 @@ def main():
     logger.info("[startup] local SQLite tables ready in %.3fs", time.perf_counter() - step_start)
 
     step_start = time.perf_counter()
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(set_bot_commands).build()
     logger.info("[startup] Application built in %.3fs", time.perf_counter() - step_start)
 
     async def _log_every_update(update, context):
@@ -151,6 +163,8 @@ def main():
     # ticket (?start=<ticket> from a link-checker showcase), it shows
     # the saved full breakdown instead — see text_handler.start.
     app.add_handler(CommandHandler("start", start))
+    for command in COMMAND_KEYS:
+        app.add_handler(CommandHandler(command, handle_command))
 
     # Business documents are handled by group 3's handle_business_message
     # instead - this used to also match Business messages and crash

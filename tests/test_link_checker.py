@@ -1794,6 +1794,63 @@ def test_vt_skipped_for_official_brands(seeded_vectors, monkeypatch):
     assert v["level"] == "safe"
 
 
+def test_analyze_url_verdict_carries_trusted_brand_flag(seeded_vectors, monkeypatch):
+    async def clean_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=True).result
+
+    async def fine_resolve(host):
+        return ["1.2.3.4"]
+
+    async def old_age(host):
+        return 5000
+
+    monkeypatch.setattr(pipeline.network, "trace", clean_trace)
+    monkeypatch.setattr(pipeline, "resolve_host", fine_resolve)
+    monkeypatch.setattr(pipeline, "domain_age_days", old_age)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)  # no real network call
+
+    official = asyncio.run(pipeline.analyze_url("https://www.google.com/search?q=test"))
+    assert official["trusted_brand"] is True
+
+    not_official = asyncio.run(pipeline.analyze_url("https://totally-unrelated-site.example"))
+    assert not_official["trusted_brand"] is False
+
+
+# --- bare_trusted_link (quota-skip shape pre-check) -------------------------
+# Cheap, no-network filter: only a message that's NOTHING but one link to
+# an exact PROTECTED_BRANDS domain qualifies - see its own docstring for why
+# handler-level quota gates use this before paying for the real check.
+
+def test_bare_trusted_link_accepts_a_lone_protected_brand_url():
+    assert pipeline.bare_trusted_link("https://facebook.com") == "https://facebook.com"
+
+
+def test_bare_trusted_link_accepts_surrounding_whitespace():
+    assert pipeline.bare_trusted_link("  https://www.facebook.com  ") == "https://www.facebook.com"
+
+
+def test_bare_trusted_link_rejects_extra_text():
+    assert pipeline.bare_trusted_link("check this out https://facebook.com") is None
+
+
+def test_bare_trusted_link_rejects_untrusted_domain():
+    assert pipeline.bare_trusted_link("https://totally-not-facebook.tk") is None
+
+
+def test_bare_trusted_link_rejects_hidden_link_entities():
+    assert pipeline.bare_trusted_link(
+        "https://facebook.com", hidden_links=[("click here", "https://evil.example")]
+    ) is None
+
+
+def test_bare_trusted_link_rejects_multiple_urls():
+    assert pipeline.bare_trusted_link("https://facebook.com https://x.com") is None
+
+
+def test_bare_trusted_link_rejects_no_link_at_all():
+    assert pipeline.bare_trusted_link("just some ordinary text") is None
+
+
 # --- input validation ------------------------------------------------------
 
 def test_web_urls_rejects_non_http_schemes():

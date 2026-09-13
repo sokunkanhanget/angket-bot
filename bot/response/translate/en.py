@@ -58,7 +58,7 @@ TEXT = {
         "❓ <b>Help</b>\n\n"
         "Here are the available commands:\n\n"
         "🌐 <b>/language</b> — Switch between English and Khmer.\n"
-        "📖 <b>/howtouse</b> — Learn how to use Angket to check suspicious content.\n"
+        "📖 <b>/howto</b> — Learn how to use Angket to check suspicious content.\n"
         "📈 <b>/usage</b> — Check your daily scan.\n"
         "🔒 <b>/policy</b> — View Angket’s Privacy Policy and Terms of Use.\n"
         "⭐️ <b>/subscription</b> — View Premium plans and upgrade for higher limits."
@@ -82,24 +82,29 @@ TEXT = {
     "daily_file_limit_reached": (
         "🚫 You've reached today's free file-scan limit ({limit} files/day).\n\n"
         "Your limit will reset tomorrow. Want to scan more files today? "
-        "Check our subscription plans for higher daily limits."
+        "Check our subscription plans for higher daily limits.\n\n"
         "👉 <b>[ View Premium Plans ]</b>"
     ),
 
     "daily_scan_limit_reached": (
         "🚫 You've reached today's free link/message-scan limit ({limit}/day).\n\n"
         "Your limit will reset tomorrow. Want to keep scanning today? "
-        "Check our subscription plans for higher daily limits."
+        "Check our subscription plans for higher daily limits.\n\n"
         "👉 <b>[ View Premium Plans ]</b>"
     ),
 
     "live_detect_trial_ended": (
         "⏰ Your 7-day free trial of Live Detect has ended.\n\n"
         "Live Detect automatically scans messages in your business chats. "
-        "Subscribe to keep Live Detect active and continue protecting your chats."
+        "Subscribe to keep Live Detect active and continue protecting your chats.\n\n"
         "👉 <b>[ View Premium Plans ]</b>"
     ),
     "checking_status": "🔍 Checking",
+    "check_usage_hint": "Usage: reply to a message with /check, or /check <url or text>.",
+    "check_nothing_to_check": (
+        "Nothing to check there - reply to a message with text or a link, "
+        "or use /check <url or text>."
+    ),
     # Multi-stage status animation (bot/response/status_animation.py) -
     # a timed fake sequence, not synced to real internal steps. Used by
     # text/link/file scans; group chat only ever shows these (never

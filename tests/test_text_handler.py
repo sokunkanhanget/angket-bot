@@ -3,12 +3,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from bot.response.buttons import key_for_label, label, t
+from bot.response.translate import DEFAULT_LANG
 from bot.handlers.text_handler import (
     MAIN_MENU_KEYBOARD,
     format_analysis_response,
     format_unified_response,
     get_language_keyboard,
     get_user_lang,
+    handle_check,
     handle_command,
     handle_text,
 )
@@ -233,6 +235,24 @@ def _private_update(text):
     return update
 
 
+def _group_check_update(reply_to_text=None, args=None, reply_to_document=None, has_reply=False):
+    update = AsyncMock()
+    message = update.effective_message
+    message.reply_text = AsyncMock()
+    if has_reply or reply_to_text is not None or reply_to_document is not None:
+        message.reply_to_message.text = reply_to_text
+        message.reply_to_message.caption = None
+        message.reply_to_message.document = reply_to_document
+    else:
+        message.reply_to_message = None
+    update.effective_chat.type = "supergroup"
+    update.effective_user.id = 42
+    context = AsyncMock()
+    context.args = args or []
+    context.bot_data = {"_vectors_seeded": True}
+    return update, context
+
+
 def _private_context():
     context = AsyncMock()
     context.bot_data = {"_vectors_seeded": True}  # skip real vector seeding
@@ -353,7 +373,13 @@ async def test_daily_scan_limit_blocks_before_any_real_work():
     for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
         subscription.record_link_or_message_scan(update.effective_user.id)
 
-    with patch("bot.handlers.text_handler.analyze_unified") as mock_unified, \
+    # extract_text_link_entities now runs BEFORE the quota gate too
+    # (unavoidable - the gate needs it for the bare_trusted_link shape
+    # check, see handle_text's own comment); it's a pure local entity
+    # parse, not real work. What must still never happen is the real
+    # (billable) pipeline/Gemini call.
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.analyze_unified") as mock_unified, \
          patch("bot.handlers.text_handler.check_message_full") as mock_check:
         await handle_text(update, context)
 
@@ -467,3 +493,162 @@ async def test_handle_text_analyzes_regular_messages():
     _, kwargs = update.message.reply_text.await_args
     assert kwargs["reply_markup"] == MAIN_MENU_KEYBOARD
     assert kwargs["reply_markup"].keyboard[0][0].text == "🌐 Switch Language"
+
+
+@pytest.mark.asyncio
+async def test_handle_check_shows_usage_hint_with_no_reply_and_no_args():
+    update, context = _group_check_update()
+
+    await handle_check(update, context)
+
+    update.effective_message.reply_text.assert_awaited_once_with(t(DEFAULT_LANG, "check_usage_hint"))
+
+
+@pytest.mark.asyncio
+async def test_handle_check_shows_nothing_to_check_when_reply_has_no_text_or_document():
+    update, context = _group_check_update(has_reply=True)
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]):
+        await handle_check(update, context)
+
+    update.effective_message.reply_text.assert_awaited_once_with(t(DEFAULT_LANG, "check_nothing_to_check"))
+
+
+@pytest.mark.asyncio
+async def test_handle_check_blocked_by_daily_quota():
+    update, context = _group_check_update(args=["http://example.com"])
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(42)
+
+    with patch("bot.handlers.text_handler.ensure_vectors_seeded", AsyncMock()) as mock_seed, \
+         patch("bot.handlers.text_handler.check_message_full", AsyncMock()) as mock_check:
+        await handle_check(update, context)
+
+    mock_seed.assert_not_awaited()
+    mock_check.assert_not_awaited()
+    update.effective_message.reply_text.assert_awaited_once_with(
+        t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_check_checks_quota_before_seeding_vectors():
+    # Same fix already applied to handle_url (test_handle_url_checks_
+    # quota_before_seeding_vectors) - a real Supabase call shouldn't
+    # happen for an already-over-quota sender.
+    update, context = _group_check_update(args=["free prize claim now"])
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(42)
+
+    with patch("bot.handlers.text_handler.ensure_vectors_seeded", AsyncMock()) as mock_seed:
+        await handle_check(update, context)
+
+    mock_seed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_check_full_flow_via_reply():
+    update, context = _group_check_update(reply_to_text="free bitcoin now, click nowhere")
+    status_message = AsyncMock()
+    update.effective_message.reply_text = AsyncMock(return_value=status_message)
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(
+        "bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])
+    ), patch(
+        "bot.handlers.text_handler.analyze_unified",
+        AsyncMock(return_value={
+            "verdict": "Scam",
+            "risk_percentage": 90,
+            "key_reasons": [{"text": "Promises free money", "source": "message_text"}],
+            "recommendations": ["Ignore it"],
+        }),
+    ) as mock_unified:
+        await handle_check(update, context)
+
+    mock_unified.assert_awaited_once()
+    status_message.edit_text.assert_awaited_once()
+    reply = status_message.edit_text.call_args[0][0]
+    assert "VERDICT: LIKELY A SCAM" in reply
+    assert "Promises free money" in reply
+
+
+@pytest.mark.asyncio
+async def test_handle_check_standalone_with_args():
+    update, context = _group_check_update(args=["http://bit.ly/scam-test"])
+    status_message = AsyncMock()
+    update.effective_message.reply_text = AsyncMock(return_value=status_message)
+
+    with patch("bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])) as mock_check, patch(
+        "bot.handlers.text_handler.analyze_unified",
+        AsyncMock(return_value={
+            "verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": [],
+        }),
+    ):
+        await handle_check(update, context)
+
+    mock_check.assert_awaited_once_with("http://bit.ly/scam-test", [])
+    status_message.edit_text.assert_awaited_once()
+
+
+def _trusted_verdict(**over):
+    v = {"host": "facebook.com", "score": 0, "level": "safe", "reasons": [],
+         "detail": [], "trusted_brand": True}
+    v.update(over)
+    return v
+
+
+_NOT_A_SCAM = {"verdict": "Not a Scam", "risk_percentage": 0, "key_reasons": [], "recommendations": []}
+
+
+@pytest.mark.asyncio
+async def test_handle_check_bare_trusted_link_skips_quota_even_when_over_limit():
+    update, context = _group_check_update(args=["https://facebook.com"])
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(42)
+    used_before = subscription.usage_summary(42)["links_messages_used"]
+    status_message = AsyncMock()
+    update.effective_message.reply_text = AsyncMock(return_value=status_message)
+
+    with patch("bot.handlers.text_handler.check_message_full",
+               AsyncMock(return_value=[_trusted_verdict()])), \
+         patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value=_NOT_A_SCAM)):
+        await handle_check(update, context)
+
+    # Never blocked - status message got a real edit, not the quota-limit reply.
+    status_message.edit_text.assert_awaited_once()
+    assert subscription.usage_summary(42)["links_messages_used"] == used_before
+
+
+@pytest.mark.asyncio
+async def test_handle_check_shape_match_but_unsafe_verdict_still_charges_quota():
+    update, context = _group_check_update(args=["https://facebook.com"])
+    status_message = AsyncMock()
+    update.effective_message.reply_text = AsyncMock(return_value=status_message)
+
+    with patch("bot.handlers.text_handler.check_message_full",
+               AsyncMock(return_value=[_trusted_verdict(level="suspicious", score=20)])), \
+         patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value=_NOT_A_SCAM)):
+        await handle_check(update, context)
+
+    assert subscription.usage_summary(42)["links_messages_used"] == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_text_private_bare_trusted_link_skips_quota_even_when_over_limit():
+    update = _private_update("https://facebook.com")
+    context = _private_context()
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(42)
+    used_before = subscription.usage_summary(42)["links_messages_used"]
+    status_message = AsyncMock()
+    update.message.reply_text = AsyncMock(return_value=status_message)
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.ensure_vectors_seeded", AsyncMock()), \
+         patch("bot.handlers.text_handler.check_message_full",
+               AsyncMock(return_value=[_trusted_verdict()])), \
+         patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value=_NOT_A_SCAM)):
+        await handle_text(update, context)
+
+    status_message.edit_text.assert_awaited_once()
+    assert subscription.usage_summary(42)["links_messages_used"] == used_before

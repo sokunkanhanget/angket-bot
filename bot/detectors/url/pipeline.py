@@ -58,6 +58,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import time
 from urllib.parse import urlsplit
@@ -293,6 +294,36 @@ def _web_urls(text: str) -> list[str]:
                         MAX_URLS_PER_MESSAGE)
             break
     return kept
+
+
+def bare_trusted_link(text: str, hidden_links: list[tuple[str, str]] | None = None) -> str | None:
+    """Cheap, no-network shape check: True (the URL itself) only when the
+    message is NOTHING but one link to an exact PROTECTED_BRANDS domain -
+    no other text, no hidden TEXT_LINK entity. Lets a caller skip the
+    quota gate BEFORE paying for the real check below, instead of after -
+    safe to do because this only ever narrows things down to one of the
+    small, hand-verified PROTECTED_BRANDS domains, not arbitrary input.
+
+    This is a SHAPE filter only, not the safety decision itself - the
+    caller must still run check_message_full() and confirm the returned
+    verdict is actually trusted_brand + level=='safe' (a redirect or
+    anchor-mismatch signal can still turn a trusted-domain link
+    suspicious) before treating the message as free/skippable. Fails
+    closed: any hidden link or leftover text returns None.
+    """
+    if hidden_links:
+        return None
+    urls = _web_urls(text)
+    if len(urls) != 1:
+        return None
+    url = urls[0]
+    leftover = re.sub(r"[^\w]", "", text.replace(url, " "), flags=re.UNICODE)
+    if leftover.strip():
+        return None
+    host = urlsplit(url if "://" in url else f"http://{url}").hostname
+    if not host or registered_domain(host) not in PROTECTED_BRANDS:
+        return None
+    return url
 
 
 async def analyze_url(
@@ -608,6 +639,11 @@ async def analyze_url(
         "reasons": reasons,
         "detail": detail,
         "evidence_degraded": evidence_degraded,
+        # Surfaced so callers (analyze_unified's fast-path short-circuit,
+        # handler-level quota gates) can tell an exact PROTECTED_BRANDS
+        # match apart from an ordinary link that merely scored "safe" -
+        # only the former is confidently free to skip Gemini/quota for.
+        "trusted_brand": is_official_brand,
     }
 
 

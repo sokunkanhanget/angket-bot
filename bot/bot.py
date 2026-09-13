@@ -20,7 +20,7 @@ _import_start = time.perf_counter()
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from telegram import BotCommand, Update
+from telegram import BotCommand, BotCommandScopeAllGroupChats, Update
 from telegram.ext import (
     Application,
     BusinessConnectionHandler,
@@ -32,7 +32,7 @@ from telegram.ext import (
 
 from bot.config.config import GEMINI_API_KEY, SUPABASE_DB_URL, TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
 from bot.handlers.file_handler import handle_file
-from bot.handlers.text_handler import COMMAND_KEYS, handle_command, handle_text, start
+from bot.handlers.text_handler import COMMAND_KEYS, handle_check, handle_command, handle_text, start
 from bot.handlers.url_handler import (
     handle_business_message,
     handle_url,
@@ -42,7 +42,7 @@ from bot.storage.scan_log import init_db, init_url_db
 
 # Routing policy for the text/LLM scanner. Group/supergroup and plain
 # private chat only; Business chat is handled by handle_business_message.
-TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.UpdateType.BUSINESS_MESSAGE
+TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.UpdateType.BUSINESS_MESSAGE & ~filters.ChatType.CHANNEL
 
 # Handler groups (PTB runs every group per update, independently; within
 # a group, only the FIRST matching handler runs, so anything meant to
@@ -129,6 +129,22 @@ async def set_bot_commands(application: Application) -> None:
             ("subscription", "View Premium plans"),
         )]
     )
+    # Default scope above covers private chats too, so /check (group-only,
+    # bot.py's CommandHandler filters=filters.ChatType.GROUPS) is left out
+    # of it on purpose - a private-chat user tapping Menu should never see
+    # a command that does nothing there. Group-scope list adds it back for
+    # group/supergroup members, where it's actually usable.
+    await application.bot.set_my_commands(
+        [BotCommand(command, description) for command, description in (
+            ("language", "Switch between English and Khmer"),
+            ("check", "Check a replied-to message, link, or file"),
+            ("howto", "Learn how to use Angket"),
+            ("usage", "Check your daily scan"),
+            ("policy", "View Angket's policy"),
+            ("subscription", "View Premium plans"),
+        )],
+        scope=BotCommandScopeAllGroupChats(),
+    )
 
 
 
@@ -162,15 +178,35 @@ def main():
     # /start: teammate's welcome menu. When the deep link carries a
     # ticket (?start=<ticket> from a link-checker showcase), it shows
     # the saved full breakdown instead — see text_handler.start.
-    app.add_handler(CommandHandler("start", start))
+    # ~ChatType.CHANNEL on both: start() and handle_command() both call
+    # get_user_lang(), which crashes on context.user_data being None -
+    # PTB returns None (not {}) whenever the update has no
+    # effective_user, which a channel post never has. Channels are
+    # explicitly out of scope for this bot (not yet designed for at
+    # all, per the group/channel research) - excluded here rather than
+    # made to silently "work", matching that decision.
+    app.add_handler(CommandHandler("start", start, filters=~filters.ChatType.CHANNEL))
     for command in COMMAND_KEYS:
-        app.add_handler(CommandHandler(command, handle_command))
+        app.add_handler(CommandHandler(command, handle_command, filters=~filters.ChatType.CHANNEL))
+
+    # /check: on-demand group/supergroup scan, researched and scoped
+    # 2026-09-11 (memory: project_group_channel_plan.md), live-tested as
+    # a sandbox concept before this port. GROUPS only (not private -
+    # private already scans everything unconditionally; not channel -
+    # same effective_user/None crash class as start/handle_command
+    # above, and channels are still explicitly out of scope).
+    app.add_handler(CommandHandler("check", handle_check, filters=filters.ChatType.GROUPS))
 
     # Business documents are handled by group 3's handle_business_message
     # instead - this used to also match Business messages and crash
     # (update.message is None there; the real message is
-    # update.business_message).
-    app.add_handler(MessageHandler(filters.Document.ALL & ~filters.UpdateType.BUSINESS_MESSAGE, handle_file))
+    # update.business_message). ~ChatType.CHANNEL for the same reason -
+    # handle_file() reads update.message.document unconditionally, and
+    # update.message is also None for a channel post (the real object
+    # is update.channel_post).
+    app.add_handler(MessageHandler(
+        filters.Document.ALL & ~filters.UpdateType.BUSINESS_MESSAGE & ~filters.ChatType.CHANNEL, handle_file,
+    ))
 
     # Keeps the business-connection -> owner-chat-id cache warm (see
     # handlers/url_handler.on_business_connection for why this matters).

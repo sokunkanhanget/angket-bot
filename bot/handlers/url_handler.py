@@ -63,6 +63,7 @@ from bot.config.config import DISPLAY_TIMEZONE_OFFSET_HOURS
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
 from bot.detectors.url.pipeline import (
+    bare_trusted_link,
     check_message_full,
     format_verdict_full,
 )
@@ -207,6 +208,15 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Network tracing can take a few seconds — show progress first
     # (normal chats only; business flow stays invisible).
     is_business = bool(message.business_connection_id)
+    hidden_links = extract_text_link_entities(message)
+
+    # Cheap, no-network shape check (bare_trusted_link) - only a message
+    # that's NOTHING but one link to a verified PROTECTED_BRANDS domain
+    # qualifies, so this can never be used to bypass quota on arbitrary
+    # content. Confirmed once check_message_full's real verdict comes
+    # back below (see trusted_and_safe) before the quota charge is
+    # actually skipped - see text_handler.py's matching comment.
+    trusted_shape = not is_business and bare_trusted_link(text, hidden_links) is not None
 
     # Business-chat scans are gated by the Live Detect trial, not the
     # sender's daily quota - the sender there is a CUSTOMER messaging
@@ -220,7 +230,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # second, the one real inconsistency in an otherwise-consistent
     # "quota gate is the first real work a handler does" pattern.
     sender = update.effective_user
-    if not is_business and sender is not None and not subscription.can_scan_link_or_message(sender.id):
+    if not is_business and not trusted_shape and sender is not None and not subscription.can_scan_link_or_message(sender.id):
         # Inlined rather than importing text_handler.get_user_lang - that
         # module already imports FROM this one (extract_text_link_entities),
         # so the reverse import would be circular.
@@ -242,7 +252,6 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         status = await message.reply_text(t(DEFAULT_LANG, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
         animation_task = asyncio.create_task(animate_status(status, DEFAULT_LANG))
 
-    hidden_links = extract_text_link_entities(message)
     # try/except so animation_task can never outlive this handler - an
     # unhandled exception here used to leave it running forever, editing
     # the status message every 1.5s with no way to reach it again. Same
@@ -265,7 +274,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             await status.delete()
         return  # this handler only speaks up when there's actually a link
 
-    if not is_business and sender is not None:
+    trusted_and_safe = (
+        trusted_shape and len(verdicts) == 1
+        and verdicts[0].get("trusted_brand") and verdicts[0].get("level") == "safe"
+    )
+    if not is_business and sender is not None and not trusted_and_safe:
         subscription.record_link_or_message_scan(sender.id)
 
     await _reply_with_verdicts(update, context, message, verdicts, status, is_business)

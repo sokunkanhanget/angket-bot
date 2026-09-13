@@ -278,6 +278,56 @@ def _unverifiable_dead_link(
     }
 
 
+def _trusted_bare_link_verdict(
+    text: str,
+    link_verdicts: list[dict],
+    file_verdict: dict | None,
+    keyword_result: dict,
+    pattern_match: tuple[float, str] | None,
+) -> dict | None:
+    """Return a fixed 'Not a Scam' verdict for a bare link to an exact
+    PROTECTED_BRANDS domain (pipeline.py's is_official_brand gate), or
+    None to let the normal Gemini path run. Same fail-safe shape as
+    _unverifiable_dead_link above: every condition that isn't clearly
+    met returns None, so this can only ever replace the "obviously
+    nothing here" case, never suppress a real signal - notably it still
+    requires the link's OWN verdict to have come back 'safe' after the
+    real network/redirect trace (pipeline.py keeps that trace even for
+    trusted domains specifically so an open-redirect or subdomain
+    takeover still gets caught and pushes the level off 'safe').
+
+    Exists so a bare trusted link costs neither quota nor a live Gemini
+    call - the handler-level quota gate has its own matching shape check
+    (pipeline.py's bare_trusted_link) so it never even reaches this
+    point for a message that would end up paying anyway.
+    """
+    if file_verdict is not None:
+        return None
+    if keyword_result.get("suspicious"):
+        return None
+    if pattern_match is not None:
+        return None
+    if len(link_verdicts) != 1:
+        return None
+    v = link_verdicts[0]
+    if not v.get("trusted_brand") or v.get("level") != "safe":
+        return None
+    if not _message_is_only_links(text, link_verdicts):
+        return None
+
+    logger.info("deterministic trusted-brand short-circuit for %s", v.get("host"))
+    return {
+        "verdict": "Not a Scam",
+        "risk_percentage": v.get("score", 0),
+        "key_reasons": [{
+            "text": f"{v.get('host')} is a verified official domain, and following the link's "
+                    f"own redirects/network trace found nothing suspicious.",
+            "source": "link_evidence",
+        }],
+        "recommendations": list(_FALLBACK_RECOMMENDATIONS["Not a Scam"]),
+    }
+
+
 def _has_confirmed_evidence(link_verdicts: list[dict], file_verdict: dict | None) -> bool:
     """True only for evidence an independent third party actually
     verified - a real VirusTotal detection on the link or the file.
@@ -638,6 +688,15 @@ async def analyze_unified(
     dead_link = _unverifiable_dead_link(text, link_verdicts, file_verdict, pattern_match)
     if dead_link is not None:
         return dead_link
+
+    # Same idea, opposite end of the confidence spectrum: a bare link to
+    # a verified official domain that already came back 'safe' after the
+    # real redirect trace needs no LLM opinion either. Costs no tokens
+    # and (via the handler-level quota gate's matching shape check)
+    # costs the sender no quota.
+    trusted = _trusted_bare_link_verdict(text, link_verdicts, file_verdict, keyword_result, pattern_match)
+    if trusted is not None:
+        return trusted
 
     if not _client:
         return await _grounded_fallback(

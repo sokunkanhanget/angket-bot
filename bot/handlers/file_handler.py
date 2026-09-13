@@ -4,7 +4,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from bot.detectors.file.scanner import download_and_hash, scan_file
+from bot.detectors.file.scanner import cached_result, download_and_hash, scan_file
 from bot.storage.scan_log import log_scan
 from bot.storage import subscription
 from bot.handlers.text_handler import get_user_lang
@@ -144,12 +144,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
     lang = get_user_lang(context)
 
-    if not subscription.can_scan_file(user_id):
-        await update.message.reply_text(
-            t(lang, "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES)
-        )
-        return
-
     status_suffix = f" `{file_name}`..."
     message = await update.message.reply_text(
         f"{t(lang, STATUS_STAGE_KEYS[0])}{status_suffix}", parse_mode="Markdown",
@@ -164,6 +158,21 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))
         return
 
+    # Quota gate moved AFTER hashing (every other quota gate in this
+    # project fires first, but this one genuinely can't - whether the
+    # scan is even chargeable depends on the hash itself). A hash
+    # already in file_vt_cache (7-day TTL, see virustotal.py) costs no
+    # live VT call either way, so a repeat upload of an already-known
+    # file is never blocked or charged - only a genuinely new hash pays
+    # quota.
+    already_cached = cached_result(sha256) is not None
+    if not already_cached and not subscription.can_scan_file(user_id):
+        await stop_status_animation(animation_task)
+        await message.edit_text(
+            t(lang, "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES)
+        )
+        return
+
     try:
         result = await scan_file(sha256, file_name)
     except Exception:                          # noqa: BLE001
@@ -174,7 +183,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     await stop_status_animation(animation_task)
 
-    subscription.record_file_scan(user_id)
+    if not already_cached:
+        subscription.record_file_scan(user_id)
 
     level, risk_percentage, reasons = _classify_file_result(result)
     reply = _format_file_verdict(level, risk_percentage, reasons, lang)

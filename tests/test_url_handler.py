@@ -84,3 +84,56 @@ async def test_handle_url_checks_quota_before_seeding_vectors():
     update.effective_message.reply_text.assert_awaited_once_with(
         t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
     )
+
+
+def _trusted_verdict(**over):
+    v = {"host": "facebook.com", "score": 0, "level": "safe", "reasons": [],
+         "detail": [], "trusted_brand": True}
+    v.update(over)
+    return v
+
+
+@pytest.mark.asyncio
+async def test_handle_url_bare_trusted_link_skips_quota_even_when_over_limit():
+    # A message that's nothing but a link to an exact PROTECTED_BRANDS
+    # domain, confirmed 'safe' after the real check, must never be
+    # blocked by - or charge - the sender's daily quota, even when
+    # they're already at their limit.
+    update = _group_update("https://facebook.com")
+    update.effective_message.reply_text = AsyncMock()
+    context = _context()
+
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(42)
+    used_before = subscription.usage_summary(42)["links_messages_used"]
+
+    with patch("bot.handlers.url_handler.ensure_vectors_seeded", AsyncMock()), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[_trusted_verdict()])), \
+         patch("bot.handlers.url_handler.log_url_scan"):
+        await handle_url(update, context)
+
+    # Never blocked - the daily-limit reply never went out.
+    for call in update.effective_message.reply_text.await_args_list:
+        assert "daily_scan_limit_reached" not in str(call)
+    assert subscription.usage_summary(42)["links_messages_used"] == used_before
+
+
+@pytest.mark.asyncio
+async def test_handle_url_shape_match_but_unsafe_verdict_still_charges_quota():
+    # bare_trusted_link only pre-filters by SHAPE (a lone protected-brand
+    # URL) - if the real check comes back anything other than
+    # trusted_brand + 'safe' (e.g. a redirect made it suspicious), this
+    # must fall back to the normal, quota-charging behavior.
+    update = _group_update("https://facebook.com")
+    update.effective_message.reply_text = AsyncMock()
+    context = _context()
+
+    with patch("bot.handlers.url_handler.ensure_vectors_seeded", AsyncMock()), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full",
+               AsyncMock(return_value=[_trusted_verdict(level="suspicious", score=20)])), \
+         patch("bot.handlers.url_handler.log_url_scan"):
+        await handle_url(update, context)
+
+    assert subscription.usage_summary(42)["links_messages_used"] == 1

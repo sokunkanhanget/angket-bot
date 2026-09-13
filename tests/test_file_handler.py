@@ -217,15 +217,57 @@ async def test_daily_file_limit_blocks_scanning_once_reached():
     for _ in range(subscription.FREEMIUM_DAILY_FILES):
         subscription.record_file_scan(uid)
 
-    with patch("bot.handlers.file_handler.download_and_hash") as mock_download, \
+    # download_and_hash now runs BEFORE the quota gate (unavoidable - the
+    # gate itself needs the hash, to check file_vt_cache for a free
+    # repeat-upload skip - see handle_file's own comment). What still
+    # must never happen for an over-quota, never-before-seen hash is the
+    # real (billable) scan_file/VT call.
+    with patch("bot.handlers.file_handler.download_and_hash",
+               AsyncMock(return_value="a" * 64)) as mock_download, \
+         patch("bot.handlers.file_handler.cached_result", return_value=None), \
          patch("bot.handlers.file_handler.scan_file") as mock_scan:
         await handle_file(update, context)
 
-    mock_download.assert_not_called()  # never even started - blocked before any real work
+    mock_download.assert_awaited_once()
     mock_scan.assert_not_called()
-    update.message.reply_text.assert_awaited_once_with(
+    # The block reply now edits the already-sent "Checking..." status
+    # message (message.edit_text) rather than a fresh reply_text - the
+    # status message goes out before the hash is even known, since the
+    # gate itself needs that hash. See handle_file's own comment.
+    sent.edit_text.assert_awaited_once_with(
         t("en", "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES)
     )
+
+
+@pytest.mark.asyncio
+async def test_cached_hash_skips_quota_even_when_over_limit():
+    # A file whose hash is already in file_vt_cache (a repeat upload of
+    # an already-known file) must never be blocked or charged, even when
+    # the sender is already at their daily limit - no live VT call is
+    # needed either way.
+    update, context, sent = _file_update()
+    uid = update.effective_user.id
+    for _ in range(subscription.FREEMIUM_DAILY_FILES):
+        subscription.record_file_scan(uid)
+    used_before = subscription.usage_summary(uid)["files_used"]
+
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="a" * 64)), \
+         patch("bot.handlers.file_handler.cached_result", return_value={
+             "checked": True, "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
+             "undetected": 5, "total": 75,
+             "top_engines": {"Microsoft": "Clean", "Kaspersky": "Clean", "BitDefender": "Clean"},
+         }), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
+             "checked": True, "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
+             "undetected": 5, "total": 75,
+             "top_engines": {"Microsoft": "Clean", "Kaspersky": "Clean", "BitDefender": "Clean"},
+             "filename_warning": None, "filename_risk_score": 0,
+         })), \
+         patch("bot.handlers.file_handler.log_scan"):
+        await handle_file(update, context)
+
+    assert "SAFE / LEGITIMATE" in sent.edit_text.call_args.args[0]
+    assert subscription.usage_summary(uid)["files_used"] == used_before
 
 
 @pytest.mark.asyncio

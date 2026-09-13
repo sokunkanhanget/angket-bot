@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import vt
 
-from bot.detectors.file.online.virustotal import scan_vt_hash
+from bot.detectors.file.online.virustotal import cached_result, scan_vt_hash
 
 
 def _fake_client(file_obj=None, raise_error: Exception | None = None):
@@ -95,3 +95,63 @@ async def test_raw_connection_failure_is_checked_false_not_an_uncaught_crash():
     assert result["checked"] is False
     assert result["found"] is False
     assert "network unreachable" in result["error"]
+
+
+# --- file_vt_cache (7-day TTL, mirrors threat_intel.py's URL VT cache) -----
+
+@pytest.mark.asyncio
+async def test_second_scan_of_same_hash_never_calls_vt_again():
+    file_obj = MagicMock()
+    file_obj.last_analysis_stats = {"malicious": 0, "suspicious": 0, "harmless": 70, "undetected": 5}
+    file_obj.last_analysis_results = {}
+    client_factory = MagicMock(return_value=_fake_client(file_obj=file_obj))
+
+    with patch("bot.detectors.file.online.virustotal.vt.Client", client_factory):
+        first = await scan_vt_hash("e" * 64)
+        second = await scan_vt_hash("e" * 64)
+
+    assert client_factory.call_count == 1  # VT only ever hit once
+    assert first == second
+    assert cached_result("e" * 64) == first
+
+
+@pytest.mark.asyncio
+async def test_confirmed_not_found_is_cached_too():
+    not_found = vt.APIError("NotFoundError", "not found")
+
+    with patch("bot.detectors.file.online.virustotal.vt.Client", return_value=_fake_client(raise_error=not_found)):
+        await scan_vt_hash("f" * 64)
+
+    assert cached_result("f" * 64) == {"checked": True, "found": False}
+
+
+@pytest.mark.asyncio
+async def test_unreachable_vt_is_never_cached():
+    # A non-answer (checked=False) must not poison the cache for 7 days -
+    # the next scan of this hash should retry VT, not repeat the outage.
+    with patch(
+        "bot.detectors.file.online.virustotal.vt.Client",
+        return_value=_fake_client(raise_error=ConnectionError("network unreachable")),
+    ):
+        await scan_vt_hash("g" * 64)
+
+    assert cached_result("g" * 64) is None
+
+
+@pytest.mark.asyncio
+async def test_cached_hash_with_malicious_result_still_returned_without_a_live_call():
+    # Caching applies to ANY real answer regardless of verdict (same
+    # policy threat_intel.py's URL cache uses) - a repeat upload of a
+    # known-malicious file is still free (no VT quota spent either way),
+    # not just a clean one.
+    file_obj = MagicMock()
+    file_obj.last_analysis_stats = {"malicious": 5, "suspicious": 0, "harmless": 60, "undetected": 5}
+    file_obj.last_analysis_results = {"Microsoft": {"category": "malicious", "result": "Trojan"}}
+    client_factory = MagicMock(return_value=_fake_client(file_obj=file_obj))
+
+    with patch("bot.detectors.file.online.virustotal.vt.Client", client_factory):
+        await scan_vt_hash("h" * 64)
+        second = await scan_vt_hash("h" * 64)
+
+    assert client_factory.call_count == 1
+    assert second["malicious"] == 5

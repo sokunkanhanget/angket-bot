@@ -136,6 +136,13 @@ def isolated_scan_log_db(tmp_path_factory):
     # subscription.py binds SCAN_LOG_DB the same separate way - same
     # isolation gap this fixture already exists to close for scan_log.py.
     subscription.SCAN_LOG_DB = db
+    # virustotal.py's own file_vt_cache table (added alongside the
+    # link-checker's bare-trusted-link fast path) binds SCAN_LOG_DB the
+    # same separate `from bot.config.config import SCAN_LOG_DB` way - same
+    # gap, otherwise test_virustotal.py's own scan_vt_hash tests would
+    # write real cache rows into whatever real scan_logs.db sits in the repo.
+    from bot.detectors.file.online import virustotal
+    virustotal.SCAN_LOG_DB = db
     return db
 
 

@@ -696,3 +696,96 @@ def test_message_is_only_links_detects_bare_vs_contextful():
     assert ce._message_is_only_links("check this http://jam.example.com", links) is False
     # Khmer context around the link must count as real content.
     assert ce._message_is_only_links("តើនេះជាការបោកទេ http://jam.example.com", links) is False
+
+
+# --- Deterministic trusted-bare-link short-circuit -------------------------
+# A bare link to an exact PROTECTED_BRANDS domain that already came back
+# 'safe' after the real redirect trace needs no LLM opinion, no quota, no
+# tokens. These pin the fixed short-circuit and, crucially, that it fails
+# SAFE - any real signal or ambiguity falls through to the normal Gemini path.
+
+def _trusted_link(**over):
+    v = {"host": "facebook.com", "level": "safe", "score": 0,
+         "trusted_brand": True, "reasons": []}
+    v.update(over)
+    return v
+
+
+def test_trusted_bare_link_short_circuits_to_not_a_scam():
+    result = ce._trusted_bare_link_verdict(
+        "https://facebook.com", [_trusted_link()], None, {"suspicious": False, "matches": []}, None)
+
+    assert result is not None
+    assert result["verdict"] == "Not a Scam"
+    assert result["key_reasons"][0]["source"] == "link_evidence"
+
+
+def test_trusted_bare_link_short_circuit_is_deterministic():
+    a = ce._trusted_bare_link_verdict(
+        "https://facebook.com", [_trusted_link()], None, {"suspicious": False, "matches": []}, None)
+    b = ce._trusted_bare_link_verdict(
+        "https://facebook.com", [_trusted_link()], None, {"suspicious": False, "matches": []}, None)
+    assert a == b
+
+
+def test_trusted_bare_link_falls_through_when_not_trusted_brand():
+    v = _trusted_link(trusted_brand=False)
+    assert ce._trusted_bare_link_verdict(
+        "https://facebook.com", [v], None, {"suspicious": False, "matches": []}, None) is None
+
+
+def test_trusted_bare_link_falls_through_when_level_not_safe():
+    # A trusted domain whose redirect trace turned up something (e.g. an
+    # open-redirect to a different host) must still reach Gemini.
+    v = _trusted_link(level="suspicious", score=20)
+    assert ce._trusted_bare_link_verdict(
+        "https://facebook.com", [v], None, {"suspicious": False, "matches": []}, None) is None
+
+
+def test_trusted_bare_link_falls_through_with_real_message_text():
+    result = ce._trusted_bare_link_verdict(
+        "is this really facebook? https://facebook.com", [_trusted_link()], None,
+        {"suspicious": False, "matches": []}, None)
+    assert result is None
+
+
+def test_trusted_bare_link_falls_through_with_attached_file():
+    result = ce._trusted_bare_link_verdict(
+        "https://facebook.com", [_trusted_link()], {"malicious": 0}, {"suspicious": False, "matches": []}, None)
+    assert result is None
+
+
+def test_trusted_bare_link_falls_through_with_keyword_match():
+    result = ce._trusted_bare_link_verdict(
+        "https://facebook.com", [_trusted_link()], None, {"suspicious": True, "matches": ["urgent"]}, None)
+    assert result is None
+
+
+def test_trusted_bare_link_falls_through_with_scam_pattern_match():
+    result = ce._trusted_bare_link_verdict(
+        "https://facebook.com", [_trusted_link()], None, {"suspicious": False, "matches": []}, (0.71, "lottery"))
+    assert result is None
+
+
+def test_trusted_bare_link_falls_through_with_multiple_links():
+    result = ce._trusted_bare_link_verdict(
+        "https://facebook.com https://x.example.org",
+        [_trusted_link(), _trusted_link(host="x.example.org", trusted_brand=False, level="suspicious")],
+        None, {"suspicious": False, "matches": []}, None)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_unified_skips_gemini_for_trusted_bare_link(monkeypatch, fake_vector_store):
+    # The integration point: analyze_unified must return the fixed
+    # short-circuit WITHOUT ever touching the (fake) Gemini client.
+    fake_client = _FakeClient(response_text=json.dumps({"verdict": "Scam", "risk_percentage": 90,
+                                                          "key_reasons": [], "recommendations": []}))
+    monkeypatch.setattr(ce, "_client", fake_client)
+
+    result = await analyze_unified(
+        "https://facebook.com", {"suspicious": False, "matches": []}, [_trusted_link()],
+    )
+
+    assert result["verdict"] == "Not a Scam"
+    assert fake_client.aio.models.last_kwargs is None  # Gemini never called

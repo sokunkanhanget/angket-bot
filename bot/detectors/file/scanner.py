@@ -3,10 +3,11 @@ bot/detectors/file/scanner.py
 ================================
 Orchestrator: merges the offline filename-disguise check with the
 online VirusTotal hash lookup into one verdict, same role pipeline.py
-plays for url/offline + url/online. Re-exports check_filename and
-scan_vt_hash so every existing caller (handlers, the run-angket-bot
-driver, tests) keeps working unchanged after the offline/online split -
-a pure file-organization change, not an API change.
+plays for url/offline + url/online. Re-exports check_filename,
+scan_vt_hash, and cached_result so every existing caller (handlers, the
+run-angket-bot driver, tests) keeps working unchanged after the
+offline/online split - a pure file-organization change, not an API
+change.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import io
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.offline.filename_check import check_filename
-from bot.detectors.file.online.virustotal import scan_vt_hash
+from bot.detectors.file.online.virustotal import cached_result, scan_vt_hash
 
 
 async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:

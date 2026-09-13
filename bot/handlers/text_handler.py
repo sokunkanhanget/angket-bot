@@ -14,7 +14,7 @@ from bot.response.buttons import BUTTONS, key_for_label, label, t
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.handlers.url_handler import extract_text_link_entities
 from bot.storage import subscription
-from bot.detectors.url.pipeline import check_message_full
+from bot.detectors.url.pipeline import bare_trusted_link, check_message_full
 from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 
@@ -289,14 +289,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     user_id = update.effective_user.id if update.effective_user else None
-    if user_id is not None and not subscription.can_scan_link_or_message(user_id):
-        await message.reply_text(
-            t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
-            reply_markup=main_menu_keyboard,
-        )
-        return
-
-    keyword_result = analyze_text(text)
 
     # Plain private DM: reason over text AND any link together in one
     # Gemini call, instead of the link-only verdict a private-chat link
@@ -310,21 +302,32 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # chat reply.
     chat = update.effective_chat
     is_plain_private = chat is not None and chat.type == "private"
+    document = message.document if is_plain_private else None
+    hidden_links = extract_text_link_entities(message) if is_plain_private else []
+
+    # Cheap, no-network shape check (bare_trusted_link) - only a message
+    # that's NOTHING but one link to a verified PROTECTED_BRANDS domain
+    # qualifies, so this can never be used to bypass quota on arbitrary
+    # content. A document attached rules it out too - that always needs
+    # its own real check. Confirmed once check_message_full's real
+    # verdict comes back below (see trusted_and_safe) before the quota
+    # charge is actually skipped.
+    trusted_shape = (
+        is_plain_private and document is None
+        and bare_trusted_link(text, hidden_links) is not None
+    )
+
+    if user_id is not None and not trusted_shape and not subscription.can_scan_link_or_message(user_id):
+        await message.reply_text(
+            t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+            reply_markup=main_menu_keyboard,
+        )
+        return
+
+    keyword_result = analyze_text(text)
 
     if is_plain_private:
         await ensure_vectors_seeded(context.bot_data)
-
-        # A private-chat document WITH a caption (e.g. "please open this
-        # invoice, urgent") used to be invisible to this unified check -
-        # handle_file (bot.py group 0) scans the file on its own VT-only
-        # report, with no idea the caption text is urgent/suspicious, and
-        # this function had no idea a file was even attached. Checking it
-        # here too (VT is 7-day cached, so this rarely re-hits the
-        # network) closes that gap without touching handle_file's own
-        # reply/Delete-Ignore buttons, which stay exactly as they are.
-        document = message.document
-
-        hidden_links = extract_text_link_entities(message)
 
         # Always shown now - a text-only message (no link, no file) still
         # goes through the same analyze_unified() call (Gemini + bge-m3),
@@ -367,7 +370,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 has_text=not _message_is_only_links(text, link_verdicts),
                 evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
             )
-            if user_id is not None:
+            trusted_and_safe = (
+                trusted_shape and len(link_verdicts) == 1
+                and link_verdicts[0].get("trusted_brand") and link_verdicts[0].get("level") == "safe"
+            )
+            if user_id is not None and not trusted_and_safe:
                 subscription.record_link_or_message_scan(user_id)
         except Exception:                          # noqa: BLE001 - must still stop the animation and reply
             logger.exception("Unified analysis failed for a private-DM message")
@@ -436,3 +443,114 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         parse_mode="HTML",
         reply_markup=main_menu_keyboard,
     )
+
+
+async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/check - group/supergroup only (registered with filters.ChatType.GROUPS
+    in bot.py). Lets a group member trigger the same private-DM-grade
+    pipeline (check_message_full + analyze_unified) either as a reply to
+    an existing message or standalone (/check <url or text>) - a
+    deliberate per-request call, not a per-message auto-scan. Command
+    trigger chosen specifically because commands bypass Privacy Mode
+    regardless of its BotFather ON/OFF setting - researched and scoped
+    2026-09-11 (see memory: project_group_channel_plan.md), live-tested
+    as a sandbox concept before this port
+    (next-gen-test/concepts/group-check-command-py/check_command.py).
+
+    English-only (DEFAULT_LANG), matching format_analysis_response's own
+    established precedent - group chat's language wiring is out of
+    scope (there's no single "whose language" for a shared group the
+    way private DM's per-user context.user_data gives one)."""
+    message = update.effective_message
+    if message is None:
+        return
+    user = update.effective_user
+    user_id = user.id if user else None
+
+    replied = message.reply_to_message
+    if replied is not None:
+        target_text = replied.text or replied.caption or ""
+        hidden_links = extract_text_link_entities(replied)
+        document = replied.document
+    elif context.args:
+        target_text = " ".join(context.args)
+        hidden_links = []
+        document = None
+    else:
+        await message.reply_text(t(DEFAULT_LANG, "check_usage_hint"))
+        return
+
+    if not target_text and document is None:
+        await message.reply_text(t(DEFAULT_LANG, "check_nothing_to_check"))
+        return
+
+    # Same shape/quota-skip pattern as handle_text's private-DM path -
+    # see its own comment for why this is safe (narrows to one of the
+    # small, hand-verified PROTECTED_BRANDS domains, never arbitrary
+    # input) and only a pre-check (confirmed against the real verdict
+    # below via trusted_and_safe before the quota charge is skipped).
+    trusted_shape = document is None and bare_trusted_link(target_text, hidden_links) is not None
+
+    if user_id is not None and not trusted_shape and not subscription.can_scan_link_or_message(user_id):
+        await message.reply_text(
+            t(DEFAULT_LANG, "daily_scan_limit_reached").format(
+                limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+            )
+        )
+        return
+
+    # After the quota gate, not before - matches the established,
+    # deliberately-fixed pattern (url_handler.handle_url had this
+    # backwards once; a real Supabase call shouldn't happen for an
+    # over-quota sender).
+    await ensure_vectors_seeded(context.bot_data)
+
+    keyword_result = analyze_text(target_text)
+    status = await message.reply_text(t(DEFAULT_LANG, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
+    animation_task = asyncio.create_task(animate_status(status, DEFAULT_LANG))
+
+    async def _check_file():
+        sha256 = await download_and_hash(context, document.file_id)
+        return await scan_file(sha256, document.file_name or "")
+
+    # return_exceptions=True - same pattern handle_text's own private-DM
+    # path uses, so a file-check failure can't discard an
+    # already-succeeded link result.
+    tasks = [check_message_full(target_text, hidden_links)]
+    if document is not None:
+        tasks.append(_check_file())
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    link_verdicts = results[0] if not isinstance(results[0], Exception) else []
+    file_verdict = None
+    if document is not None:
+        file_verdict = results[1] if not isinstance(results[1], Exception) else None
+
+    # try/finally-equivalent (except/re-stop) so the animation task can
+    # never outlive this handler - same defense-in-depth as handle_text's
+    # own private-DM path.
+    try:
+        unified = await analyze_unified(
+            target_text, keyword_result, link_verdicts, file_verdict, DEFAULT_LANG, user_id,
+        )
+        reply_text = format_unified_response(
+            unified, keyword_result, DEFAULT_LANG,
+            has_link=bool(link_verdicts),
+            has_file=document is not None,
+            has_text=bool(target_text.strip()),
+            evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
+        )
+        trusted_and_safe = (
+            trusted_shape and len(link_verdicts) == 1
+            and link_verdicts[0].get("trusted_brand") and link_verdicts[0].get("level") == "safe"
+        )
+        if user_id is not None and not trusted_and_safe:
+            subscription.record_link_or_message_scan(user_id)
+    except Exception:                          # noqa: BLE001 - must still stop the animation and reply
+        logger.exception("Unified analysis failed for /check")
+        await stop_status_animation(animation_task)
+        await status.edit_text(t(DEFAULT_LANG, "scan_failed"))
+        return
+
+    await stop_status_animation(animation_task)
+    await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)

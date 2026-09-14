@@ -5,6 +5,16 @@ Tests for handle_business_message - the unified text+link+file check for
 Telegram Business chat automation. Business chat is fully owned by this
 handler now (see bot/route.py and bot.py's group 3), so these cover both
 "stays silent" and "notifies the owner privately" behavior.
+
+Two-stage notification (2026-09-14, direct user spec): the owner used to
+get ONE message only once the full check finished, with zero feedback
+while it ran. Now a status message (header identifying WHO it's from +
+"Checking...") goes out immediately via context.bot.send_message, then
+gets edited in place (status.edit_text) once the real verdict is ready -
+or deleted (status.delete) if the result turns out to be one of the
+"stay silent" cases. _context()'s mocked send_message return value
+(`status`) carries its own edit_text/delete AsyncMocks so tests can
+assert on either stage independently.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -37,25 +47,96 @@ def _business_update(text=None, has_document=False):
 def _context():
     context = MagicMock()
     context.bot_data = {"_vectors_seeded": True}
-    context.bot.send_message = AsyncMock()
+    status = MagicMock()
+    status.edit_text = AsyncMock()
+    status.delete = AsyncMock()
+    context.bot.send_message = AsyncMock(return_value=status)
     return context
+
+
+@pytest.mark.asyncio
+async def test_status_message_shows_sender_header_immediately():
+    # The actual feature: the owner must see WHO the message is from
+    # right away, before the (possibly several-second) real check even
+    # starts - not just a bare "Checking" with no context.
+    update = _business_update(text="URGENT: send $800 now, don't call, just trust me")
+    context = _context()
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam", "risk_percentage": 95,
+             "key_reasons": [{"text": "Urgent money request", "source": "message_text"}],
+             "recommendations": [],
+         })):
+        await handle_business_message(update, context)
+
+    status_call = context.bot.send_message.call_args
+    assert status_call.kwargs["chat_id"] == 555
+    assert status_call.kwargs["text"].startswith(
+        f"{t('en', 'business_new_activity')}\n\n👤 `Customer`\n🆔 42\n🕒 —\n\n"
+    )
+    assert t("en", "status_checking") in status_call.kwargs["text"]
+    assert status_call.kwargs["parse_mode"] == "Markdown"
+
+
+@pytest.mark.asyncio
+async def test_final_verdict_edits_the_same_status_message():
+    update = _business_update(text="URGENT: send $800 now, don't call, just trust me")
+    context = _context()
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam", "risk_percentage": 95,
+             "key_reasons": [{"text": "Urgent money request", "source": "message_text"}],
+             "recommendations": ["Verify independently"],
+         })):
+        await handle_business_message(update, context)
+
+    # Only ONE message ever sent (the status message); the real verdict
+    # lands via editing it, not a second send_message.
+    context.bot.send_message.assert_awaited_once()
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
+    body = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
+    assert "reply_markup" not in status.edit_text.call_args.kwargs  # direct user spec: no buttons
+    assert "LIKELY A SCAM" in body
+    assert "📁 *TYPE: text*" in body
+    assert "Urgent money request" in body
+    assert "─" not in body
+    assert body.rstrip().endswith("Double-check important information before taking action.")
+    assert body.startswith(f"{t('en', 'business_new_activity')}\n\n👤 `Customer`\n🆔 42\n🕒 —\n\n")
+    status.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_stays_silent_when_there_is_truly_nothing_to_check():
     # No text, no caption, no link, no file - genuinely nothing to
     # reason about (e.g. a plain photo with no caption at all - there is
-    # no image-content scanning in this bot).
+    # no image-content scanning in this bot). The status message still
+    # goes out (we don't know yet it'll be empty) but must be cleaned up
+    # afterward, not left showing "Checking..." forever.
     update = _business_update(text=None)
     context = _context()
 
     with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": False, "matches": []}), \
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
-         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)):
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()):
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_not_awaited()
+    context.bot.send_message.assert_awaited_once()  # the status message
+    status = context.bot.send_message.return_value
+    status.delete.assert_awaited_once()
+    status.edit_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -70,6 +151,7 @@ async def test_stays_silent_for_genuinely_benign_text():
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Not a Scam",
              "risk_percentage": 5,
@@ -78,7 +160,10 @@ async def test_stays_silent_for_genuinely_benign_text():
          })):
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_not_awaited()
+    context.bot.send_message.assert_awaited_once()
+    status = context.bot.send_message.return_value
+    status.delete.assert_awaited_once()
+    status.edit_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -97,6 +182,7 @@ async def test_notifies_owner_for_scam_text_with_no_keyword_match_no_link_no_fil
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam",
              "risk_percentage": 95,
@@ -105,7 +191,9 @@ async def test_notifies_owner_for_scam_text_with_no_keyword_match_no_link_no_fil
          })):
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_awaited_once()
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
+    status.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -117,6 +205,7 @@ async def test_notifies_owner_for_suspicious_text():
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam",
              "risk_percentage": 95,
@@ -125,18 +214,19 @@ async def test_notifies_owner_for_suspicious_text():
          })):
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_awaited_once()
-    assert "reply_markup" not in context.bot.send_message.call_args.kwargs  # direct user spec: no buttons
-    kwargs = context.bot.send_message.call_args.kwargs
-    assert kwargs["chat_id"] == 555
-    assert "LIKELY A SCAM" in kwargs["text"]
-    assert "📁 *TYPE: text*" in kwargs["text"]
-    assert "Urgent money request" in kwargs["text"]
-    assert "─" not in kwargs["text"]
-    assert kwargs["text"].rstrip().endswith("Double-check important information before taking action.")
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
+    kwargs = status.edit_text.call_args.kwargs
+    body = kwargs.get("text") or status.edit_text.call_args.args[0]
+    assert "reply_markup" not in kwargs  # direct user spec: no buttons
+    assert "LIKELY A SCAM" in body
+    assert "📁 *TYPE: text*" in body
+    assert "Urgent money request" in body
+    assert "─" not in body
+    assert body.rstrip().endswith("Double-check important information before taking action.")
     # New spec: "👀 New Activity Detected" header + 👤/🆔/🕒 block above the
     # same body every other surface (text/link/file) renders.
-    assert kwargs["text"].startswith(
+    assert body.startswith(
         f"{t('en', 'business_new_activity')}\n\n👤 `Customer`\n🆔 42\n🕒 —\n\n"
     )
 
@@ -145,7 +235,8 @@ async def test_notifies_owner_for_suspicious_text():
 async def test_sender_header_shows_at_handle_when_one_exists():
     # angket-bot-message.drawio spec: "From: username (@username)" - a
     # real gap this session found, since _sender_header used to render
-    # only the display name, never the @handle at all.
+    # only the display name, never the @handle at all. The header shows
+    # up on the STATUS message (sent immediately), not just the final one.
     update = _business_update(text="URGENT: send $800 now, don't call, just trust me")
     update.effective_user = MagicMock(full_name="Customer", id=42, username="real_customer")
     context = _context()
@@ -154,6 +245,7 @@ async def test_sender_header_shows_at_handle_when_one_exists():
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam",
              "risk_percentage": 95,
@@ -162,8 +254,13 @@ async def test_sender_header_shows_at_handle_when_one_exists():
          })):
         await handle_business_message(update, context)
 
-    kwargs = context.bot.send_message.call_args.kwargs
-    assert kwargs["text"].startswith(
+    status_text = context.bot.send_message.call_args.kwargs["text"]
+    assert status_text.startswith(
+        f"{t('en', 'business_new_activity')}\n\n👤 `Customer (@real_customer)`\n🆔 42\n🕒 —\n\n"
+    )
+    status = context.bot.send_message.return_value
+    final_text = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
+    assert final_text.startswith(
         f"{t('en', 'business_new_activity')}\n\n👤 `Customer (@real_customer)`\n🆔 42\n🕒 —\n\n"
     )
 
@@ -236,6 +333,7 @@ async def test_attached_file_is_scanned_and_always_notifies():
              "found": True, "malicious": 0, "suspicious": 0, "total": 70,
          })), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Not a Scam",
              "risk_percentage": 5,
@@ -244,13 +342,14 @@ async def test_attached_file_is_scanned_and_always_notifies():
          })) as mock_unified:
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_awaited_once()
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
     # file_verdict must have actually been passed through to the unified call
-    _, kwargs = mock_unified.call_args
+    kwargs = mock_unified.call_args.kwargs
     args = mock_unified.call_args.args
     passed_file_verdict = args[3] if len(args) > 3 else kwargs.get("file_verdict")
     assert passed_file_verdict["malicious"] == 0
-    sent_text = context.bot.send_message.call_args.kwargs["text"]
+    sent_text = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
     # New spec: no filename/extension header any more (dropped project-wide
     # in favor of the "📁 TYPE:" line) - a file being part of the check is
     # now signalled there instead.
@@ -286,6 +385,7 @@ async def test_a_filename_with_underscores_does_not_break_the_notification():
              "found": True, "malicious": 0, "suspicious": 0, "total": 70,
          })), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Not a Scam", "risk_percentage": 5,
              "key_reasons": [{"text": "File is clean on VirusTotal", "source": "file_evidence"}],
@@ -293,8 +393,9 @@ async def test_a_filename_with_underscores_does_not_break_the_notification():
          })):
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_awaited_once()
-    assert context.bot.send_message.call_args.kwargs["parse_mode"] == "Markdown"  # succeeded on the first try
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
+    assert status.edit_text.call_args.kwargs["parse_mode"] == "Markdown"  # succeeded on the first try
 
 
 @pytest.mark.asyncio
@@ -304,20 +405,25 @@ async def test_send_failure_falls_back_to_plain_text_instead_of_total_silence():
     # not be able to silently kill the whole notification again, the
     # way it did before this fix existed. Every other failure mode in
     # this handler already degrades gracefully (Gemini down, VirusTotal
-    # down) - this proves the very last step (actually sending) does too.
+    # down) - this proves the very last step (editing in the real
+    # verdict) does too. The risky step is now the EDIT, not the
+    # original send (the status message's own "Checking..." text is
+    # simple/fixed and can't hit a real filename's Markdown edge case).
     from telegram.error import BadRequest
 
     update = _business_update(text="URGENT: send $800 now, don't call")
     context = _context()
-    context.bot.send_message = AsyncMock(side_effect=[
+    status = context.bot.send_message.return_value
+    status.edit_text = AsyncMock(side_effect=[
         BadRequest("Can't parse entities: can't find end of the entity starting at byte offset 131"),
-        MagicMock(),  # the plain-text retry succeeds
+        None,  # the plain-text retry succeeds
     ])
 
     with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam", "risk_percentage": 95,
              "key_reasons": [{"text": "Urgent money request", "source": "message_text"}],
@@ -325,11 +431,11 @@ async def test_send_failure_falls_back_to_plain_text_instead_of_total_silence():
          })):
         await handle_business_message(update, context)
 
-    assert context.bot.send_message.await_count == 2
-    first_call, second_call = context.bot.send_message.await_args_list
+    assert status.edit_text.await_count == 2
+    first_call, second_call = status.edit_text.await_args_list
     assert first_call.kwargs["parse_mode"] == "Markdown"
     assert "parse_mode" not in second_call.kwargs  # plain text - no entity parsing at all
-    assert second_call.kwargs["text"] == first_call.kwargs["text"]  # same real verdict, just unformatted
+    assert second_call.args[0] == first_call.args[0]  # same real verdict, just unformatted
 
 
 @pytest.mark.asyncio
@@ -348,10 +454,13 @@ async def test_stays_silent_for_benign_text_during_a_real_gemini_outage(fake_vec
 
     with patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
-         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)):
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()):
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_not_awaited()
+    status = context.bot.send_message.return_value
+    status.delete.assert_awaited_once()
+    status.edit_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -370,14 +479,16 @@ async def test_notifies_owner_for_near_exact_scam_script_during_a_real_gemini_ou
 
     with patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
-         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)):
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()):
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_awaited_once()
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
     # 2026-09-11 spec: a degraded (no-AI) reply shows its OWN real
     # reasons/recommendations, not a generic "AI unavailable" admission
     # - see context_engine.py's _grounded_fallback and _FALLBACK_RECOMMENDATIONS.
-    text = context.bot.send_message.call_args.kwargs["text"]
+    text = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
     assert "offline pattern matching only" not in text
     assert "closely matches a known" in text  # the real scam-script-match reason
     assert "Verify with the sender through a separate channel" in text  # real recommendation
@@ -402,6 +513,7 @@ async def test_photo_caption_is_checked_like_any_other_message():
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=real_link_verdict)), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam",
              "risk_percentage": 80,
@@ -410,7 +522,8 @@ async def test_photo_caption_is_checked_like_any_other_message():
          })) as mock_unified:
         await handle_business_message(update, context)
 
-    context.bot.send_message.assert_awaited_once()
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
     # the caption text must have actually reached analyze_unified, not an
     # empty string
     args = mock_unified.call_args.args
@@ -434,6 +547,7 @@ async def test_a_failed_file_check_does_not_discard_an_already_successful_link_c
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=real_link_verdict)), \
          patch("bot.handlers.url_handler.download_and_hash", AsyncMock(side_effect=RuntimeError("file too large"))), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam",
              "risk_percentage": 80,
@@ -443,7 +557,8 @@ async def test_a_failed_file_check_does_not_discard_an_already_successful_link_c
         await handle_business_message(update, context)
 
     # The owner must still be notified about the link, not left with nothing.
-    context.bot.send_message.assert_awaited_once()
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
     # analyze_unified must have received the real link result and None
     # for the file (not have been skipped entirely).
     args = mock_unified.call_args.args
@@ -457,6 +572,7 @@ async def test_notification_uses_the_owners_language_not_the_customers():
     # message - must translate based on the OWNER's stored language
     # preference (Application.user_data, keyed by their own user_id/
     # chat_id), not context.user_data for the current (customer's) update.
+    # Applies to BOTH the immediate status message and the final verdict.
     update = _business_update(text="URGENT: send $800 now, don't call")
     context = _context()
     owner_chat_id = 555
@@ -469,6 +585,7 @@ async def test_notification_uses_the_owners_language_not_the_customers():
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=owner_chat_id)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam",
              "risk_percentage": 95,
@@ -477,8 +594,12 @@ async def test_notification_uses_the_owners_language_not_the_customers():
          })) as mock_unified:
         await handle_business_message(update, context)
 
+    status_text = context.bot.send_message.call_args.kwargs["text"]
+    assert t("km", "status_checking") in status_text
+
+    status = context.bot.send_message.return_value
+    body = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
     # The Khmer verdict label must render, not the English one.
-    body = context.bot.send_message.call_args.kwargs["text"]
     assert "ទំនងជាការឆបោក" in body
     assert "LIKELY A SCAM" not in body
     # And analyze_unified itself must have been asked to respond in Khmer.
@@ -498,6 +619,7 @@ async def test_notification_defaults_to_english_when_owner_has_no_stored_languag
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam",
              "risk_percentage": 95,
@@ -506,7 +628,8 @@ async def test_notification_defaults_to_english_when_owner_has_no_stored_languag
          })) as mock_unified:
         await handle_business_message(update, context)
 
-    body = context.bot.send_message.call_args.kwargs["text"]
+    status = context.bot.send_message.return_value
+    body = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
     assert "LIKELY A SCAM" in body
     assert mock_unified.call_args.args[4] == "en"
 
@@ -516,7 +639,9 @@ async def test_live_detect_trial_expiry_blocks_automation_and_notifies_owner():
     # Once the owner's 7-day Live Detect trial has expired (and they're
     # not on the paid tier - is_paid_user() always False for now), the
     # automation must not run at all - the owner gets ONE notice instead
-    # of a real scam-check reasoning over the customer's message.
+    # of a real scam-check reasoning over the customer's message. This
+    # path returns BEFORE the two-stage status message even starts, so
+    # it's still a single direct send_message, unlike the tests above.
     update = _business_update(text="URGENT: send $800 now, don't call")
     context = _context()
     context.application.user_data = {}
@@ -537,6 +662,9 @@ async def test_live_detect_trial_expiry_blocks_automation_and_notifies_owner():
     call = context.bot.send_message.call_args
     assert call.kwargs["chat_id"] == 555
     assert "trial" in call.kwargs["text"].lower() or "Live Detect" in call.kwargs["text"]
+    # Not the two-stage status message shape - a direct, final notice.
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -553,6 +681,7 @@ async def test_live_detect_within_trial_runs_normally():
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
          patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
          patch.object(subscription, "live_detect_allowed", return_value=True), \
          patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
              "verdict": "Scam", "risk_percentage": 95,
@@ -562,3 +691,30 @@ async def test_live_detect_within_trial_runs_normally():
         await handle_business_message(update, context)
 
     mock_unified.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_failure_mid_check_still_edits_the_status_message():
+    # New failure path introduced by the two-stage flow: if something
+    # inside the try block raises unexpectedly (not one of the per-task
+    # failures asyncio.gather(..., return_exceptions=True) already
+    # absorbs, and not one of analyze_unified's own internally-caught
+    # failure modes, which never raise - see its docstring), the status
+    # message must still get SOME real content (a translated "couldn't
+    # finish checking" notice), not be left showing "Checking..."
+    # forever with no error surfaced anywhere the owner can see.
+    # ensure_vectors_seeded is awaited directly (not inside the gather),
+    # so raising there is a clean way to exercise this specific path.
+    update = _business_update(text="URGENT: send $800 now, don't call")
+    context = _context()
+
+    with patch("bot.handlers.url_handler.ensure_vectors_seeded", AsyncMock(side_effect=RuntimeError("boom"))), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()):
+        await handle_business_message(update, context)
+
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
+    body = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
+    assert t("en", "scan_failed") in body
+    status.delete.assert_not_awaited()

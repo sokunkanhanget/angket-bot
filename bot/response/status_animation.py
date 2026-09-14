@@ -34,7 +34,7 @@ CHECKING_DOTS = ("", ".", "..", "...")
 STATUS_STAGE_INTERVAL_SECONDS = 1.5
 
 
-async def animate_status(status_message, lang: str, suffix: str = "") -> None:
+async def animate_status(status_message, lang: str, suffix: str = "", prefix: str = "") -> None:
     """Launch via `asyncio.create_task(animate_status(...))` alongside
     the real work, then stop it with `await stop_status_animation(task)`
     (NOT a bare `task.cancel(); await task`) once that work is done -
@@ -42,7 +42,13 @@ async def animate_status(status_message, lang: str, suffix: str = "") -> None:
 
     `suffix`: appended after the checking dots (e.g. file_handler.py
     passes " `filename.pdf`..." so which file is in progress stays
-    visible throughout the animation)."""
+    visible throughout the animation).
+
+    `prefix`: prepended before the checking line (e.g.
+    handle_business_message passes the "New Activity Detected" +
+    sender header so the owner sees WHO the incoming message is from
+    immediately, not just a bare "Checking" with no context, while the
+    real unified check is still running)."""
     dot_index = 0
     try:
         while True:
@@ -50,7 +56,7 @@ async def animate_status(status_message, lang: str, suffix: str = "") -> None:
             dot_index = (dot_index + 1) % len(CHECKING_DOTS)
             try:
                 await status_message.edit_text(
-                    f"{t(lang, STATUS_STAGE_KEYS[0])}{CHECKING_DOTS[dot_index]}{suffix}",
+                    f"{prefix}{t(lang, STATUS_STAGE_KEYS[0])}{CHECKING_DOTS[dot_index]}{suffix}",
                     parse_mode="Markdown",
                 )
             except Exception:

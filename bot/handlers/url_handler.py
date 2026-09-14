@@ -437,76 +437,118 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    await ensure_vectors_seeded(context.bot_data)
-
-    hidden_links = extract_text_link_entities(message)
-    document = message.document
-
-    async def _check_file() -> dict:
-        sha256 = await download_and_hash(context, document.file_id)
-        return await scan_file(sha256, document.file_name or "")
-
-    # A message can have both a link (in caption/entities) and a file at
-    # once - the two checks are fully independent network chains, so run
-    # them concurrently instead of paying their latency back-to-back.
-    # return_exceptions=True matters here: without it, one check failing
-    # (e.g. a file over Telegram's download limit, or a VirusTotal
-    # hiccup) would discard an ALREADY-SUCCEEDED link result and crash
-    # the whole handler - the owner would learn about neither, even
-    # though the link check had already come back clean. Same pattern
-    # pipeline.py's analyze_url already uses for its own network/DNS/
-    # RDAP/TLS gather.
-    tasks = [check_message_full(text, hidden_links)]
-    if document is not None:
-        tasks.append(_check_file())
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    link_verdicts = results[0]
-    if isinstance(link_verdicts, Exception):
-        logger.exception("Link check failed in business chat", exc_info=link_verdicts)
-        link_verdicts = []
-
-    file_verdict = results[1] if document is not None else None
-    if isinstance(file_verdict, Exception):
-        logger.exception("File check failed in business chat", exc_info=file_verdict)
-        file_verdict = None
-
-    if not text and not link_verdicts and file_verdict is None:
-        return  # truly nothing to check at all - stay silent
-
-    # `sender` already resolved above (and confirmed not the owner) - no
-    # need to re-read update.effective_user a second time.
-    for v in link_verdicts:
-        log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
-
     # The OWNER reads this notification, not the customer who sent the
     # message - translate based on their language preference, not the
     # customer's (see _owner_lang's docstring for why those can differ).
     owner_lang = _owner_lang(context, owner_chat_id)
-    # sender is a VERIFIED connected customer here (a Business connection,
-    # not a spoofable plain chat display name) - safe to let Gemini weigh
-    # it as a mitigating signal for a mismatched/redirect domain. See
-    # analyze_unified's own docstring for why this is Business-chat-only.
-    sender_identity = (
-        {"name": sender.full_name, "username": sender.username} if sender else None
-    )
-    unified = await analyze_unified(
-        text, keyword_result, link_verdicts, file_verdict, owner_lang,
-        sender_identity=sender_identity,
-    )
 
-    # A link or file is always worth telling the owner about (matches
-    # handle_url/handle_file's "report every finding, even 'safe'"
-    # convention elsewhere in this project). Pure text with no link or
-    # file only bothers the owner if the FULL Gemini reasoning actually
-    # flags a concern - gating on the crude local keyword list instead
-    # (like this used to) is exactly what silently missed a real "Hi Mom,
-    # send $800 now, don't call" family-emergency scam during testing:
-    # no keyword match, no link, no file, yet obviously a scam.
-    if not link_verdicts and file_verdict is None and unified.get("verdict") == "Not a Scam":
+    # Immediate two-stage notification (2026-09-14, direct user spec):
+    # the full unified check (link trace + file scan + Gemini) can take
+    # several real seconds, and the owner used to get NOTHING at all
+    # until it finished - no idea a message even arrived, let alone from
+    # whom. Send the "New Activity Detected" + sender header (WHO it's
+    # from) immediately with a status animation live-detect_status stage
+    # ("Checking...") right where the verdict will land, then edit this
+    # SAME message into the final verdict once ready - same
+    # animate_status/stop_status_animation pattern every other scan
+    # surface (text/link/file) already uses, just with the header as a
+    # `prefix` instead of starting bare.
+    header = _business_header(sender, message.date, owner_lang)
+    try:
+        status = await context.bot.send_message(
+            chat_id=owner_chat_id,
+            text=f"{header}{t(owner_lang, STATUS_STAGE_KEYS[0])}",
+            parse_mode="Markdown",
+        )
+    except TelegramError:
+        logger.exception("Business chat status notification failed to send")
+        return  # can't even show progress right now - nothing safe to do
+    animation_task = asyncio.create_task(animate_status(status, owner_lang, prefix=header))
+
+    try:
+        await ensure_vectors_seeded(context.bot_data)
+
+        hidden_links = extract_text_link_entities(message)
+        document = message.document
+
+        async def _check_file() -> dict:
+            sha256 = await download_and_hash(context, document.file_id)
+            return await scan_file(sha256, document.file_name or "")
+
+        # A message can have both a link (in caption/entities) and a file at
+        # once - the two checks are fully independent network chains, so run
+        # them concurrently instead of paying their latency back-to-back.
+        # return_exceptions=True matters here: without it, one check failing
+        # (e.g. a file over Telegram's download limit, or a VirusTotal
+        # hiccup) would discard an ALREADY-SUCCEEDED link result and crash
+        # the whole handler - the owner would learn about neither, even
+        # though the link check had already come back clean. Same pattern
+        # pipeline.py's analyze_url already uses for its own network/DNS/
+        # RDAP/TLS gather.
+        tasks = [check_message_full(text, hidden_links)]
+        if document is not None:
+            tasks.append(_check_file())
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        link_verdicts = results[0]
+        if isinstance(link_verdicts, Exception):
+            logger.exception("Link check failed in business chat", exc_info=link_verdicts)
+            link_verdicts = []
+
+        file_verdict = results[1] if document is not None else None
+        if isinstance(file_verdict, Exception):
+            logger.exception("File check failed in business chat", exc_info=file_verdict)
+            file_verdict = None
+
+        if not text and not link_verdicts and file_verdict is None:
+            # Truly nothing to check at all - stay silent, same as
+            # before, but now a real status message exists and must be
+            # cleaned up instead of left showing "Checking..." forever.
+            await stop_status_animation(animation_task)
+            await status.delete()
+            return
+
+        # `sender` already resolved above (and confirmed not the owner) - no
+        # need to re-read update.effective_user a second time.
+        for v in link_verdicts:
+            log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
+
+        # sender is a VERIFIED connected customer here (a Business connection,
+        # not a spoofable plain chat display name) - safe to let Gemini weigh
+        # it as a mitigating signal for a mismatched/redirect domain. See
+        # analyze_unified's own docstring for why this is Business-chat-only.
+        sender_identity = (
+            {"name": sender.full_name, "username": sender.username} if sender else None
+        )
+        unified = await analyze_unified(
+            text, keyword_result, link_verdicts, file_verdict, owner_lang,
+            sender_identity=sender_identity,
+        )
+
+        # A link or file is always worth telling the owner about (matches
+        # handle_url/handle_file's "report every finding, even 'safe'"
+        # convention elsewhere in this project). Pure text with no link or
+        # file only bothers the owner if the FULL Gemini reasoning actually
+        # flags a concern - gating on the crude local keyword list instead
+        # (like this used to) is exactly what silently missed a real "Hi Mom,
+        # send $800 now, don't call" family-emergency scam during testing:
+        # no keyword match, no link, no file, yet obviously a scam.
+        if not link_verdicts and file_verdict is None and unified.get("verdict") == "Not a Scam":
+            await stop_status_animation(animation_task)
+            await status.delete()
+            return
+    except Exception:                          # noqa: BLE001 - must still stop the animation and tell the owner something
+        logger.exception("Business chat unified analysis failed")
+        await stop_status_animation(animation_task)
+        try:
+            await status.edit_text(f"{header}{t(owner_lang, 'scan_failed')}", parse_mode="Markdown")
+        except TelegramError:
+            pass
         return
 
-    body = _business_header(sender, message.date, owner_lang) + _format_unified_business_text(
+    await stop_status_animation(animation_task)
+
+    body = header + _format_unified_business_text(
         unified, owner_lang,
         has_link=bool(link_verdicts),
         has_file=document is not None,
@@ -527,18 +569,16 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     # into "the owner still gets the real verdict, just without bold
     # formatting."
     try:
-        await context.bot.send_message(
-            chat_id=owner_chat_id,
-            text=body,
+        await status.edit_text(
+            body,
             parse_mode="Markdown",
             disable_web_page_preview=True,
         )
     except TelegramError:
         logger.exception("Business notification failed to send with Markdown formatting - retrying as plain text")
         try:
-            await context.bot.send_message(
-                chat_id=owner_chat_id,
-                text=body,
+            await status.edit_text(
+                body,
                 disable_web_page_preview=True,
             )
         except TelegramError:

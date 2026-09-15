@@ -661,7 +661,7 @@ async def _remember(normalized: str, net, level: str) -> None:
         await vectors.upsert_vector("seen", final_url.lower(),
                                    f"{normalized} {page_slice}".strip(), level)
     except Exception:                          # noqa: BLE001 - never fail a check on bookkeeping
-        pass
+        logger.debug("_remember: failed to store 'seen' embedding for %s", normalized, exc_info=True)
 
 
 async def _safe_nearest(text: str) -> tuple[list, bool]:
@@ -698,6 +698,7 @@ async def _safe_near_dup(host: str, page_text: str):
         sig = await asyncio.to_thread(vectors.store_page_signature, host, page_text)
         return await asyncio.to_thread(vectors.nearest_page, host, sig)
     except Exception:                          # noqa: BLE001
+        logger.debug("_safe_near_dup: MinHash lookup/store failed for %s", host, exc_info=True)
         return None
 
 

@@ -206,6 +206,8 @@ async def test_handle_text_analyzes_a_caption_when_text_is_absent():
     update.message.reply_text = AsyncMock()
     update.effective_message = update.message
     update.effective_user.id = 42
+    context = AsyncMock()
+    context.user_data = {}  # plain dict in real python-telegram-bot, not AsyncMock's default child mock
 
     with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), patch(
         "bot.handlers.text_handler.analyze_text_with_llm",
@@ -216,7 +218,7 @@ async def test_handle_text_analyzes_a_caption_when_text_is_absent():
             "recommendations": ["Be careful"],
         }),
     ):
-        await handle_text(update, AsyncMock())
+        await handle_text(update, context)
 
     update.message.reply_text.assert_awaited_once()
     assert "VERDICT" in update.message.reply_text.call_args[0][0]
@@ -250,12 +252,29 @@ def _group_check_update(reply_to_text=None, args=None, reply_to_document=None, h
     context = AsyncMock()
     context.args = args or []
     context.bot_data = {"_vectors_seeded": True}
+    # Same fix as _private_context - user_data is a plain dict in real
+    # python-telegram-bot. handle_check itself never reads it today
+    # (group chat stays DEFAULT_LANG by design), but leaving it as
+    # AsyncMock's default child mock is a live trap for whenever that
+    # changes, and costs nothing to fix now.
+    context.user_data = {}
     return update, context
 
 
 def _private_context():
     context = AsyncMock()
     context.bot_data = {"_vectors_seeded": True}  # skip real vector seeding
+    # Regression: user_data is a plain dict in real python-telegram-bot,
+    # never an async API - left as AsyncMock's default child mock, every
+    # test using this fixture silently fed get_user_lang() a coroutine
+    # object instead of a string. get_user_lang does str(<coroutine>),
+    # which is truthy and non-empty, so the lookup didn't crash - it just
+    # returned garbage that happened to fall through t()'s own "or
+    # DEFAULT_LANG" fallback to the same English text these tests were
+    # already asserting on. So every test using this fixture passed for
+    # the wrong reason, not exercising the real "read context.user_data"
+    # path at all. A real dict makes it genuinely exercised.
+    context.user_data = {}
     return context
 
 
@@ -413,6 +432,43 @@ async def test_daily_scan_limit_only_notifies_once_in_private_dm():
     mock_unified.assert_not_called()
     mock_check.assert_not_called()
     update.message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_text_private_dm_genuinely_reads_khmer_from_user_data():
+    # Regression for the AsyncMock-user_data bug fixed in _private_context
+    # above: with that bug, get_user_lang(context) returned
+    # str(<coroutine>) instead of "km", which is not "km" or "en" either -
+    # t()'s own "or DEFAULT_LANG" fallback then silently rendered English
+    # anyway, so every _private_context()-based test passed for the wrong
+    # reason without ever really exercising the Khmer path. This sets a
+    # REAL km value in a real dict and asserts the actual verdict text -
+    # not just the fixed VERDICT/TYPE labels, which route through
+    # verdict_style.py separately - comes back in Khmer, proving
+    # get_user_lang's return value genuinely reaches Gemini's language
+    # instruction and back into the reply.
+    update = _private_update("free bitcoin now, click nowhere")
+    context = _private_context()
+    context.user_data["lang"] = "km"
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam",
+             "risk_percentage": 90,
+             "key_reasons": [{"text": "លុយឥតគិតថ្លៃមិនមែនជារឿងពិតទេ", "source": "message_text"}],
+             "recommendations": ["កុំចុចលីង"],
+         })) as mock_unified:
+        await handle_text(update, context)
+
+    mock_unified.assert_awaited_once()
+    # analyze_unified(text, keyword_result, link_verdicts, file_verdict,
+    # lang, user_id) - the 5th positional arg must be the real "km", not
+    # a coroutine's string form.
+    assert mock_unified.call_args.args[4] == "km"
+    status_message = update.message.reply_text.return_value
+    reply = status_message.edit_text.call_args[0][0]
+    assert "លុយឥតគិតថ្លៃមិនមែនជារឿងពិតទេ" in reply
+    assert "ទំនងជាការឆបោក" in reply  # verdict_style's own Khmer "Scam" label
 
 
 @pytest.mark.asyncio

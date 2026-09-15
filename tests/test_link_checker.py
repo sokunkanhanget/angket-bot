@@ -1946,3 +1946,36 @@ def test_near_dup_sqlite_work_runs_off_the_event_loop(seeded_vectors, monkeypatc
     # two scans). Overlapped, it is ~2 x delay. The midpoint is a wide
     # enough margin to not be flaky on a loaded machine.
     assert elapsed < delay * 3, f"scans did not overlap: {elapsed:.3f}s"
+
+
+def test_remember_failure_is_logged_not_silently_swallowed(seeded_vectors, monkeypatch, caplog):
+    # Regression: _remember's except block used to be a bare `pass` -
+    # a real Supabase write failure here vanished with no trace at all,
+    # nothing in the logs to explain a "seen" row that should exist but
+    # doesn't. Must never raise into the caller either way.
+    async def failing_upsert(*args, **kwargs):
+        raise ConnectionError("simulated Supabase failure")
+
+    monkeypatch.setattr(pipeline.vectors, "upsert_vector", failing_upsert)
+
+    import logging
+    with caplog.at_level(logging.DEBUG, logger="bot.detectors.url.pipeline"):
+        asyncio.run(pipeline._remember("http://example.tk", None, "safe"))
+
+    assert any("_remember" in r.message for r in caplog.records)
+
+
+def test_safe_near_dup_failure_is_logged_not_silently_swallowed(monkeypatch, caplog):
+    # Regression: _safe_near_dup's except block used to just
+    # `return None` with no trace of what actually failed.
+    def failing_store(host, text):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(pipeline.vectors, "store_page_signature", failing_store)
+
+    import logging
+    with caplog.at_level(logging.DEBUG, logger="bot.detectors.url.pipeline"):
+        result = asyncio.run(pipeline._safe_near_dup("example.tk", "some page text"))
+
+    assert result is None
+    assert any("_safe_near_dup" in r.message for r in caplog.records)

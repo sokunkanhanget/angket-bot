@@ -29,6 +29,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from bot.detectors.url.online import safe_net
+
 logger = logging.getLogger(__name__)
 
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -94,6 +96,14 @@ def _get_client() -> httpx.AsyncClient:
             max_redirects=MAX_REDIRECTS,
             limits=LIMITS,
             cookies=_NoStoreCookieJar(),
+            # SSRF guard (see safe_net.py's module docstring): every TCP
+            # connection this client opens - including a redirect hop to
+            # a different host, which needs its own new connection and
+            # so gets re-checked automatically - is validated against
+            # private/loopback/link-local/reserved/metadata addresses
+            # before it's made, not just checked against the hostname
+            # string, which DNS rebinding would sail straight past.
+            transport=safe_net.SafeAsyncHTTPTransport(verify=True, limits=LIMITS),
         )
     return _client
 

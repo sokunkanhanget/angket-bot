@@ -34,6 +34,7 @@ import httpx
 from bot.config.config import SCAN_LOG_DB
 
 RDAP_TIMEOUT = 8.0
+DNS_TIMEOUT = 5.0          # same bound class as RDAP_TIMEOUT/cert_info.TIMEOUT
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -47,10 +48,31 @@ def _resolve_sync(host: str) -> list[str] | None:
 
 
 async def resolve_host(host: str) -> list[str] | None:
-    """IP addresses for host, [] -like None when it doesn't resolve."""
+    """IP addresses for host, [] -like None when it doesn't resolve.
+
+    socket.getaddrinfo has no timeout parameter of its own (unlike
+    cert_info.py's create_connection(timeout=...) or httpx's own
+    timeout=), and a hung/slow resolver was the one outbound call in
+    this codebase with no bound at all - every sibling call
+    (RDAP 8s, TLS connect, network trace 10s) already has one. Since
+    analyze_url runs this inside an asyncio.gather with the others, one
+    stuck DNS lookup stalled the WHOLE scan, up to the system resolver's
+    own default (20-30s), not just this one signal.
+
+    asyncio.wait_for cancels the AWAIT, not the underlying OS call -
+    getaddrinfo itself cannot be interrupted mid-syscall, so the
+    to_thread worker keeps running in the background after this returns.
+    That's an accepted, harmless leak (the thread just finishes and
+    exits on its own with a result nothing reads), the same tradeoff any
+    wait_for-around-a-thread has; the actual goal is only to stop it
+    blocking THIS scan, not to abort the OS-level lookup.
+    """
     if not host:
         return None
-    return await asyncio.to_thread(_resolve_sync, host)
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_resolve_sync, host), timeout=DNS_TIMEOUT)
+    except asyncio.TimeoutError:
+        return None
 
 
 

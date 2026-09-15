@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from bot.detectors.url.online import network
+from bot.detectors.url.online import network, safe_net
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -56,8 +56,16 @@ def local_server():
 
 
 @pytest.fixture(autouse=True)
-def reset_shared_client():
+def reset_shared_client(monkeypatch):
     """Never let one test's client leak into another's assertions."""
+    # These tests deliberately run a real local HTTP server on
+    # 127.0.0.1 to exercise the real client/cookie/failure behavior -
+    # unrelated to what the SSRF guard exists to test (that's
+    # tests/test_safe_net.py's job). Loopback is blocked by default now
+    # (see safe_net.py), so this test module's own local server needs
+    # the explicit opt-out, same as a real self-hosted deployment would
+    # use for a legitimate internal target.
+    monkeypatch.setattr(safe_net, "SSRF_ALLOWED_HOSTS", frozenset({"127.0.0.1"}))
     asyncio.run(network.aclose())
     yield
     asyncio.run(network.aclose())

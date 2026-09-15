@@ -9,6 +9,7 @@ This file tests those directly.
 """
 
 import sqlite3
+import time
 
 import httpx
 import pytest
@@ -149,6 +150,69 @@ async def test_fetch_registration_survives_a_network_exception(monkeypatch):
 
     result = await domain_info.fetch_registration("unreachable-host.example")
     assert result == (None, None)
+
+
+# --- resolve_host DNS timeout -------------------------------------------
+
+@pytest.mark.asyncio
+async def test_resolve_host_returns_none_for_empty_host():
+    assert await domain_info.resolve_host("") is None
+    assert await domain_info.resolve_host(None) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_host_returns_real_ips_on_a_normal_lookup(monkeypatch):
+    monkeypatch.setattr(domain_info, "_resolve_sync", lambda host: ["93.184.216.34"])
+    assert await domain_info.resolve_host("example.com") == ["93.184.216.34"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_host_returns_none_on_a_hung_resolver(monkeypatch):
+    # Regression: socket.getaddrinfo has no timeout of its own, unlike
+    # every sibling outbound call in this codebase (RDAP 8s, TLS connect,
+    # network trace 10s) - a slow/hanging resolver used to stall
+    # resolve_host, and since analyze_url runs this inside an
+    # asyncio.gather with the others, one stuck DNS lookup stalled the
+    # WHOLE scan up to the system resolver's own default (20-30s).
+    def hanging_resolve(host):
+        time.sleep(2)  # real thread sleep - this IS what to_thread runs
+        return ["203.0.113.5"]
+
+    monkeypatch.setattr(domain_info, "_resolve_sync", hanging_resolve)
+    monkeypatch.setattr(domain_info, "DNS_TIMEOUT", 0.05)
+
+    started = time.perf_counter()
+    result = await domain_info.resolve_host("slow-resolver.example")
+    elapsed = time.perf_counter() - started
+
+    assert result is None
+    # Must return at (roughly) the timeout bound, not wait for the full
+    # 2s sleep - proves this actually stops blocking the scan rather than
+    # just silently swallowing a late result.
+    assert elapsed < 1.0
+
+
+@pytest.mark.asyncio
+async def test_resolve_host_unresolvable_and_timed_out_are_both_none(monkeypatch):
+    # A DNS timeout must degrade exactly like a genuinely unresolvable
+    # host (NXDOMAIN) - both are "we don't know", and analyze_url must
+    # not be able to tell them apart and score one differently.
+    def raises_gaierror(host, port):
+        raise domain_info.socket.gaierror("simulated NXDOMAIN")
+
+    monkeypatch.setattr(domain_info.socket, "getaddrinfo", raises_gaierror)
+    unresolvable = await domain_info.resolve_host("nxdomain.example")
+    assert unresolvable is None
+
+    def hangs(host):
+        time.sleep(2)
+
+    monkeypatch.setattr(domain_info, "_resolve_sync", hangs)
+    monkeypatch.setattr(domain_info, "DNS_TIMEOUT", 0.05)
+    timed_out = await domain_info.resolve_host("slow.example")
+
+    assert timed_out is None
+    assert timed_out == unresolvable
 
 
 def test_connect_creates_the_table_idempotently(tmp_path, monkeypatch):

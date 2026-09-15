@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timezone
 
 from bot.config.config import SCAN_LOG_DB
+from bot.detectors.url.online import safe_net
 
 TIMEOUT = 8.0
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -84,9 +85,24 @@ def _cache_put(host: str, issued_at: str | None) -> None:
 
 
 def _get_cert_sync(host: str, port: int = 443) -> dict | None:
+    """A real TLS handshake to a USER-SUPPLIED host - the same class of
+    outbound connection network.py's trace() makes, on a separate
+    code path (raw socket, not httpx), so it needs its own SSRF guard
+    rather than assuming trace()'s covers it too. safe_net's
+    first_safe_ip_sync resolves and validates in one step and returns
+    the exact IP to connect to - connecting to THAT (not re-resolving
+    `host` again here) is what actually closes the DNS-rebinding gap;
+    server_hostname stays the original `host` so SNI and certificate
+    hostname verification are completely unaffected by which literal
+    address the socket happened to connect to.
+    """
     ctx = ssl.create_default_context()
     try:
-        with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
+        safe_ip = safe_net.first_safe_ip_sync(host, port)
+    except safe_net.BlockedAddressError:
+        return None
+    try:
+        with socket.create_connection((safe_ip, port), timeout=TIMEOUT) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as ssock:
                 return ssock.getpeercert()
     except Exception:                          # noqa: BLE001 - no cert, timeout, refused, self-signed...
@@ -109,7 +125,20 @@ async def cert_issued_days_ago(host: str, port: int = 443) -> int | None:
 
     was_cached, cached = _cache_get(host)
     if not was_cached:
-        cert = await asyncio.to_thread(_get_cert_sync, host, port)
+        try:
+            # _get_cert_sync's own SSRF resolution (safe_net.first_safe_ip_sync)
+            # has no timeout of its own - bounded here from the async
+            # side, same reasoning as domain_info.resolve_host's fix.
+            # TIMEOUT alone already bounds the TCP connect step inside
+            # _get_cert_sync; this adds safe_net.DNS_TIMEOUT on top so a
+            # hung resolver can't push the real wall-clock past TIMEOUT
+            # unnoticed.
+            cert = await asyncio.wait_for(
+                asyncio.to_thread(_get_cert_sync, host, port),
+                timeout=TIMEOUT + safe_net.DNS_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            cert = None
         issued = None
         if cert and "notBefore" in cert:
             issued = _parse_cert_date(cert["notBefore"])

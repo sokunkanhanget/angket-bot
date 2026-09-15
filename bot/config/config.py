@@ -1,3 +1,4 @@
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -99,7 +100,38 @@ SCAM_PATTERN_THRESHOLD = float(os.getenv("SCAM_PATTERN_THRESHOLD", "0.5"))
 # instead, defaulting to Cambodia's ICT (UTC+7) since this bot's whole
 # audience/localization (the km i18n locale) is Cambodia-based - override
 # via .env if that's ever wrong for a deployment.
-DISPLAY_TIMEZONE_OFFSET_HOURS = int(os.getenv("DISPLAY_TIMEZONE_OFFSET_HOURS", "7"))
+#
+# Parsed defensively: a bare int(os.getenv(...)) here would crash the
+# whole bot at IMPORT time on a malformed value (a typo'd .env line, or
+# an empty string, which os.getenv's own default only covers when the
+# key is UNSET, not when it's set to ""). Every other optional env value
+# in this file degrades gracefully instead of crashing on bad input
+# (VIRUSTOTAL_API_KEY/GEMINI_API_KEY being unset, ADMIN_CHAT_ID being
+# None) - this brings the one genuinely bad-input-prone case (a string
+# that must parse as an int) in line with that same pattern.
+_raw_tz_offset = os.getenv("DISPLAY_TIMEZONE_OFFSET_HOURS", "7")
+try:
+    DISPLAY_TIMEZONE_OFFSET_HOURS = int(_raw_tz_offset)
+except ValueError:
+    logging.getLogger(__name__).warning(
+        "DISPLAY_TIMEZONE_OFFSET_HOURS=%r is not a valid integer - falling back to 7 (ICT)",
+        _raw_tz_offset,
+    )
+    DISPLAY_TIMEZONE_OFFSET_HOURS = 7
+
+# SSRF protection (bot/detectors/url/online/safe_net.py) - every outbound
+# connection this bot makes to a USER-SUPPLIED host (the link checker's
+# page fetch, the TLS certificate connect) is blocked by default from
+# reaching a private, loopback, link-local, reserved, unspecified, or
+# multicast address, or the cloud metadata IP 169.254.169.254. Locked
+# down by default; a self-hosted deployment that genuinely needs to scan
+# an internal host can opt a specific hostname out here - comma-
+# separated, exact hostname match, empty by default. This is deliberately
+# NOT a single "disable SSRF protection" flag - opting out is scoped to
+# the specific host that needs it, not global.
+SSRF_ALLOWED_HOSTS = frozenset(
+    h.strip().lower() for h in os.getenv("SSRF_ALLOWED_HOSTS", "").split(",") if h.strip()
+)
 
 SUSPICIOUS_KEYWORDS = (
     "free bitcoin",

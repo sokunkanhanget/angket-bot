@@ -15,7 +15,7 @@ from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_se
 from bot.handlers.url_handler import extract_text_link_entities
 from bot.storage import subscription
 from bot.detectors.url.pipeline import bare_trusted_link, check_message_full
-from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, trusted_link_notice, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 
 logger = logging.getLogger(__name__)
@@ -309,9 +309,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # that's NOTHING but one link to a verified PROTECTED_BRANDS domain
     # qualifies, so this can never be used to bypass quota on arbitrary
     # content. A document attached rules it out too - that always needs
-    # its own real check. Confirmed once check_message_full's real
-    # verdict comes back below (see trusted_and_safe) before the quota
-    # charge is actually skipped.
+    # its own real check. Confirmed once analyze_unified's real verdict
+    # comes back below (see trusted_host) before the quota charge is
+    # actually skipped.
     trusted_shape = (
         is_plain_private and document is None
         and bare_trusted_link(text, hidden_links) is not None
@@ -325,7 +325,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # really is silent, not a stray message to clean up.
         if subscription.should_notify_link_limit(user_id):
             await message.reply_text(
-                t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+                t(lang, "daily_scan_limit_reached").format(
+                    limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+                    reset_time=subscription.reset_time_display(),
+                ),
                 reply_markup=main_menu_keyboard,
                 parse_mode="HTML",
             )
@@ -370,18 +373,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # risky awaits.
         try:
             unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
-            reply_text = format_unified_response(
-                unified, keyword_result, lang,
-                has_link=bool(link_verdicts),
-                has_file=document is not None,
-                has_text=not _message_is_only_links(text, link_verdicts),
-                evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
-            )
-            trusted_and_safe = (
-                trusted_shape and len(link_verdicts) == 1
-                and link_verdicts[0].get("trusted_brand") and link_verdicts[0].get("level") == "safe"
-            )
-            if user_id is not None and not trusted_and_safe:
+            trusted_host = unified.get("trusted_link_notice_host")
+            if trusted_host:
+                # Direct user spec (2026-09-16): a bare trusted-brand
+                # link gets this one-line notice instead of the full
+                # VERDICT/KEY REASONS/WHAT TO DO template - see
+                # verdict_style.trusted_link_notice.
+                reply_text = trusted_link_notice(trusted_host, lang, style="html")
+            else:
+                reply_text = format_unified_response(
+                    unified, keyword_result, lang,
+                    has_link=bool(link_verdicts),
+                    has_file=document is not None,
+                    has_text=not _message_is_only_links(text, link_verdicts),
+                    evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
+                )
+            if user_id is not None and not trusted_host:
                 subscription.record_link_or_message_scan(user_id)
         except Exception:                          # noqa: BLE001 - must still stop the animation and reply
             logger.exception("Unified analysis failed for a private-DM message")
@@ -495,7 +502,7 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # see its own comment for why this is safe (narrows to one of the
     # small, hand-verified PROTECTED_BRANDS domains, never arbitrary
     # input) and only a pre-check (confirmed against the real verdict
-    # below via trusted_and_safe before the quota charge is skipped).
+    # below via trusted_host before the quota charge is skipped).
     trusted_shape = document is None and bare_trusted_link(target_text, hidden_links) is not None
 
     if user_id is not None and not trusted_shape and not subscription.can_scan_link_or_message(user_id):
@@ -507,6 +514,7 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await message.reply_text(
                 t(DEFAULT_LANG, "daily_scan_limit_reached").format(
                     limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+                    reset_time=subscription.reset_time_display(),
                 ),
                 parse_mode="HTML",
             )
@@ -546,18 +554,18 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         unified = await analyze_unified(
             target_text, keyword_result, link_verdicts, file_verdict, DEFAULT_LANG, user_id,
         )
-        reply_text = format_unified_response(
-            unified, keyword_result, DEFAULT_LANG,
-            has_link=bool(link_verdicts),
-            has_file=document is not None,
-            has_text=bool(target_text.strip()),
-            evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
-        )
-        trusted_and_safe = (
-            trusted_shape and len(link_verdicts) == 1
-            and link_verdicts[0].get("trusted_brand") and link_verdicts[0].get("level") == "safe"
-        )
-        if user_id is not None and not trusted_and_safe:
+        trusted_host = unified.get("trusted_link_notice_host")
+        if trusted_host:
+            reply_text = trusted_link_notice(trusted_host, DEFAULT_LANG, style="html")
+        else:
+            reply_text = format_unified_response(
+                unified, keyword_result, DEFAULT_LANG,
+                has_link=bool(link_verdicts),
+                has_file=document is not None,
+                has_text=bool(target_text.strip()),
+                evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
+            )
+        if user_id is not None and not trusted_host:
             subscription.record_link_or_message_scan(user_id)
     except Exception:                          # noqa: BLE001 - must still stop the animation and reply
         logger.exception("Unified analysis failed for /check")

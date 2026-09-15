@@ -405,7 +405,10 @@ async def test_daily_scan_limit_blocks_before_any_real_work():
     mock_unified.assert_not_called()
     mock_check.assert_not_called()
     update.message.reply_text.assert_awaited_once_with(
-        t("en", "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+        t("en", "daily_scan_limit_reached").format(
+            limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+            reset_time=subscription.reset_time_display(),
+        ),
         reply_markup=MAIN_MENU_KEYBOARD,
         parse_mode="HTML",
     )
@@ -607,7 +610,10 @@ async def test_handle_check_blocked_by_daily_quota():
     mock_seed.assert_not_awaited()
     mock_check.assert_not_awaited()
     update.effective_message.reply_text.assert_awaited_once_with(
-        t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+        t(DEFAULT_LANG, "daily_scan_limit_reached").format(
+            limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+            reset_time=subscription.reset_time_display(),
+        ),
         parse_mode="HTML",
     )
 
@@ -705,6 +711,14 @@ def _trusted_verdict(**over):
 
 _NOT_A_SCAM = {"verdict": "Not a Scam", "risk_percentage": 0, "key_reasons": [], "recommendations": []}
 
+# What the REAL _trusted_bare_link_verdict short-circuit actually returns
+# for a bare trusted-brand link (see context_engine.py) - a plain
+# _NOT_A_SCAM mock has no trusted_link_notice_host key, so it can't
+# stand in for this specific case since 2026-09-16's lightweight-notice
+# change; that key is what now decides both the quota skip AND the
+# reply shape.
+_TRUSTED_NOTICE = {**_NOT_A_SCAM, "trusted_link_notice_host": "facebook.com"}
+
 
 @pytest.mark.asyncio
 async def test_handle_check_bare_trusted_link_skips_quota_even_when_over_limit():
@@ -717,11 +731,14 @@ async def test_handle_check_bare_trusted_link_skips_quota_even_when_over_limit()
 
     with patch("bot.handlers.text_handler.check_message_full",
                AsyncMock(return_value=[_trusted_verdict()])), \
-         patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value=_NOT_A_SCAM)):
+         patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value=_TRUSTED_NOTICE)):
         await handle_check(update, context)
 
     # Never blocked - status message got a real edit, not the quota-limit reply.
     status_message.edit_text.assert_awaited_once()
+    reply = status_message.edit_text.call_args[0][0]
+    assert "facebook.com" in reply
+    assert "VERDICT" not in reply  # the lightweight notice, not the full template
     assert subscription.usage_summary(42)["links_messages_used"] == used_before
 
 
@@ -753,8 +770,11 @@ async def test_handle_text_private_bare_trusted_link_skips_quota_even_when_over_
          patch("bot.handlers.text_handler.ensure_vectors_seeded", AsyncMock()), \
          patch("bot.handlers.text_handler.check_message_full",
                AsyncMock(return_value=[_trusted_verdict()])), \
-         patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value=_NOT_A_SCAM)):
+         patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value=_TRUSTED_NOTICE)):
         await handle_text(update, context)
 
     status_message.edit_text.assert_awaited_once()
+    reply = status_message.edit_text.call_args[0][0]
+    assert "facebook.com" in reply
+    assert "VERDICT" not in reply  # the lightweight notice, not the full template
     assert subscription.usage_summary(42)["links_messages_used"] == used_before

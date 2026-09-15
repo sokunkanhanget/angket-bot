@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 
-from bot.config.config import ADMIN_CHAT_ID, DISPLAY_TIMEZONE_OFFSET_HOURS, TELEGRAM_BOT_TOKEN
-from bot.response.verdict_style import DISCLAIMER_SPACER
+from bot.config.config import ADMIN_CHAT_ID, TELEGRAM_BOT_TOKEN
+from bot.response.verdict_style import DISCLAIMER_SPACER, format_local_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +63,7 @@ _DEFAULT_TODO_HINT = "Check this service's own status page/dashboard."
 
 
 def _format_alert(service: str, count: int, detail: str) -> str:
-    now_local = datetime.now(timezone.utc) + timedelta(hours=DISPLAY_TIMEZONE_OFFSET_HOURS)
-    when = f"{now_local.strftime('%d %b %Y, %I:%M %p')} (UTC{DISPLAY_TIMEZONE_OFFSET_HOURS:+d})"
+    when = format_local_datetime(datetime.now(timezone.utc))
     short_detail = detail if len(detail) <= _MAX_ERROR_MESSAGE_CHARS else (
         detail[:_MAX_ERROR_MESSAGE_CHARS].rstrip() + "…"
     )

@@ -35,7 +35,7 @@ import re
 from google.genai import types
 
 from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
-from bot.detectors.text.online.gemini_retry import build_clients, generate_content_with_backup
+from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, build_clients, generate_content_with_backup
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
 from bot.detectors.text.offline.scam_patterns import nearest_scam_pattern, nearest_scam_pattern_live
@@ -330,6 +330,13 @@ def _trusted_bare_link_verdict(
             "source": "link_evidence",
         }],
         "recommendations": _fallback_recommendations("Not a Scam", lang),
+        # Direct user spec (2026-09-16): every caller renders this as
+        # verdict_style.trusted_link_notice(host, lang) instead of the
+        # normal full VERDICT/KEY REASONS/WHAT TO DO template - the
+        # existing keys above stay populated too (tests, and anything
+        # that reads a plain verdict dict, keep working unchanged), this
+        # is purely an additional marker for callers that know to check it.
+        "trusted_link_notice_host": v.get("host"),
     }
 
 
@@ -783,6 +790,19 @@ async def analyze_unified(
         if data.get("risk_percentage") is not None:
             data["risk_percentage"] = max(0, min(100, int(data["risk_percentage"])))
         return _reconcile_with_evidence(data, link_verdicts, file_verdict, pattern_match, lang)
+    except GeminiCircuitOpenError as error:
+        # The circuit breaker already recorded and logged the real
+        # failure pattern that opened it - this call was never actually
+        # attempted, so it's not new information for health_alerts'
+        # "N failures in the last hour" count, and skipping the network
+        # round trip to maybe_alert keeps this path fast, matching the
+        # whole point of the breaker (skip real work while Gemini is
+        # known-down).
+        logger.info("Unified context-engine analysis skipped: %s", error)
+        return await _grounded_fallback(
+            "LLM analysis skipped: Gemini circuit open.", text, keyword_result,
+            link_verdicts, file_verdict, lang,
+        )
     except Exception as error:                       # noqa: BLE001 - must never break the reply path
         logger.exception("Unified context-engine analysis failed")
         health_alerts.record_failure("Gemini", str(error))

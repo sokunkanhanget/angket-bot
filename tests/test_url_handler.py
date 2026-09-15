@@ -82,7 +82,10 @@ async def test_handle_url_checks_quota_before_seeding_vectors():
     mock_seed.assert_not_awaited()
     mock_check.assert_not_awaited()
     update.effective_message.reply_text.assert_awaited_once_with(
-        t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+        t(DEFAULT_LANG, "daily_scan_limit_reached").format(
+            limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+            reset_time=subscription.reset_time_display(),
+        ),
         parse_mode="HTML",
     )
 
@@ -129,6 +132,9 @@ async def test_handle_url_bare_trusted_link_skips_quota_even_when_over_limit():
         subscription.record_link_or_message_scan(42)
     used_before = subscription.usage_summary(42)["links_messages_used"]
 
+    status_message = AsyncMock()
+    update.effective_message.reply_text = AsyncMock(return_value=status_message)
+
     with patch("bot.handlers.url_handler.ensure_vectors_seeded", AsyncMock()), \
          patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[_trusted_verdict()])), \
@@ -139,6 +145,12 @@ async def test_handle_url_bare_trusted_link_skips_quota_even_when_over_limit():
     for call in update.effective_message.reply_text.await_args_list:
         assert "daily_scan_limit_reached" not in str(call)
     assert subscription.usage_summary(42)["links_messages_used"] == used_before
+
+    # 2026-09-16 direct user spec: the lightweight notice, not the full
+    # VERDICT/KEY REASONS/WHAT TO DO template.
+    reply = status_message.edit_text.call_args[0][0]
+    assert "facebook.com" in reply
+    assert "VERDICT" not in reply
 
 
 @pytest.mark.asyncio

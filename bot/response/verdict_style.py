@@ -17,9 +17,13 @@ of scope for translation for now, unlike private DM/business chat.
 
 from __future__ import annotations
 
+import html
+from datetime import datetime, timedelta
+
 from bot.detectors.url.offline.lexical import URL_REGEX
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
+from bot.config.config import DISPLAY_TIMEZONE_OFFSET_HOURS
 
 _VERDICT_ICONS = {
     "Scam": "⚠️",
@@ -50,6 +54,23 @@ SOURCE_TAGS = {
 DISCLAIMER_SPACER = ""
 
 
+def format_local_datetime(utc_dt: datetime) -> str:
+    """A UTC-aware datetime rendered in this project's one display
+    timezone (DISPLAY_TIMEZONE_OFFSET_HOURS - see that constant's own
+    docstring for why a true per-user timezone isn't something the Bot
+    API can answer), as "%d %b %Y, %I:%M %p (UTC+n)".
+
+    Extracted (2026-09-16, found by code review) after this exact
+    two-line format existed independently in three places - the
+    business-chat header (url_handler.py), the admin failure alert
+    (health_alerts.py), and the daily-quota reset notice
+    (subscription.py) - each one built by hand instead of sharing this.
+    A future tweak to the format applied to only some call sites was the
+    real risk that duplication carried."""
+    local_dt = utc_dt + timedelta(hours=DISPLAY_TIMEZONE_OFFSET_HOURS)
+    return f"{local_dt.strftime('%d %b %Y, %I:%M %p')} (UTC{DISPLAY_TIMEZONE_OFFSET_HOURS:+d})"
+
+
 def defang_domains(text: str, style: str = "html") -> str:
     """Wraps any URL/domain-like substring in a non-clickable code span,
     direct user spec (2026-09-11): a reply warning about a link
@@ -69,6 +90,49 @@ def defang_domains(text: str, style: str = "html") -> str:
     business notification)."""
     wrap = (lambda s: f"<code>{s}</code>") if style == "html" else (lambda s: f"`{s}`")
     return URL_REGEX.sub(lambda m: wrap(m.group(0)), text)
+
+
+def trusted_link_notice(host: str, lang: str = DEFAULT_LANG, style: str = "html") -> str:
+    """The full reply for a trusted-brand bare link, replacing the
+    normal VERDICT/TYPE/KEY REASONS/WHAT TO DO template - direct user
+    spec (2026-09-16): a message that's nothing but a link to a verified
+    PROTECTED_BRANDS domain, confirmed safe after the real redirect
+    trace, doesn't need that full treatment, quota or no quota. Every
+    real caller that produces a unified verdict must check for
+    unified.get("trusted_link_notice_host") and call this instead of the
+    normal full-template renderer when it's set:
+    text_handler.py's handle_text and handle_check, url_handler.py's
+    handle_url (via its own trusted_and_safe check, computed directly
+    from a link verdict rather than a unified dict, on the group-chat
+    link-only path that never calls analyze_unified at all), AND
+    url_handler.py's handle_business_message - that last one was
+    genuinely missed in the first pass (found by code review,
+    2026-09-16) precisely because this docstring didn't name it either.
+
+    style matches defang_domains' own param - "html" for the HTML-parse-
+    mode surfaces (private DM/business chat), "markdown" for the
+    legacy-Markdown group-chat link checker.
+
+    Real bug, found by code review (2026-09-16): the html.escape() ->
+    defang_domains() order every other style="html" call site follows
+    (text_handler.py's _format_list/reason_lines - see
+    defang_domains' own docstring for why the order matters) was
+    missing here. Currently harmless only because `host` is always a
+    hand-verified PROTECTED_BRANDS domain and the fixed translated
+    notice text has no HTML metacharacters today - the moment either
+    changes (a future translation using "&amp;", or this function
+    reused for a less-constrained host), parse_mode="HTML" rendering
+    would silently break without the escape.
+    """
+    icon, _ = verdict_style("Not a Scam", lang)
+    notice = t(lang, "trusted_link_notice").format(host=host)
+    if style == "html":
+        notice = html.escape(notice)
+    return "\n".join([
+        f"{icon} {defang_domains(notice, style=style)}",
+        DISCLAIMER_SPACER,
+        t(lang, "verdict_disclaimer"),
+    ])
 
 
 def verdict_style(verdict: str | None, lang: str = DEFAULT_LANG) -> tuple[str, str]:

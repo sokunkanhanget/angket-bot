@@ -311,3 +311,67 @@ def test_add_column_if_missing_is_safe_to_call_twice():
         conn.execute("select file_limit_notified from daily_usage limit 1")
     finally:
         conn.close()
+
+
+# --- reset_time_display / next_daily_reset_at (2026-09-16 direct user
+# spec: tell the user a real reset TIME, not just "tomorrow") ----------
+
+def test_next_daily_reset_at_is_always_the_next_utc_midnight():
+    reset_at = sub.next_daily_reset_at()
+
+    assert reset_at.tzinfo is timezone.utc
+    assert reset_at.hour == 0 and reset_at.minute == 0 and reset_at.second == 0
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).date()
+    assert reset_at.date() == tomorrow
+
+
+def test_reset_time_display_reflects_the_display_timezone_offset(monkeypatch):
+    # DISPLAY_TIMEZONE_OFFSET_HOURS is read via
+    # verdict_style.format_local_datetime now (shared, 2026-09-16), not
+    # a local name in subscription.py's own namespace.
+    from bot.response import verdict_style
+    monkeypatch.setattr(verdict_style, "DISPLAY_TIMEZONE_OFFSET_HOURS", 7)
+    reset_at = sub.next_daily_reset_at()
+
+    display = sub.reset_time_display()
+
+    local_dt = reset_at + timedelta(hours=7)
+    assert local_dt.strftime("%d %b %Y, %I:%M %p") in display
+    assert "(UTC+7)" in display
+
+
+def test_reset_time_display_is_a_real_time_not_the_word_tomorrow():
+    display = sub.reset_time_display()
+
+    assert "tomorrow" not in display.lower()
+    assert ":" in display  # a real clock time is present
+
+
+def test_reset_time_display_handles_a_negative_offset(monkeypatch):
+    from bot.response import verdict_style
+    monkeypatch.setattr(verdict_style, "DISPLAY_TIMEZONE_OFFSET_HOURS", -5)
+    display = sub.reset_time_display()
+
+    assert "(UTC-5)" in display
+
+
+def test_daily_file_limit_reached_message_shows_a_real_reset_time():
+    from bot.response.buttons import t
+
+    message = t("en", "daily_file_limit_reached").format(
+        limit=sub.FREEMIUM_DAILY_FILES, reset_time=sub.reset_time_display(),
+    )
+
+    assert "tomorrow" not in message.lower()
+    assert sub.reset_time_display() in message
+
+
+def test_daily_scan_limit_reached_message_shows_a_real_reset_time_in_khmer():
+    from bot.response.buttons import t
+
+    message = t("km", "daily_scan_limit_reached").format(
+        limit=sub.FREEMIUM_DAILY_LINKS_MESSAGES, reset_time=sub.reset_time_display(),
+    )
+
+    assert "ថ្ងៃស្អែក" not in message  # the old "tomorrow" wording, removed
+    assert sub.reset_time_display() in message

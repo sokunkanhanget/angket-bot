@@ -58,3 +58,29 @@ def test_analyze_text_with_llm_returns_parsed_verdict():
     }
 
 
+
+def test_analyze_text_with_llm_falls_back_without_a_real_call_once_circuit_is_open():
+    # 2026-09-16, mentor/teammate spec - same breaker as
+    # gemini_retry.py's own tests, this just proves the group-chat
+    # caller (llm.py) wires into it the same way context_engine.py does:
+    # falls back cleanly, makes no real call, doesn't re-record a
+    # health_alerts failure for a call that never happened.
+    import time
+
+    from bot.detectors.text.online import gemini_retry
+
+    fake_client = type(
+        "FakeClient", (), {"aio": type("Aio", (), {"models": type("Models", (), {
+            "generate_content": AsyncMock(return_value="should never be reached"),
+        })()})()},
+    )()
+
+    with patch.object(llm_analyzer, "_client", fake_client), \
+         patch.object(gemini_retry, "_consecutive_failures", gemini_retry.CIRCUIT_FAILURE_THRESHOLD), \
+         patch.object(gemini_retry, "_circuit_open_until", time.time() + 30), \
+         patch.object(llm_analyzer.health_alerts, "record_failure") as mock_record:
+        result = asyncio.run(llm_analyzer.analyze_text_with_llm("hello"))
+
+    fake_client.aio.models.generate_content.assert_not_called()
+    mock_record.assert_not_called()
+    assert "circuit open" in result["error"].lower()

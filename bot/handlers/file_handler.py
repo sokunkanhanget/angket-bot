@@ -189,7 +189,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # blocked either way; only whether we SAY so is conditional.
         if subscription.should_notify_file_limit(user_id):
             await message.edit_text(
-                t(lang, "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES),
+                t(lang, "daily_file_limit_reached").format(
+                    limit=subscription.FREEMIUM_DAILY_FILES,
+                    reset_time=subscription.reset_time_display(),
+                ),
                 parse_mode="HTML",
             )
         else:

@@ -25,9 +25,10 @@ can resolve.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from bot.config.config import SCAN_LOG_DB
+from bot.response.verdict_style import format_local_datetime
 
 FREEMIUM_DAILY_FILES = 3
 FREEMIUM_DAILY_LINKS_MESSAGES = 8
@@ -98,6 +99,31 @@ def _connect() -> sqlite3.Connection:
 
 def _today() -> str:
     return datetime.now(timezone.utc).date().isoformat()
+
+
+def next_daily_reset_at() -> datetime:
+    """The real UTC instant today's file/link-message/token counters
+    reset - always the next UTC midnight, since _today()/usage_date is
+    keyed on datetime.now(timezone.utc).date(). A daily_usage row for a
+    new date is only ever created lazily (_get_or_create_today), but the
+    reset MOMENT itself doesn't depend on that - it's always this
+    instant regardless of whether today's row happens to exist yet."""
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc)
+
+
+def reset_time_display() -> str:
+    """next_daily_reset_at() rendered as a real local date+time, for the
+    "your limit will reset at {reset_time}" messages - replacing the old
+    bare "tomorrow", which told the user nothing about WHEN. Shares
+    verdict_style.format_local_datetime with url_handler.py's business
+    header and health_alerts.py's admin-alert timestamp (extracted
+    2026-09-16, found by code review, after this exact format existed
+    independently in all three places) - one project-wide
+    DISPLAY_TIMEZONE_OFFSET_HOURS default (see that constant's own
+    docstring for why a true per-user timezone isn't something the Bot
+    API can answer)."""
+    return format_local_datetime(next_daily_reset_at())
 
 
 def is_paid_user(user_id: int) -> bool:

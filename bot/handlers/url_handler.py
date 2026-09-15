@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
 
 from telegram import MessageEntity, Update
 from telegram.error import TelegramError
@@ -59,7 +58,6 @@ from telegram.ext import ContextTypes
 from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
-from bot.config.config import DISPLAY_TIMEZONE_OFFSET_HOURS
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
 from bot.detectors.url.pipeline import (
@@ -67,7 +65,7 @@ from bot.detectors.url.pipeline import (
     check_message_full,
     format_verdict_full,
 )
-from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, verdict_style
+from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, format_local_datetime, risk_style, scan_type_label, summary_sentence, trusted_link_notice, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
@@ -100,11 +98,7 @@ def _sender_header(sender, sent_at, lang: str = DEFAULT_LANG) -> str:
     else:
         name = "Unknown sender"
     uid = sender.id if sender else "—"
-    if sent_at:
-        local_dt = sent_at + timedelta(hours=DISPLAY_TIMEZONE_OFFSET_HOURS)
-        when = f"{local_dt.strftime('%d %b %Y, %I:%M %p')} (UTC{DISPLAY_TIMEZONE_OFFSET_HOURS:+d})"
-    else:
-        when = "—"
+    when = format_local_datetime(sent_at) if sent_at else "—"
     return f"👤 `{name}`\n🆔 {uid}\n🕒 {when}"
 
 
@@ -240,7 +234,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         # docstring.
         if subscription.should_notify_link_limit(sender.id):
             await message.reply_text(
-                t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+                t(lang, "daily_scan_limit_reached").format(
+                    limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+                    reset_time=subscription.reset_time_display(),
+                ),
                 parse_mode="HTML",
             )
         return
@@ -286,11 +283,11 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not is_business and sender is not None and not trusted_and_safe:
         subscription.record_link_or_message_scan(sender.id)
 
-    await _reply_with_verdicts(update, context, message, verdicts, status, is_business)
+    await _reply_with_verdicts(update, context, message, verdicts, status, is_business, trusted_and_safe)
 
 
 async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
-                                status, is_business: bool) -> None:
+                                status, is_business: bool, trusted_and_safe: bool = False) -> None:
     """Once you have a list of verdicts, the business/private/group reply
     branching is identical regardless of where the link(s) came from. No
     buttons anywhere (direct user spec) - every surface just gets the
@@ -304,11 +301,19 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
             log_url_scan, sender.id if sender else None, v["host"], v["score"], v["level"]
         )
 
-    # No Technical Evidence section on any live reply - the spec'd
-    # template has no such section, unlike the old private-DM/group-detail
-    # split this replaced (private already hid it; group's old "See full
-    # details" button was the only place it ever showed).
-    full = _full_breakdown_text(verdicts, include_evidence=False)
+    if trusted_and_safe:
+        # Direct user spec (2026-09-16): a bare trusted-brand link gets
+        # this one-line notice instead of the full VERDICT/KEY REASONS/
+        # WHAT TO DO template - is_business is always False here (see
+        # handle_url's own trusted_shape, which never fires for business
+        # messages), so this only ever applies to the group/private path.
+        full = trusted_link_notice(verdicts[0]["host"], DEFAULT_LANG, style="markdown")
+    else:
+        # No Technical Evidence section on any live reply - the spec'd
+        # template has no such section, unlike the old private-DM/group-detail
+        # split this replaced (private already hid it; group's old "See full
+        # details" button was the only place it ever showed).
+        full = _full_breakdown_text(verdicts, include_evidence=False)
 
     if is_business:
         owner_chat_id = await _owner_chat_id(context, message.business_connection_id)
@@ -563,13 +568,27 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
 
     await stop_status_animation(animation_task)
 
-    body = header + _format_unified_business_text(
-        unified, owner_lang,
-        has_link=bool(link_verdicts),
-        has_file=document is not None,
-        has_text=not _message_is_only_links(text, link_verdicts),
-        evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
-    )
+    trusted_host = unified.get("trusted_link_notice_host")
+    if trusted_host:
+        # Real bug, found by code review (2026-09-16): the trusted-link-
+        # notice change was wired into text_handler.py's two callers and
+        # this file's own group-chat _reply_with_verdicts, but never
+        # into THIS handler - a customer sending a business owner
+        # nothing but a bare trusted-brand link still got the full
+        # VERDICT/KEY REASONS/WHAT TO DO template. analyze_unified's
+        # _trusted_bare_link_verdict short-circuit fires unconditionally
+        # regardless of caller, so this path needed the same check as
+        # the other three, just kept behind the real header (who it's
+        # from, when) rather than dropping that context.
+        body = header + trusted_link_notice(trusted_host, owner_lang, style="markdown")
+    else:
+        body = header + _format_unified_business_text(
+            unified, owner_lang,
+            has_link=bool(link_verdicts),
+            has_file=document is not None,
+            has_text=not _message_is_only_links(text, link_verdicts),
+            evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
+        )
 
     # Real, confirmed bug: this had no error handling at all - a
     # Markdown-parsing failure (e.g. an odd number of underscores in a

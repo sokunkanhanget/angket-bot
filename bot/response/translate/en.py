@@ -81,14 +81,14 @@ TEXT = {
 
     "daily_file_limit_reached": (
         "🚫 You've reached today's free file-scan limit ({limit} files/day).\n\n"
-        "Your limit will reset tomorrow. Want to scan more files today? "
+        "Your limit will reset at {reset_time}. Want to scan more files today? "
         "Check our subscription plans for higher daily limits.\n\n"
         "👉 <b>[ View Premium Plans ]</b>"
     ),
 
     "daily_scan_limit_reached": (
         "🚫 You've reached today's free link/message-scan limit ({limit}/day).\n\n"
-        "Your limit will reset tomorrow. Want to keep scanning today? "
+        "Your limit will reset at {reset_time}. Want to keep scanning today? "
         "Check our subscription plans for higher daily limits.\n\n"
         "👉 <b>[ View Premium Plans ]</b>"
     ),
@@ -237,6 +237,16 @@ TEXT = {
     "rec_link_safe_match_address": (
         "Make sure the address matches the official site exactly before logging in."
     ),
+
+    # --- Trusted-brand bare-link notice (2026-09-16 direct user spec) --
+    # A bare message that's NOTHING but a link to a verified
+    # PROTECTED_BRANDS domain, confirmed safe after the real redirect
+    # trace, is trivially safe - showing the full VERDICT/KEY REASONS/
+    # WHAT TO DO template for "this is google.com" is more noise than
+    # signal. This one-line notice replaces that full template for
+    # every such link, quota or no quota - see
+    # verdict_style.trusted_link_notice.
+    "trusted_link_notice": "{host} is a verified official domain — no scam signs found.",
 
     # --- File scanning -------------------------------------------------
     # The file checker never involves Gemini at all, so every reason and

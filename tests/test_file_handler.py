@@ -240,7 +240,10 @@ async def test_daily_file_limit_blocks_scanning_once_reached():
     # status message goes out before the hash is even known, since the
     # gate itself needs that hash. See handle_file's own comment.
     sent.edit_text.assert_awaited_once_with(
-        t("en", "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES),
+        t("en", "daily_file_limit_reached").format(
+            limit=subscription.FREEMIUM_DAILY_FILES,
+            reset_time=subscription.reset_time_display(),
+        ),
         parse_mode="HTML",
     )
 
@@ -401,7 +404,10 @@ async def test_daily_file_limit_only_notifies_once():
          patch("bot.handlers.file_handler.scan_file") as mock_scan:
         await handle_file(update, context)  # 1st over-quota upload: notified
         sent.edit_text.assert_awaited_once_with(
-            t("en", "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES),
+            t("en", "daily_file_limit_reached").format(
+            limit=subscription.FREEMIUM_DAILY_FILES,
+            reset_time=subscription.reset_time_display(),
+        ),
             parse_mode="HTML",
         )
         sent.edit_text.reset_mock()

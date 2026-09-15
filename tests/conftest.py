@@ -200,3 +200,24 @@ def _reset_subscription_usage(_subscription_reset_conn):
     _subscription_reset_conn.execute("delete from daily_usage")
     _subscription_reset_conn.execute("delete from trial_status")
     _subscription_reset_conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def _reset_gemini_circuit_breaker():
+    """Same class of gap as _no_real_admin_alerts above, this time for
+    gemini_retry.py's circuit breaker (2026-09-16). Its consecutive-
+    failure counter and open-until deadline are module-level globals,
+    shared across the WHOLE test run, not just tests that mention it by
+    name - test_context_engine.py and test_llm_analyzer.py both call the
+    real generate_content_with_backup() with a fake client that raises,
+    many times, across many tests. Three such failures in a row with no
+    success in between - purely a question of test EXECUTION ORDER, not
+    of any single test's own correctness - opens the real breaker, and a
+    later, unrelated test then gets GeminiCircuitOpenError from a call
+    it expected to fail/succeed normally. Confirmed as a real latent gap
+    (not hypothetical): the full suite passes today only because no 3
+    failing tests currently happen to run back to back, which is not a
+    property any test actually asserts or protects."""
+    import bot.detectors.text.online.gemini_retry as gemini_retry
+    gemini_retry._consecutive_failures = 0
+    gemini_retry._circuit_open_until = 0.0

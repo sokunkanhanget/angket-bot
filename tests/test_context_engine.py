@@ -370,6 +370,34 @@ async def test_analyze_unified_falls_back_when_api_raises(fake_vector_store, mon
     assert result["ai_unavailable"] is True
 
 
+@pytest.mark.asyncio
+async def test_analyze_unified_falls_back_without_a_real_call_once_circuit_is_open(
+    fake_vector_store, monkeypatch,
+):
+    # 2026-09-16, mentor/teammate spec: once the circuit breaker has
+    # opened from real repeated failures, a later call must still
+    # degrade to the offline fallback (unchanged from the ordinary
+    # failure case) but WITHOUT attempting a real Gemini call, and
+    # without re-recording a health_alerts failure for a call that
+    # never actually happened.
+    from bot.detectors.text.online import gemini_retry
+
+    monkeypatch.setattr(gemini_retry, "_consecutive_failures", gemini_retry.CIRCUIT_FAILURE_THRESHOLD)
+    monkeypatch.setattr(gemini_retry, "_circuit_open_until", __import__("time").time() + 30)
+
+    fake_client = _FakeClient(response_text="should never be reached")
+    monkeypatch.setattr(ce, "_client", fake_client)
+
+    record_calls = []
+    monkeypatch.setattr(ce.health_alerts, "record_failure", lambda *a: record_calls.append(a))
+
+    result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
+
+    assert result["ai_unavailable"] is True
+    assert fake_client.aio.models.last_kwargs is None  # no real call attempted
+    assert record_calls == []  # not re-recorded - the breaker already logged the real pattern
+
+
 # --- evidence-reconciliation safety net -------------------------------
 # Gemini's own verdict is only ever ESCALATED here, never trusted blindly
 # when it contradicts hard evidence already independently verified -

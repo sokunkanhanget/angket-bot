@@ -4,7 +4,7 @@ import logging
 from google.genai import types
 
 from bot.config.config import GEMINI_MODEL
-from bot.detectors.text.online.gemini_retry import build_clients, generate_content_with_backup
+from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, build_clients, generate_content_with_backup
 from bot.detectors.text.offline.keyword import analyze_text
 # Deliberate cross-module reuse of context_engine's offline fallback
 # (leading underscore is this project's "internal to its own reasoning
@@ -169,6 +169,14 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
             "key_reasons": data.get("key_reasons", []),
             "recommendations": data.get("recommendations", []),
         }
+    except GeminiCircuitOpenError as error:
+        # Same reasoning as context_engine.py's own GeminiCircuitOpenError
+        # branch - the breaker already recorded/logged the real failure
+        # pattern; this call was never actually attempted.
+        logger.info("Gemini text analysis skipped: %s", error)
+        return await _fallback(
+            "LLM analysis skipped: Gemini circuit open.", str(error), text
+        )
     except Exception as error:
         logger.exception("Gemini text analysis failed")
         health_alerts.record_failure("Gemini", str(error))

@@ -745,3 +745,44 @@ async def test_unexpected_failure_mid_check_still_edits_the_status_message():
     body = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
     assert t("en", "scan_failed") in body
     status.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_business_owner_gets_the_trusted_link_notice_not_the_full_template():
+    # Real bug, found by code review (2026-09-16): handle_business_message
+    # was the one caller of analyze_unified() that never checked
+    # unified.get("trusted_link_notice_host") - a customer sending a bare
+    # trusted-brand link (e.g. https://facebook.com) still produced the
+    # full VERDICT/KEY REASONS/WHAT TO DO template for the owner instead
+    # of the intended one-line notice every other surface already got.
+    update = _business_update(text="https://facebook.com")
+    context = _context()
+
+    trusted_unified = {
+        "verdict": "Not a Scam",
+        "risk_percentage": 0,
+        "key_reasons": [],
+        "recommendations": [],
+        "trusted_link_notice_host": "facebook.com",
+    }
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": False, "matches": []}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full",
+               AsyncMock(return_value=[{"host": "facebook.com", "score": 0, "level": "safe",
+                                        "reasons": [], "detail": [], "trusted_brand": True}])), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value=trusted_unified)):
+        await handle_business_message(update, context)
+
+    status = context.bot.send_message.return_value
+    status.edit_text.assert_awaited_once()
+    body = status.edit_text.call_args.kwargs.get("text") or status.edit_text.call_args.args[0]
+
+    assert "facebook.com" in body
+    assert "VERDICT" not in body
+    assert "KEY REASONS" not in body
+    # The header (who it's from) must still be there - only the
+    # verdict/reasons/what-to-do part gets replaced by the short notice.
+    assert "Customer" in body

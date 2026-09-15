@@ -146,4 +146,156 @@ TEXT = {
     "risk_medium": "Medium Risk",
     "risk_high": "High Risk",
     "risk_unknown": "Unknown Risk",
+
+    # --- Reasons and recommendations written WITHOUT Gemini ------------
+    # Gemini normally writes key_reasons/recommendations directly in the
+    # user's language (see context_engine.py's _system_prompt), so those
+    # needed no table entries. Every path that bypasses Gemini was
+    # therefore emitting raw English into an otherwise fully-translated
+    # Khmer reply: the offline fallback, both deterministic
+    # short-circuits, the evidence-reconciliation overrides, and the
+    # group-chat link reply. These keys close that.
+    #
+    # {placeholders} are filled by the caller and deliberately left
+    # untranslated: scam-script category slugs, hostnames, engine counts.
+    "reason_keyword_match": "Matched suspicious keywords: {matches}.",
+    "reason_scam_script": "Message text closely matches a known '{category}' scam script.",
+    "reason_link_flagged": "{host}: {detail}",
+    "reason_file_malicious": "VirusTotal: {count} engine(s) flag the attached file as malicious.",
+    "reason_override_file": (
+        "Overridden: the attached file was independently confirmed malicious "
+        "by VirusTotal, regardless of the message text."
+    ),
+    "reason_override_link": (
+        "Overridden: at least one link in this message was independently "
+        "flagged suspicious or dangerous, regardless of the message text."
+    ),
+    # No similarity score here on purpose - internal detection-method and
+    # confidence details must never reach the user.
+    "reason_override_scam_script": (
+        "Overridden: message text closely matches a known '{category}' scam "
+        "script, regardless of the model's own reading of it."
+    ),
+    "reason_dead_link": (
+        "This link could not be verified: its address does not resolve or the "
+        "server can't be reached, and the message has no other text to judge it "
+        "by. That is a weak caution, not proof of a scam - dead links, typos and "
+        "temporarily offline pages look the same from here."
+    ),
+    "reason_trusted_brand": (
+        "{host} is a verified official domain, and following the link's own "
+        "redirects/network trace found nothing suspicious."
+    ),
+
+    "rec_scam_no_interaction": (
+        "Do not click any links, open any files, or share personal or financial details."
+    ),
+    "rec_scam_block_report": "Block and report the sender - this pattern matches known scam tactics.",
+    "rec_uncertain_hold_off": (
+        "Don't share personal details, click links, or send money until you're sure "
+        "this is legitimate."
+    ),
+    "rec_uncertain_verify_sender": "Verify with the sender through a separate channel before acting.",
+    "rec_safe_stay_cautious": (
+        "No strong scam signals were found, but stay cautious with anything unexpected."
+    ),
+    "rec_dead_link_no_credentials": (
+        "Don't enter any login or payment details on this link until you have "
+        "confirmed it is genuine."
+    ),
+    "rec_dead_link_check_sender": (
+        "If someone sent it to you, check through a channel you trust that they "
+        "really meant to."
+    ),
+
+    # Link-checker (group-chat) recommendations - pipeline.py's own
+    # _RECOMMENDATIONS, moved here so the group path can be translated
+    # the same way every other surface already is.
+    "rec_link_dangerous_no_entry": (
+        "Do not open this link, log in, or enter any codes, passwords, or card details."
+    ),
+    "rec_link_dangerous_already_entered": (
+        "If you already entered anything, change that password now and contact "
+        "your bank or provider."
+    ),
+    "rec_link_dangerous_block": (
+        "Block and report the sender — this pattern matches known scam tactics."
+    ),
+    "rec_link_suspicious_hold_off": (
+        "Don't log in, pay, or enter personal details until you confirm this is legitimate."
+    ),
+    "rec_link_suspicious_go_direct": (
+        "Go to the official site or app directly instead of clicking this link."
+    ),
+    "rec_link_suspicious_verify_sender": (
+        "If someone sent this to you, verify with them through a separate channel first."
+    ),
+    "rec_link_safe_double_check": (
+        "No strong scam signals were found, but always double-check before entering "
+        "sensitive info."
+    ),
+    "rec_link_safe_match_address": (
+        "Make sure the address matches the official site exactly before logging in."
+    ),
+
+    # --- File scanning -------------------------------------------------
+    # The file checker never involves Gemini at all, so every reason and
+    # recommendation it shows was fixed English - the last surface still
+    # rendering English inside an otherwise Khmer reply. File extensions
+    # and engine counts are real evidence and stay verbatim.
+    "filename_warning_double_extension_executable": (
+        "File name disguises an executable ('.{outer_ext}') behind a '.{inner_ext}' "
+        "extension — a classic malware trick (e.g. 'invoice.pdf.exe')."
+    ),
+    "filename_warning_double_extension_archive": (
+        "File name hides a '.{inner_ext}' file inside a '.{outer_ext}' archive — "
+        "this bot cannot see inside archives, so the real content is unverified."
+    ),
+    "filename_warning_lone_executable": (
+        "This is a '.{ext}' executable/script file — a common malware vector, "
+        "especially when unsolicited."
+    ),
+
+    "reason_file_engines_flag": (
+        "{malicious} of {total} security engines on VirusTotal flag this file as "
+        "malicious (e.g. Microsoft: {top_engine})."
+    ),
+    "reason_file_clean_but_name_suspect": (
+        "VirusTotal found no threats in this exact file ({total} engines checked), "
+        "but its name is still worth a second look."
+    ),
+    "reason_file_no_engine_flags": "No security engine out of {total} on VirusTotal flags this file.",
+    # Deliberately does not name the unavailable backend - state the real
+    # limitation without the "why" (9th-session decision).
+    "reason_file_name_only": "This result is based on the file name only, not a full antivirus scan.",
+    "reason_file_never_seen": (
+        "This file's signature has never been seen by VirusTotal before — no track "
+        "record either way."
+    ),
+    "reason_file_no_name_flags": "No filename red flags were found either.",
+
+    "rec_file_dangerous_do_not_open": "Do not open this file, run it, or extract its contents.",
+    "rec_file_dangerous_already_opened": (
+        "If you already opened it, disconnect from the internet and run a full "
+        "antivirus scan."
+    ),
+    "rec_file_dangerous_delete_block": "Delete the file and block/report whoever sent it.",
+    "rec_file_suspicious_verify_sender": (
+        "Don't open this file until you've verified it with the sender through "
+        "another channel."
+    ),
+    "rec_file_suspicious_scan_first": (
+        "If you must open it, scan it with your own antivirus software first."
+    ),
+    "rec_file_safe_no_signals": (
+        "No strong threat signals were found, but stay cautious with any unexpected "
+        "attachment."
+    ),
+    "rec_file_safe_trusted_senders": "Only open files from senders you actually trust.",
+    "rec_file_uncertain_caution": (
+        "Treat this file with caution until it can be properly checked."
+    ),
+    "rec_file_uncertain_verify_sender": (
+        "Verify the sender through another channel before opening it."
+    ),
 }

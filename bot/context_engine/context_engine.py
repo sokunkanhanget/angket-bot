@@ -37,6 +37,7 @@ from google.genai import types
 from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
 from bot.detectors.text.online.gemini_retry import build_clients, generate_content_with_backup
 from bot.response.translate import DEFAULT_LANG
+from bot.response.buttons import t
 from bot.detectors.text.offline.scam_patterns import nearest_scam_pattern, nearest_scam_pattern_live
 from bot.storage import subscription
 from bot.storage import health_alerts
@@ -232,12 +233,19 @@ def _unverifiable_dead_link(
     link_verdicts: list[dict],
     file_verdict: dict | None,
     pattern_match: tuple[float, str] | None,
+    lang: str = DEFAULT_LANG,
 ) -> dict | None:
     """Return a fixed 'couldn't verify' verdict for the pure dead-link,
     no-context case, or None to let the normal Gemini path run. Written
     to fail SAFE: every condition that isn't clearly met returns None, so
     this can only ever replace the ambiguous-noise case, never suppress a
-    real signal."""
+    real signal.
+
+    `lang` matters because this path never reaches Gemini, and Gemini is
+    what normally writes key_reasons/recommendations in the user's own
+    language - so without translating here, a Khmer user got an
+    otherwise-Khmer reply with an English reason and recommendations
+    inside it."""
     if file_verdict and file_verdict.get("malicious", 0) > 0:
         return None
     if pattern_match is not None:
@@ -265,15 +273,12 @@ def _unverifiable_dead_link(
         "verdict": "Uncertain",
         "risk_percentage": UNVERIFIABLE_DEAD_LINK_RISK,
         "key_reasons": [{
-            "text": "This link could not be verified: its address does not resolve or the "
-                    "server can't be reached, and the message has no other text to judge it "
-                    "by. That is a weak caution, not proof of a scam - dead links, typos and "
-                    "temporarily offline pages look the same from here.",
+            "text": t(lang, "reason_dead_link"),
             "source": "link_evidence",
         }],
         "recommendations": [
-            "Don't enter any login or payment details on this link until you have confirmed it is genuine.",
-            "If someone sent it to you, check through a channel you trust that they really meant to.",
+            t(lang, "rec_dead_link_no_credentials"),
+            t(lang, "rec_dead_link_check_sender"),
         ],
     }
 
@@ -284,6 +289,7 @@ def _trusted_bare_link_verdict(
     file_verdict: dict | None,
     keyword_result: dict,
     pattern_match: tuple[float, str] | None,
+    lang: str = DEFAULT_LANG,
 ) -> dict | None:
     """Return a fixed 'Not a Scam' verdict for a bare link to an exact
     PROTECTED_BRANDS domain (pipeline.py's is_official_brand gate), or
@@ -320,11 +326,10 @@ def _trusted_bare_link_verdict(
         "verdict": "Not a Scam",
         "risk_percentage": v.get("score", 0),
         "key_reasons": [{
-            "text": f"{v.get('host')} is a verified official domain, and following the link's "
-                    f"own redirects/network trace found nothing suspicious.",
+            "text": t(lang, "reason_trusted_brand").format(host=v.get("host")),
             "source": "link_evidence",
         }],
-        "recommendations": list(_FALLBACK_RECOMMENDATIONS["Not a Scam"]),
+        "recommendations": _fallback_recommendations("Not a Scam", lang),
     }
 
 
@@ -394,22 +399,25 @@ def _build_contents(
     )
 
 
-# Same voice/tone as pipeline.py's own _RECOMMENDATIONS (dangerous/
+# Same voice/tone as pipeline.py's own _RECOMMENDATION_KEYS (dangerous/
 # suspicious/safe) - this fallback's verdict vocabulary is Scam/
 # Uncertain/Not a Scam instead, matching every other surface's.
-_FALLBACK_RECOMMENDATIONS = {
-    "Scam": [
-        "Do not click any links, open any files, or share personal or financial details.",
-        "Block and report the sender - this pattern matches known scam tactics.",
-    ],
-    "Uncertain": [
-        "Don't share personal details, click links, or send money until you're sure this is legitimate.",
-        "Verify with the sender through a separate channel before acting.",
-    ],
-    "Not a Scam": [
-        "No strong scam signals were found, but stay cautious with anything unexpected.",
-    ],
+#
+# Translation keys rather than literal strings: every path that uses
+# these bypasses Gemini, and Gemini is what normally writes
+# recommendations in the user's own language, so these were the source of
+# raw English appearing inside otherwise-Khmer replies.
+_FALLBACK_RECOMMENDATION_KEYS = {
+    "Scam": ["rec_scam_no_interaction", "rec_scam_block_report"],
+    "Uncertain": ["rec_uncertain_hold_off", "rec_uncertain_verify_sender"],
+    "Not a Scam": ["rec_safe_stay_cautious"],
 }
+
+
+def _fallback_recommendations(verdict: str, lang: str) -> list[str]:
+    """A fresh list every call, so no caller can mutate shared state -
+    the same reason the old code wrapped its constant in list()."""
+    return [t(lang, key) for key in _FALLBACK_RECOMMENDATION_KEYS[verdict]]
 
 
 async def _grounded_fallback(
@@ -418,6 +426,7 @@ async def _grounded_fallback(
     keyword_result: dict,
     link_verdicts: list[dict],
     file_verdict: dict | None = None,
+    lang: str = DEFAULT_LANG,
 ) -> dict:
     """Also imported directly by bot/detectors/text/online/llm.py (the
     separate group-chat text-only Gemini call) - the leading underscore
@@ -440,13 +449,21 @@ async def _grounded_fallback(
     reasoning was unavailable" admission - `ai_unavailable` stays in the
     returned dict (useful for logs/tests) but the formatters no longer
     branch the DISPLAY on it.
+
+    `lang` is what makes that spec actually work for a Khmer user. Since
+    the reply now shows this path's own reasons as if they were any other
+    verdict's, they have to be written in the user's language like any
+    other verdict's are - Gemini writes its own in the right language,
+    but by definition it never ran here. Defaults to DEFAULT_LANG for
+    llm.py's group-chat caller, which has no language wiring at all.
     """
     logger.info("Falling back to offline detection: %s", reason)
     reasons: list[dict] = []
 
     if keyword_result.get("suspicious"):
         reasons.append({
-            "text": f"Matched suspicious keywords: {', '.join(keyword_result['matches'])}.",
+            "text": t(lang, "reason_keyword_match").format(
+                matches=", ".join(keyword_result["matches"])),
             "source": "keyword_match",
         })
 
@@ -461,23 +478,35 @@ async def _grounded_fallback(
         if pattern_hits and pattern_hits[0][0] >= SCAM_PATTERN_THRESHOLD:
             pattern_similarity, _kind, _key, category = pattern_hits[0]
             reasons.append({
-                "text": f"Message text closely matches a known '{category}' scam script.",
+                "text": t(lang, "reason_scam_script").format(category=category),
                 "source": "message_text",
             })
 
     for v in link_verdicts:
         if v.get("level") != "safe":
             detail = v["reasons"][0] if v.get("reasons") else f"{v.get('host')} flagged {v.get('level')}"
-            reasons.append({"text": f"{v.get('host')}: {detail}", "source": "link_evidence"})
+            reasons.append({
+                "text": t(lang, "reason_link_flagged").format(host=v.get("host"), detail=detail),
+                "source": "link_evidence",
+            })
 
     file_flagged = bool(file_verdict and file_verdict.get("malicious", 0) > 0)
     if file_flagged:
         reasons.append({
-            "text": f"VirusTotal: {file_verdict['malicious']} engine(s) flag the attached file as malicious.",
+            "text": t(lang, "reason_file_malicious").format(count=file_verdict["malicious"]),
             "source": "file_evidence",
         })
-    if file_verdict and file_verdict.get("filename_warning"):
-        reasons.append({"text": file_verdict["filename_warning"], "source": "file_evidence"})
+    if file_verdict:
+        # Imported here, not at module scope: file_handler.py imports
+        # text_handler.py, which would make this a real import cycle at
+        # load time. The renderer is shared rather than duplicated so the
+        # file reply and this fallback can't word the same warning
+        # differently.
+        from bot.handlers.file_handler import filename_warning_text
+
+        warning = filename_warning_text(file_verdict, lang)
+        if warning:
+            reasons.append({"text": warning, "source": "file_evidence"})
 
     # Derived from whatever evidence actually got appended above - not
     # hand-tracked, so a future evidence source can't add a reason and
@@ -508,12 +537,10 @@ async def _grounded_fallback(
         "verdict": verdict,
         "risk_percentage": risk_percentage,
         "key_reasons": reasons,
-        # list(...) - _FALLBACK_RECOMMENDATIONS[verdict] is a shared
-        # module-level constant; handing back the same list object by
-        # reference would let any future in-place mutation by a caller
-        # (e.g. appending a translated hint) permanently corrupt it for
+        # _fallback_recommendations builds a fresh list each call, so no
+        # caller's in-place mutation can corrupt shared module state for
         # every subsequent fallback reply for the life of the process.
-        "recommendations": list(_FALLBACK_RECOMMENDATIONS[verdict]),
+        "recommendations": _fallback_recommendations(verdict, lang),
         # Internal/log-only now - see this function's own docstring for
         # why the formatters no longer special-case display on this.
         "ai_unavailable": True,
@@ -525,6 +552,7 @@ def _reconcile_with_evidence(
     link_verdicts: list[dict],
     file_verdict: dict | None,
     pattern_match: tuple[float, str] | None = None,
+    lang: str = DEFAULT_LANG,
 ) -> dict:
     """Hard safety net over Gemini's own verdict: the system prompt only
     ASKS the model not to contradict evidence already found dangerous/
@@ -575,8 +603,7 @@ def _reconcile_with_evidence(
         data["verdict"] = "Scam"
         data["risk_percentage"] = 100
         reasons.append({
-            "text": "Overridden: the attached file was independently confirmed malicious "
-                    "by VirusTotal, regardless of the message text.",
+            "text": t(lang, "reason_override_file"),
             "source": "file_evidence",
         })
         data["key_reasons"] = reasons
@@ -591,15 +618,19 @@ def _reconcile_with_evidence(
         data["risk_percentage"] = max(risk or 0, min(worst_link_score, 100), int(pattern_similarity * 100))
         if confirmed_link_flagged:
             reasons.append({
-                "text": "Overridden: at least one link in this message was independently "
-                        "flagged suspicious or dangerous, regardless of the message text.",
+                "text": t(lang, "reason_override_link"),
                 "source": "link_evidence",
             })
         if pattern_flagged:
+            # The similarity number used to be shown here as
+            # "(0.54 similarity)". Dropped: internal detection-method and
+            # confidence details must never reach the user (the same
+            # suffix was removed from _grounded_fallback's own
+            # scam-script reason for this reason, but this override path
+            # kept it). The substantive finding - which known scam script
+            # it matches - is unchanged.
             reasons.append({
-                "text": f"Overridden: message text closely matches a known '{pattern_category}' "
-                        f"scam script ({pattern_similarity:.2f} similarity), regardless of the "
-                        f"model's own reading of it.",
+                "text": t(lang, "reason_override_scam_script").format(category=pattern_category),
                 "source": "message_text",
             })
         data["key_reasons"] = reasons
@@ -627,14 +658,19 @@ async def analyze_unified(
 ) -> dict:
     """One Gemini call reasoning over the message text, every link's full
     pipeline verdict, and an optional file-scan result together -> one
-    verdict dict. `lang` only affects the live Gemini path's dynamic
-    key_reasons/recommendations text (see _system_prompt) - the fallback
-    below has no such text to translate (it's the already-degraded path,
-    no live AI at all), it just sets `ai_unavailable: True` so the
-    caller's formatter shows one fixed, translated notice instead. The
-    fixed labels around whatever either path returns are always
-    translated separately by the caller (verdict_style.py, which reaches
-    into bot/response/translate/ and bot/response/buttons.py).
+    verdict dict. `lang` reaches EVERY path that produces reasons or
+    recommendations, not just the live Gemini one: the live path asks
+    Gemini to write its dynamic text in that language (see
+    _system_prompt), and the four Gemini-bypassing paths
+    (_unverifiable_dead_link, _trusted_bare_link_verdict,
+    _grounded_fallback, _reconcile_with_evidence's overrides) look their
+    fixed text up in bot/response/translate/. Before that, those four
+    emitted raw English into an otherwise fully-translated Khmer reply -
+    and since the degraded path deliberately presents its own reasons as
+    if they were any other verdict's, that English was indistinguishable
+    from a normal result rather than obviously a fallback. The fixed
+    labels AROUND whatever any path returns are translated separately by
+    the caller (verdict_style.py).
 
     `user_id`: when given, gates on the Freemium daily token budget
     (bot/storage/subscription.py) and records real usage from Gemini's
@@ -685,7 +721,7 @@ async def analyze_unified(
     # budget check - it costs no tokens): a bare, non-resolving/unreachable
     # link with no other signal is pure noise the model just guesses on.
     # Returns a fixed "couldn't verify" verdict, or None to proceed normally.
-    dead_link = _unverifiable_dead_link(text, link_verdicts, file_verdict, pattern_match)
+    dead_link = _unverifiable_dead_link(text, link_verdicts, file_verdict, pattern_match, lang)
     if dead_link is not None:
         return dead_link
 
@@ -694,13 +730,16 @@ async def analyze_unified(
     # real redirect trace needs no LLM opinion either. Costs no tokens
     # and (via the handler-level quota gate's matching shape check)
     # costs the sender no quota.
-    trusted = _trusted_bare_link_verdict(text, link_verdicts, file_verdict, keyword_result, pattern_match)
+    trusted = _trusted_bare_link_verdict(
+        text, link_verdicts, file_verdict, keyword_result, pattern_match, lang,
+    )
     if trusted is not None:
         return trusted
 
     if not _client:
         return await _grounded_fallback(
-            "LLM analysis is not configured.", text, keyword_result, link_verdicts, file_verdict
+            "LLM analysis is not configured.", text, keyword_result, link_verdicts,
+            file_verdict, lang,
         )
 
     if user_id is not None and not subscription.has_token_budget(user_id):
@@ -709,7 +748,8 @@ async def analyze_unified(
         # similarity) still produce a real answer, just without live AI
         # reasoning, exactly like an actual Gemini outage would.
         return await _grounded_fallback(
-            "Daily AI token budget exhausted.", text, keyword_result, link_verdicts, file_verdict
+            "Daily AI token budget exhausted.", text, keyword_result, link_verdicts,
+            file_verdict, lang,
         )
 
     try:
@@ -742,11 +782,12 @@ async def analyze_unified(
         data = json.loads(response.text)
         if data.get("risk_percentage") is not None:
             data["risk_percentage"] = max(0, min(100, int(data["risk_percentage"])))
-        return _reconcile_with_evidence(data, link_verdicts, file_verdict, pattern_match)
+        return _reconcile_with_evidence(data, link_verdicts, file_verdict, pattern_match, lang)
     except Exception as error:                       # noqa: BLE001 - must never break the reply path
         logger.exception("Unified context-engine analysis failed")
         health_alerts.record_failure("Gemini", str(error))
         await health_alerts.maybe_alert("Gemini", str(error))
         return await _grounded_fallback(
-            "LLM analysis failed, please try again later.", text, keyword_result, link_verdicts, file_verdict
+            "LLM analysis failed, please try again later.", text, keyword_result,
+            link_verdicts, file_verdict, lang,
         )

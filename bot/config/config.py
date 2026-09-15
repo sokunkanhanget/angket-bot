@@ -42,13 +42,29 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 USE_BGE_M3_EMBEDDINGS = os.getenv("USE_BGE_M3_EMBEDDINGS", "false").lower() == "true"
 
 # bge-m3 runs measurably "hotter" than the hashed scheme - even
-# genuinely benign text often scores 0.5-0.67 (confirmed live: a plain
-# "hey where are you, waiting at the restaurant" scored 0.593), so
-# reusing SCAM_PATTERN_THRESHOLD (tuned for the hashed scheme) here
-# would false-positive constantly. This value matches the sandbox
-# validation from an earlier session: scam range 0.724-0.861, benign
-# range 0.508-0.674 across 54 real test cases - 0.70 sits in the gap.
-BGE_M3_PATTERN_THRESHOLD = float(os.getenv("BGE_M3_PATTERN_THRESHOLD", "0.70"))
+# genuinely benign text scores in the 0.46-0.72 band, so reusing
+# SCAM_PATTERN_THRESHOLD (tuned for the hashed scheme) here would
+# false-positive constantly.
+#
+# Recalibrated against real bge-m3 embeddings (local Ollama, the real
+# nearest_scam_pattern_live path) over 37 held-out cases, after Khmer
+# scripts were added to SCAM_MESSAGE_PATTERNS:
+#
+#   scam   (16 cases, Khmer + English)  0.7596 - 0.9733
+#   benign (21 cases, Khmer + English)  0.4578 - 0.7155
+#   safe threshold window               (0.7155, 0.7596]
+#
+# Raised from 0.70 to 0.74 because 0.70 produced a real false positive:
+# "your salary has been deposited into your account this morning" - a
+# genuinely benign bank notification - scored 0.7155 against the
+# job_offer seed. That match is on an ENGLISH seed, so it predates the
+# Khmer additions; the recalibration is what surfaced it. At 0.74 the
+# measured set has zero false positives AND zero false negatives, so
+# this removes a bad flag without costing any real detection.
+#
+# Khmer alone separates more cleanly than the mixed set: scam
+# 0.8592-0.9616 against benign 0.4578-0.6846.
+BGE_M3_PATTERN_THRESHOLD = float(os.getenv("BGE_M3_PATTERN_THRESHOLD", "0.74"))
 
 # Offline scam-message pattern similarity threshold (bot/context_engine/
 # context_engine.py's no-Gemini fallback) - calibrated live against real
@@ -56,6 +72,24 @@ BGE_M3_PATTERN_THRESHOLD = float(os.getenv("BGE_M3_PATTERN_THRESHOLD", "0.70"))
 # genuinely benign messages topped out at 0.337. Env-overridable since
 # re-tuning this (e.g. after adding more seed patterns) is an expected,
 # routine change, not a code change.
+#
+# Re-verified after Khmer scripts were added to SCAM_MESSAGE_PATTERNS,
+# over the same 37 held-out cases. 0.5 still holds and is UNCHANGED:
+#
+#   Khmer scam   (11 cases)  0.5575 - 0.7134   before Khmer seeds: 0.0556 - 0.1663
+#   Khmer benign (15 cases)  0.0938 - 0.2379
+#   safe Khmer window        (0.2379, 0.5575]  -> 0.5 sits inside it
+#   false positives at 0.5   0 of 21 benign cases, Khmer and English
+#
+# The "before" row is the whole point: with English seeds only, a Khmer
+# scam message scored ~0.06-0.17 here, so it could never reach this
+# threshold and contributed nothing at all to the offline signal.
+#
+# Known, pre-existing and deliberately not chased: this hashed scheme
+# still misses some ENGLISH paraphrases (2 of 5 held-out English scams
+# scored below 0.5, one as low as 0.3043). That is the documented
+# weakness bge-m3 exists to fix, not a regression from the Khmer work -
+# English scores are bit-identical before and after it.
 SCAM_PATTERN_THRESHOLD = float(os.getenv("SCAM_PATTERN_THRESHOLD", "0.5"))
 
 # The Telegram Bot API only ever gives message timestamps in UTC - it has

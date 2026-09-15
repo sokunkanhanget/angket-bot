@@ -129,12 +129,14 @@ async def test_grounded_fallback_returns_real_verdict_appropriate_recommendation
 @pytest.mark.asyncio
 async def test_grounded_fallback_recommendations_are_not_the_shared_constant(fake_vector_store):
     # Regression (found by /code-review): _grounded_fallback used to
-    # return _FALLBACK_RECOMMENDATIONS[verdict] BY REFERENCE - the same
-    # list object every call. Nothing mutates it today, but the first
-    # future caller that does (e.g. appending a translated hint) would
-    # permanently corrupt that verdict's recommendations for every
-    # subsequent fallback reply for the life of the process. Two separate
-    # calls for the same verdict must return independent list objects.
+    # return the shared module-level recommendations list BY REFERENCE -
+    # the same list object every call. Nothing mutates it today, but the
+    # first future caller that did would permanently corrupt that
+    # verdict's recommendations for every subsequent fallback reply for
+    # the life of the process. Two separate calls for the same verdict
+    # must return independent list objects. Still guaranteed now that
+    # the strings come from the translation tables, since
+    # _fallback_recommendations builds a fresh list per call.
     keyword_result = {"suspicious": False, "matches": []}
     first = await _grounded_fallback("x", "hey, lunch tomorrow?", keyword_result, [])
     second = await _grounded_fallback("x", "hey, lunch tomorrow?", keyword_result, [])
@@ -789,3 +791,138 @@ async def test_analyze_unified_skips_gemini_for_trusted_bare_link(monkeypatch, f
 
     assert result["verdict"] == "Not a Scam"
     assert fake_client.aio.models.last_kwargs is None  # Gemini never called
+
+
+# --- Khmer output on the Gemini-bypassing paths ------------------------
+# Gemini writes its own key_reasons/recommendations directly in the
+# user's language (see _system_prompt), so the LIVE path was always
+# fine. Every path that bypasses Gemini was not: it emitted fixed
+# English into an otherwise fully-translated Khmer reply. Worse, the
+# degraded path deliberately presents its own reasons as if they were
+# any other verdict's (direct user spec), so that English read as a
+# normal result rather than as an obvious fallback.
+
+def _has_khmer(text: str) -> bool:
+    return any(0x1780 <= ord(ch) <= 0x17FF for ch in text)
+
+
+def _reply_strings(result: dict) -> list[str]:
+    return ([r["text"] for r in result.get("key_reasons") or []]
+            + list(result.get("recommendations") or []))
+
+
+@pytest.mark.asyncio
+async def test_grounded_fallback_renders_in_khmer(fake_vector_store):
+    keyword_result = {"suspicious": True, "matches": ["urgent", "send money"]}
+    result = await _grounded_fallback(
+        "x", "Mom I lost my phone, send $800 now, don't call",
+        keyword_result, [], None, "km",
+    )
+
+    strings = _reply_strings(result)
+    assert strings
+    for s in strings:
+        assert _has_khmer(s), f"not translated: {s!r}"
+    # The interpolated keyword list is real evidence and stays verbatim.
+    assert any("urgent" in s for s in strings)
+    assert not any("Matched suspicious keywords" in s for s in strings)
+    assert not any("Verify with the sender through a separate channel" in s for s in strings)
+
+
+@pytest.mark.asyncio
+async def test_grounded_fallback_still_english_by_default(fake_vector_store):
+    # llm.py's group-chat caller passes no language at all, so the
+    # default must stay English rather than becoming Khmer by accident.
+    result = await _grounded_fallback(
+        "x", "hey, lunch tomorrow?", {"suspicious": False, "matches": []}, [],
+    )
+
+    for s in _reply_strings(result):
+        assert not _has_khmer(s)
+
+
+@pytest.mark.asyncio
+async def test_grounded_fallback_translates_malicious_file_reason(fake_vector_store):
+    file_verdict = {"found": True, "malicious": 5, "suspicious": 0, "total": 70}
+    result = await _grounded_fallback(
+        "x", "", {"suspicious": False, "matches": []}, [], file_verdict, "km",
+    )
+
+    assert result["verdict"] == "Scam"
+    strings = _reply_strings(result)
+    for s in strings:
+        assert _has_khmer(s), f"not translated: {s!r}"
+    # The engine count is real evidence; VirusTotal is a product name.
+    assert any("5" in s and "VirusTotal" in s for s in strings)
+
+
+@pytest.mark.asyncio
+async def test_dead_link_short_circuit_renders_in_khmer(fake_vector_store):
+    link_verdicts = [{
+        "host": "not-a-real-domain-xyz.tk", "score": 20, "level": "suspicious",
+        "reasons": ["Domain does not resolve."],
+    }]
+    result = await analyze_unified(
+        "http://not-a-real-domain-xyz.tk", {"suspicious": False, "matches": []},
+        link_verdicts, None, "km",
+    )
+
+    assert result["verdict"] == "Uncertain"
+    for s in _reply_strings(result):
+        assert _has_khmer(s), f"not translated: {s!r}"
+
+
+@pytest.mark.asyncio
+async def test_trusted_bare_link_short_circuit_renders_in_khmer(fake_vector_store):
+    link_verdicts = [{
+        "host": "facebook.com", "score": 0, "level": "safe",
+        "trusted_brand": True, "reasons": [],
+    }]
+    result = await analyze_unified(
+        "https://facebook.com", {"suspicious": False, "matches": []},
+        link_verdicts, None, "km",
+    )
+
+    assert result["verdict"] == "Not a Scam"
+    strings = _reply_strings(result)
+    assert strings
+    for s in strings:
+        assert _has_khmer(s), f"not translated: {s!r}"
+    # The hostname is real evidence and stays verbatim.
+    assert any("facebook.com" in s for s in strings)
+
+
+def test_reconcile_overrides_render_in_khmer():
+    data = {"verdict": "Not a Scam", "risk_percentage": 5,
+            "key_reasons": [], "recommendations": []}
+    link_verdicts = [{
+        "host": "bad.tk", "score": 80, "level": "dangerous",
+        "reasons": ["VirusTotal: 4 engines flag this link."],
+    }]
+
+    result = _reconcile_with_evidence(
+        data, link_verdicts, None, (0.91, "lottery_prize"), "km",
+    )
+
+    assert result["verdict"] == "Uncertain"
+    reasons = [r["text"] for r in result["key_reasons"]]
+    assert reasons
+    for r in reasons:
+        assert _has_khmer(r), f"not translated: {r!r}"
+    assert not any("Overridden:" in r for r in reasons)
+
+
+def test_reconcile_override_no_longer_exposes_the_similarity_score():
+    # The 9th session's decision - internal detection-method and
+    # confidence details must never reach the user. This override path
+    # still appended "(0.91 similarity)" long after the same suffix was
+    # removed from _grounded_fallback's own scam-script reason.
+    data = {"verdict": "Not a Scam", "risk_percentage": 5,
+            "key_reasons": [], "recommendations": []}
+
+    result = _reconcile_with_evidence(data, [], None, (0.91, "lottery_prize"))
+
+    reasons = [r["text"] for r in result["key_reasons"]]
+    assert any("lottery_prize" in r for r in reasons)   # the substantive finding stays
+    assert not any("0.91" in r for r in reasons)
+    assert not any("similarity" in r.lower() for r in reasons)

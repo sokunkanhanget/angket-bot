@@ -555,7 +555,7 @@ async def analyze_url(
         # also returned near-empty content when it was scanned.
         if net and net.get("page_text") and len(net["page_text"]) >= MIN_PAGE_TEXT_FOR_NEARDUP:
             dup_host = network._host(net["final_url"])
-            dup = _safe_near_dup(dup_host, net["page_text"])
+            dup = await _safe_near_dup(dup_host, net["page_text"])
             if dup and dup[1] >= NEARDUP_THRESHOLD:
                 other_host, similarity = dup
                 score += 25
@@ -685,10 +685,18 @@ async def _safe_nearest(text: str) -> tuple[list, bool]:
         return [], True
 
 
-def _safe_near_dup(host: str, page_text: str):
+async def _safe_near_dup(host: str, page_text: str):
+    # Both calls are synchronous SQLite (the MinHash page-dedup table is
+    # deliberately still SQLite - see vectors.py's module docstring), so
+    # calling them straight from this async flow froze the whole event
+    # loop for the duration of the disk I/O: every other concurrent scan
+    # stalled while one scan wrote its page signature. Off-loaded the same
+    # way cert_info.py's TLS handshake and domain_info.py's DNS lookup
+    # already are. Kept as two hops rather than one wrapper so each
+    # underlying function stays individually patchable by name.
     try:
-        sig = vectors.store_page_signature(host, page_text)
-        return vectors.nearest_page(host, sig)
+        sig = await asyncio.to_thread(vectors.store_page_signature, host, page_text)
+        return await asyncio.to_thread(vectors.nearest_page, host, sig)
     except Exception:                          # noqa: BLE001
         return None
 
@@ -861,59 +869,74 @@ def _risk_percent_and_label(score: int) -> tuple[int, str]:
     return pct, "High Risk"
 
 
-_RECOMMENDATIONS = {
+# Translation keys rather than literal strings - these used to be the
+# last fixed English text on the group-chat link reply, which had no
+# language wiring at all. Moving them into bot/response/translate/ means
+# this surface can render in Khmer the same way every other one already
+# does, as soon as a caller has a real language to pass (see
+# format_verdict_full's `lang`). No Gemini call is involved either way -
+# the group path stays fast and fully offline.
+_RECOMMENDATION_KEYS = {
     "dangerous": [
-        "Do not open this link, log in, or enter any codes, passwords, or card details.",
-        "If you already entered anything, change that password now and contact your bank or provider.",
-        "Block and report the sender — this pattern matches known scam tactics.",
+        "rec_link_dangerous_no_entry",
+        "rec_link_dangerous_already_entered",
+        "rec_link_dangerous_block",
     ],
     "suspicious": [
-        "Don't log in, pay, or enter personal details until you confirm this is legitimate.",
-        "Go to the official site or app directly instead of clicking this link.",
-        "If someone sent this to you, verify with them through a separate channel first.",
+        "rec_link_suspicious_hold_off",
+        "rec_link_suspicious_go_direct",
+        "rec_link_suspicious_verify_sender",
     ],
     "safe": [
-        "No strong scam signals were found, but always double-check before entering sensitive info.",
-        "Make sure the address matches the official site exactly before logging in.",
+        "rec_link_safe_double_check",
+        "rec_link_safe_match_address",
     ],
 }
 
 
-def format_verdict_full(v: dict, include_evidence: bool = True) -> str:
+def format_verdict_full(v: dict, include_evidence: bool = True, lang: str = DEFAULT_LANG) -> str:
     """Full breakdown; include_evidence=False drops the Technical Evidence
     section. Same VERDICT/TYPE/risk/reasons/what-to-do/disclaimer shape as
     text_handler.py's unified reply and file_handler.py's file verdict -
     direct user spec that all three (plus the business notification) read
-    as one consistent product, not three differently-worded ones. Always
-    English (DEFAULT_LANG) - matches this function's existing callers
-    (group chat's link checker), same scope limitation
-    format_analysis_response documents for group-chat text."""
+    as one consistent product, not three differently-worded ones.
+
+    `lang` defaults to DEFAULT_LANG because this function's only callers
+    are the group-chat link checker, where no per-user language is
+    available at all (Telegram gives a group no single language, and
+    nothing stores one) - the same scope limitation
+    format_analysis_response documents for group-chat text. What changed
+    is that the recommendations are no longer hardcoded English: they now
+    come from bot/response/translate/ like every other string here, so
+    this surface renders fully in Khmer the moment a caller has a real
+    language to pass. Still no Gemini call on this path - it stays fast
+    and fully offline."""
     pct, _ = _risk_percent_and_label(v["score"])
     verdict = LEVEL_TO_VERDICT[v["level"]]
-    verdict_icon, verdict_label = verdict_style(verdict, DEFAULT_LANG)
-    risk_icon, risk_label = risk_style(pct, DEFAULT_LANG)
-    recs = _RECOMMENDATIONS[v["level"]]
+    verdict_icon, verdict_label = verdict_style(verdict, lang)
+    risk_icon, risk_label = risk_style(pct, lang)
+    recs = [t(lang, key) for key in _RECOMMENDATION_KEYS[v["level"]]]
 
     lines = [
-        f"{verdict_icon} *{t(DEFAULT_LANG, 'verdict_label')}: {verdict_label}*",
-        f"📁 *{t(DEFAULT_LANG, 'type_label')}: {scan_type_label(has_text=False, has_link=True, has_file=False)}*",
-        summary_sentence(verdict, pct, DEFAULT_LANG),
+        f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
+        f"📁 *{t(lang, 'type_label')}: {scan_type_label(has_text=False, has_link=True, has_file=False)}*",
+        summary_sentence(verdict, pct, lang),
         "",
         f"{risk_icon} *{pct}%  {risk_label.upper()}*",
         "",
-        f"🔍 *{t(DEFAULT_LANG, 'key_reasons_header')}*",
+        f"🔍 *{t(lang, 'key_reasons_header')}*",
     ]
     lines += [f"• {defang_domains(r, style='markdown')}" for r in v["reasons"]]
     lines += [
         "",
-        f"💡 *{t(DEFAULT_LANG, 'what_to_do_header')}*",
+        f"💡 *{t(lang, 'what_to_do_header')}*",
     ]
     lines += [f"✓ {defang_domains(r, style='markdown')}" for r in recs]
     if v.get("evidence_degraded"):
-        lines += ["", f"⚠️ {t(DEFAULT_LANG, 'evidence_degraded_notice')}"]
+        lines += ["", f"⚠️ {t(lang, 'evidence_degraded_notice')}"]
     lines += [
         DISCLAIMER_SPACER,
-        t(DEFAULT_LANG, "verdict_disclaimer"),
+        t(lang, "verdict_disclaimer"),
     ]
 
     detail = v.get("detail") or []

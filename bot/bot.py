@@ -31,6 +31,7 @@ from telegram.ext import (
 )
 
 from bot.config.config import GEMINI_API_KEY, SUPABASE_DB_URL, TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
+from bot.detectors.url.online import network
 from bot.handlers.file_handler import handle_file
 from bot.handlers.text_handler import COMMAND_KEYS, handle_check, handle_command, handle_text, start
 from bot.handlers.url_handler import (
@@ -147,6 +148,13 @@ async def set_bot_commands(application: Application) -> None:
     )
 
 
+async def close_shared_clients(application: Application) -> None:
+    """The link checker's httpx client is now shared across every scan
+    instead of built per request (see network._get_client), so it
+    outlives any single check and needs releasing on a clean stop rather
+    than being torn down by interpreter exit."""
+    await network.aclose()
+
 
 def main():
     main_start = time.perf_counter()
@@ -159,7 +167,13 @@ def main():
     logger.info("[startup] local SQLite tables ready in %.3fs", time.perf_counter() - step_start)
 
     step_start = time.perf_counter()
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(set_bot_commands).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(set_bot_commands)
+        .post_shutdown(close_shared_clients)
+        .build()
+    )
     logger.info("[startup] Application built in %.3fs", time.perf_counter() - step_start)
 
     async def _log_every_update(update, context):

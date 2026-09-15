@@ -30,6 +30,22 @@ protection / security-awareness material everywhere (FTC, banks,
 telecoms) - hand-written representative examples, not scraped from any
 real conversation, same spirit as vectors.py's own PHISH_PATTERNS
 templates for domains.
+
+Every category carries BOTH English and Khmer examples. The Khmer ones
+close a real, measured gap rather than a theoretical one: with English
+seeds alone, held-out Khmer scam messages scored 0.0556-0.1663 against
+this index - nowhere near SCAM_PATTERN_THRESHOLD - so a scam written in
+Khmer contributed nothing to this signal at all, on a bot built for a
+Khmer-first audience. The Khmer tokenizer fix in vectors.py (see its
+_TOKEN_RE comment) made Khmer text embeddable, but there was still
+nothing in Khmer to embed it AGAINST. See the calibration figures in
+bot/config/config.py's SCAM_PATTERN_THRESHOLD comment.
+
+The Khmer wording is a first draft written to read like real Cambodian
+scam messages and still needs a native Khmer speaker's review - it is
+seed data for a similarity check, so awkward phrasing weakens matching
+rather than breaking anything, but it should be read over before this is
+treated as finished.
 """
 
 from __future__ import annotations
@@ -44,32 +60,45 @@ SCAM_MESSAGE_PATTERNS: dict[str, list[str]] = {
         "Mom, I lost my phone, this is my friend's number. I'm in trouble and need money right now, please don't call, just trust me.",
         "Grandma, it's me, I've been in an accident and need bail money urgently, please don't tell mom and dad.",
         "This is your brother, I'm stuck abroad and lost my wallet, can you wire money immediately, I'll explain later.",
+        "ម៉ាក់ កូនធ្វើបាត់ទូរស័ព្ទ នេះជាលេខថ្មីរបស់កូន។ កូនត្រូវការលុយបន្ទាន់ សូមផ្ញើ ២០០ដុល្លារ មកគណនីនេះឥឡូវនេះ កុំទូរស័ព្ទមកកូនវិញ។",
+        "បង ខ្ញុំមានបញ្ហាបន្ទាន់ ជួយផ្ទេរលុយឲ្យខ្ញុំ ៥០០ដុល្លារសិនបានទេ ខ្ញុំសងវិញថ្ងៃស្អែក កុំប្រាប់អ្នកណាឲ្យដឹង។",
     ],
     "lottery_prize": [
         "Congratulations! You've been selected as our lucky winner of a large cash prize. Claim your prize now by sending your bank details.",
         "You have won a free phone! Click here to claim before it expires today.",
         "Your number has been selected in our anniversary promotion, contact us with your ID to receive your reward.",
+        "អបអរសាទរ! លេខទូរស័ព្ទរបស់អ្នកបានឈ្នះរង្វាន់ពិសេស ១០,០០០ដុល្លារ។ សូមចុចលីងនេះ ហើយបញ្ចូលព័ត៌មានគណនីធនាគាររបស់អ្នក ដើម្បីទទួលរង្វាន់។",
+        "អ្នកគឺជាអ្នកឈ្នះសំណាងទី៣ របស់យើង! ដើម្បីទទួលបានរង្វាន់ សូមផ្ញើថ្លៃសេវាកម្ម ២៥ដុល្លារ ជាមុនសិន។",
     ],
     "account_verification": [
         "Your account will be suspended in 24 hours unless you verify your information immediately.",
         "We detected unusual activity on your account. Reply with your OTP code now to secure it.",
         "Your subscription payment failed, update your billing information now to avoid service interruption.",
+        "គណនីធនាគាររបស់អ្នកនឹងត្រូវផ្អាកក្នុងរយៈពេល ២៤ម៉ោង។ សូមផ្ទៀងផ្ទាត់ព័ត៌មានរបស់អ្នកភ្លាមៗ តាមរយៈតំណភ្ជាប់នេះ ដើម្បីជៀសវាងការបិទគណនី។",
+        "យើងបានរកឃើញសកម្មភាពមិនប្រក្រតីនៅក្នុងគណនីរបស់អ្នក។ សូមផ្ញើលេខកូដ OTP របស់អ្នកមកឥឡូវនេះ ដើម្បីការពារគណនី។",
     ],
     "romance": [
         "I really care about you, but I'm stuck at customs and need money to release my luggage, can you help me, my love?",
         "I want to visit you but I don't have enough for the plane ticket, could you send some money?",
+        "ស្នេហាខ្ញុំ ខ្ញុំចង់ផ្ញើកញ្ចប់អំណោយមានតម្លៃមកឲ្យអ្នក ប៉ុន្តែអ្នកត្រូវបង់ថ្លៃពន្ធគយសិន ទើបគេដោះលែងកញ្ចប់នេះបាន។",
     ],
     "investment_crypto": [
         "I made a lot of money in one week with this trading platform, join now with a small deposit and I'll show you how.",
         "Double your crypto in 24 hours guaranteed, limited slots available, invest now.",
+        "វិនិយោគត្រឹមតែ ១០០ដុល្លារ ទទួលបានប្រាក់ចំណេញ ១,០០០ដុល្លារ ក្នុងរយៈពេល ៧ថ្ងៃ ធានា ១០០%។ ចុះឈ្មោះឥឡូវនេះ។",
+        "ក្រុមជួញដូររបស់យើងធានាប្រាក់ចំណេញ ៣០% ជារៀងរាល់ថ្ងៃ។ ចូលរួមក្រុមតេលេក្រាមរបស់យើងឥឡូវនេះ មុនពេលកន្លែងអស់។",
     ],
     "job_offer": [
         "You are hired for a work from home job paying great money per day, just send your bank details to get started today.",
         "Congratulations, you passed our interview, please pay a small registration fee to start work immediately.",
+        "ការងារ Online ធ្វើនៅផ្ទះ ចំណូល ៥០ទៅ១០០ដុល្លារក្នុងមួយថ្ងៃ គ្រាន់តែចុច Like និង Subscribe។ គ្មានបទពិសោធន៍ក៏ធ្វើបាន។ ចាប់អារម្មណ៍សូម inbox មក។",
+        "អ្នកបានជាប់ការសម្ភាសន៍របស់យើង ប្រាក់ខែ ១,២០០ដុល្លារ។ ដើម្បីចាប់ផ្តើម សូមបង់ថ្លៃចុះឈ្មោះ ៣០ដុល្លារ ជាមុនសិន។",
     ],
     "authority_impersonation": [
         "This is the tax department, you owe unpaid taxes, pay immediately or a warrant will be issued for your arrest.",
         "Your account has been flagged for illegal activity, contact us immediately or you will be reported to the police.",
+        "នេះជាការជូនដំណឹងពីនាយកដ្ឋានពន្ធគយ។ កញ្ចប់របស់អ្នកត្រូវបានឃុំខ្លួន ដោយសារមានបញ្ហាខាងផ្លូវច្បាប់។ សូមទំនាក់ទំនងមកយើងភ្លាមៗ ហើយបង់ប្រាក់ពិន័យ ដើម្បីជៀសវាងការចាប់ខ្លួន។",
+        "នគរបាល៖ អ្នកកំពុងជាប់ពាក់ព័ន្ធនឹងសំណុំរឿងសម្អាតប្រាក់។ សូមផ្ទេរប្រាក់ទៅគណនីសុវត្ថិភាពរបស់រដ្ឋ ដើម្បីបញ្ជាក់ភាពស្លូតត្រង់របស់អ្នក បើមិនដូច្នេះទេ អ្នកនឹងត្រូវចាប់ខ្លួន។",
     ],
 }
 

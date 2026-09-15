@@ -5,6 +5,15 @@ Pure filename-pattern check - no network, deterministic, instant. Moved
 out of scanner.py so the offline (filename heuristic) and online
 (VirusTotal API) halves of file scanning are as clearly separated as
 url/offline vs url/online already are.
+
+Returns a TRANSLATION KEY plus format params, not a finished English
+sentence. This layer has no idea who is going to read its output (a
+private DM in Khmer, a business owner's notification, the offline
+reasoning fallback), and it must stay pure/offline, so the language
+choice belongs to whichever display site renders it - see
+bot/response/translate/. Previously this returned pre-formatted English,
+which is how English ended up inside otherwise fully-Khmer file-scan
+replies.
 """
 
 from __future__ import annotations
@@ -34,7 +43,7 @@ DOCUMENT_LIKE_EXTENSIONS = {
 }
 
 
-def _double_extension_disguise(name: str) -> tuple[int, str] | None:
+def _double_extension_disguise(name: str) -> tuple[int, str, dict] | None:
     """Flags the classic double-extension disguise ("invoice.pdf.exe",
     "Document.pdf.z"): a document-looking extension followed by a
     second, real extension that determines how the file actually
@@ -49,17 +58,15 @@ def _double_extension_disguise(name: str) -> tuple[int, str] | None:
     if inner_ext not in DOCUMENT_LIKE_EXTENSIONS:
         return None
     if outer_ext in EXECUTABLE_EXTENSIONS:
-        return (50, f"File name disguises an executable ('.{outer_ext}') behind a "
-                    f"'.{inner_ext}' extension — a classic malware trick "
-                    f"(e.g. 'invoice.pdf.exe').")
+        return (50, "filename_warning_double_extension_executable",
+                {"outer_ext": outer_ext, "inner_ext": inner_ext})
     if outer_ext in ARCHIVE_EXTENSIONS:
-        return (20, f"File name hides a '.{inner_ext}' file inside a '.{outer_ext}' "
-                    f"archive — this bot cannot see inside archives, so the real "
-                    f"content is unverified.")
+        return (20, "filename_warning_double_extension_archive",
+                {"outer_ext": outer_ext, "inner_ext": inner_ext})
     return None
 
 
-def _lone_executable_extension(name: str) -> tuple[int, str] | None:
+def _lone_executable_extension(name: str) -> tuple[int, str, dict] | None:
     """A bare executable/script extension with no document-like disguise
     at all ('setup.exe', 'invoice.apk') - a weaker signal than the
     double-extension trick above (nothing here pretends to be something
@@ -77,16 +84,17 @@ def _lone_executable_extension(name: str) -> tuple[int, str] | None:
         return None
     ext = parts[1]
     if ext in EXECUTABLE_EXTENSIONS:
-        return (35, f"This is a '.{ext}' executable/script file — a common "
-                    f"malware vector, especially when unsolicited.")
+        return (35, "filename_warning_lone_executable", {"ext": ext})
     return None
 
 
-def check_filename(file_name: str) -> tuple[int, str] | None:
+def check_filename(file_name: str) -> tuple[int, str, dict] | None:
     """Pure filename-pattern check: the double-extension disguise trick
     first (most specific / highest severity), falling back to a bare
-    risky extension with no disguise at all. Returns the first (score,
-    warning) that fires, or None when nothing about the name looks off.
+    risky extension with no disguise at all. Returns the first
+    (score, translation_key, format_params) that fires, or None when
+    nothing about the name looks off - see this module's docstring for
+    why the caller renders the text rather than this layer.
     """
     name = (file_name or "").lower()
     return _double_extension_disguise(name) or _lone_executable_extension(name)

@@ -22,16 +22,93 @@ event loop; total worst-case latency is ~2 x TIMEOUT seconds.
 
 from __future__ import annotations
 
+import logging
 import re
+from http.cookiejar import CookieJar
 from urllib.parse import urlsplit
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 MAX_REDIRECTS = 10
 MAX_PAGE_BYTES = 200_000          # enough for title + visible text of most pages
 USER_AGENT = ("Mozilla/5.0 (compatible; AngketBotLinkChecker/1.0; "
               "+https://telegram.me) AppleWebKit/537.36")
+
+# Bounded so a burst of links in a busy group can't open an unlimited
+# number of sockets. keepalive connections are what make the reuse
+# worthwhile in the first place - a second link to the same host inside
+# the expiry window skips connect + TLS handshake entirely.
+LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10,
+                      keepalive_expiry=30.0)
+
+class _NoStoreCookieJar(CookieJar):
+    """A cookie jar that holds nothing and sends nothing, ever.
+
+    This is the one real hazard in sharing a client across scans. httpx
+    calls `self.cookies.extract_cookies(response)` on EVERY response -
+    unconditionally, on the client's own jar, with no per-request
+    override (verified directly in httpx 0.28.1's
+    AsyncClient._send_single_request, not assumed). A shared client would
+    therefore accumulate one scanned site's Set-Cookie state and replay
+    it to the next, unrelated site - which can genuinely change what that
+    site serves, and so change the page text the vector/MinHash signals
+    score. Two verdicts must never be able to influence each other that
+    way.
+
+    The link checker makes a single scoring GET and never needs a
+    session, so the correct jar here is one that stores and sends
+    nothing at all. httpx uses a CookieJar passed as `cookies=` directly
+    as its jar (Cookies.__init__'s final `else: self.jar = cookies`
+    branch), so this subclass survives client construction instead of
+    being copied into a plain jar.
+    """
+
+    def extract_cookies(self, response, request):
+        return None
+
+    def add_cookie_header(self, request):
+        return None
+
+
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """One shared client for every trace(), created on first use.
+
+    trace() used to build a brand-new httpx.AsyncClient per link check,
+    so every single scan paid fresh connection-pool setup and a full TLS
+    handshake with no keep-alive reuse across scans - repeated in full
+    for every link in a burst, which is exactly the group-chat case.
+    """
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=TIMEOUT,
+            headers={"User-Agent": USER_AGENT},
+            verify=True,                       # invalid certs raise -> flagged below
+            max_redirects=MAX_REDIRECTS,
+            limits=LIMITS,
+            cookies=_NoStoreCookieJar(),
+        )
+    return _client
+
+
+async def aclose() -> None:
+    """Close the shared client. Wired into bot.py's post_shutdown so the
+    sockets are released on a clean stop instead of being torn down by
+    interpreter exit."""
+    global _client
+    if _client is not None and not _client.is_closed:
+        try:
+            await _client.aclose()
+        except Exception:                      # noqa: BLE001 - shutdown must not raise
+            logger.debug("Shared httpx client close failed", exc_info=True)
+    _client = None
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
@@ -94,24 +171,21 @@ async def trace(raw_url: str) -> dict:
     }
 
     try:
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=TIMEOUT,
-            headers={"User-Agent": USER_AGENT},
-            verify=True,                       # invalid certs raise -> flagged below
-            max_redirects=MAX_REDIRECTS,
-        ) as client:
-            # Stream so a 2 GB download can't blow up memory; we stop
-            # reading once we have MAX_PAGE_BYTES.
-            async with client.stream("GET", normalized) as response:
-                chunks: list[bytes] = []
-                size = 0
-                async for chunk in response.aiter_bytes():
-                    chunks.append(chunk)
-                    size += len(chunk)
-                    if size >= MAX_PAGE_BYTES:
-                        break
-                _capture(response, result, history=response.history or [], body=b"".join(chunks))
+        # Shared client (see _get_client): the per-request streaming and
+        # MAX_PAGE_BYTES cap below are unchanged, only the client's
+        # lifetime is.
+        client = _get_client()
+        # Stream so a 2 GB download can't blow up memory; we stop
+        # reading once we have MAX_PAGE_BYTES.
+        async with client.stream("GET", normalized) as response:
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in response.aiter_bytes():
+                chunks.append(chunk)
+                size += len(chunk)
+                if size >= MAX_PAGE_BYTES:
+                    break
+            _capture(response, result, history=response.history or [], body=b"".join(chunks))
     except httpx.TooManyRedirects as exc:
         result["error"] = "Redirect loop or too many hops"
         result["redirect_chain"] = [

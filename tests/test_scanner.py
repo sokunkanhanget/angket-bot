@@ -22,17 +22,19 @@ from bot.detectors.file.scanner import scan_file
 def test_flags_the_classic_pdf_exe_disguise():
     result = check_filename("invoice.pdf.exe")
     assert result is not None
-    score, reason = result
+    score, key, params = result
     assert score == 50
-    assert "pdf" in reason and "exe" in reason
+    assert key == "filename_warning_double_extension_executable"
+    assert params == {"inner_ext": "pdf", "outer_ext": "exe"}
 
 
 def test_flags_document_hidden_in_an_archive():
     result = check_filename("Document.pdf.z")
     assert result is not None
-    score, reason = result
+    score, key, params = result
     assert score == 20
-    assert "pdf" in reason and "z" in reason
+    assert key == "filename_warning_double_extension_archive"
+    assert params == {"inner_ext": "pdf", "outer_ext": "z"}
 
 
 def test_case_insensitive():
@@ -71,9 +73,10 @@ def test_script_extension_disguised_behind_an_image():
 def test_bare_executable_extension_is_flagged_even_without_a_disguise():
     result = check_filename("setup.exe")
     assert result is not None
-    score, reason = result
+    score, key, params = result
     assert score == 35  # weaker than the double-extension disguise (50) - nothing here pretends to be something else
-    assert "exe" in reason
+    assert key == "filename_warning_lone_executable"
+    assert params == {"ext": "exe"}
 
 
 def test_bare_apk_extension_is_flagged():
@@ -111,8 +114,8 @@ async def test_scan_file_merges_vt_result_with_filename_warning():
 
     assert result["found"] is True
     assert result["malicious"] == 0  # VT's own count is untouched by the filename heuristic
-    assert result["filename_warning"] is not None
-    assert "exe" in result["filename_warning"]
+    assert result["filename_warning_key"] == "filename_warning_double_extension_executable"
+    assert result["filename_warning_params"] == {"inner_ext": "pdf", "outer_ext": "exe"}
     assert result["filename_risk_score"] == 50  # check_filename's own severity number, carried through
 
 
@@ -121,5 +124,6 @@ async def test_scan_file_filename_warning_is_none_for_an_ordinary_name():
     with patch.object(scanner, "scan_vt_hash", AsyncMock(return_value={"checked": True, "found": False})):
         result = await scan_file("b" * 64, "report.docx")
 
-    assert result["filename_warning"] is None
+    assert result["filename_warning_key"] is None
+    assert result["filename_warning_params"] == {}
     assert result["filename_risk_score"] == 0

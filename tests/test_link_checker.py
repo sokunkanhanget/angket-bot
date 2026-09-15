@@ -1888,3 +1888,61 @@ def test_format_verdict_full_has_a_divider_directly_above_the_disclaimer():
     assert "📁 *TYPE: link*" in reply
 
 
+
+def test_near_dup_sqlite_work_runs_off_the_event_loop(seeded_vectors, monkeypatch):
+    # The MinHash page-dedup table is deliberately still SQLite, and both
+    # store_page_signature() and nearest_page() are synchronous. They used
+    # to be called straight from the async analyze_url flow, so the disk
+    # I/O of one scan froze the event loop and stalled every other
+    # concurrent scan. They now run under asyncio.to_thread, so two
+    # concurrent analyze_url calls must OVERLAP rather than serialize.
+    import time as _time
+
+    delay = 0.15
+    page_text = "real page content for the near-duplicate check " * 10
+    assert len(page_text) >= pipeline.MIN_PAGE_TEXT_FOR_NEARDUP
+
+    def slow_store(host, text):
+        _time.sleep(delay)
+        return b"\x00" * 256
+
+    def slow_nearest(host, sig):
+        _time.sleep(delay)
+        return None
+
+    async def fake_trace(url):
+        return _FakeNet(reachable=True, status=200, tls_valid=True,
+                        final_url="https://example-site.test/",
+                        page_html="<html></html>", page_text=page_text).result
+
+    async def fake_age(host):
+        return None
+
+    async def fake_resolve(host):
+        return ["103.1.2.3"]
+
+    async def fake_cert(host):
+        return None
+
+    monkeypatch.setattr(pipeline.vectors, "store_page_signature", slow_store)
+    monkeypatch.setattr(pipeline.vectors, "nearest_page", slow_nearest)
+    monkeypatch.setattr(pipeline.network, "trace", fake_trace)
+    monkeypatch.setattr(pipeline, "domain_age_days", fake_age)
+    monkeypatch.setattr(pipeline, "resolve_host", fake_resolve)
+    monkeypatch.setattr(pipeline, "cert_issued_days_ago", fake_cert)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", None)
+
+    async def two_concurrent_scans():
+        started = _time.perf_counter()
+        await asyncio.gather(
+            pipeline.analyze_url("https://example-site.test/a"),
+            pipeline.analyze_url("https://example-site.test/b"),
+        )
+        return _time.perf_counter() - started
+
+    elapsed = asyncio.run(two_concurrent_scans())
+
+    # Serialized, this would be 4 x delay (two blocking calls per scan,
+    # two scans). Overlapped, it is ~2 x delay. The midpoint is a wide
+    # enough margin to not be flaky on a loaded machine.
+    assert elapsed < delay * 3, f"scans did not overlap: {elapsed:.3f}s"

@@ -16,28 +16,44 @@ from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, sto
 logger = logging.getLogger(__name__)
 
 
-_FILE_RECOMMENDATIONS = {
+# Translation keys rather than literal strings. The file checker never
+# calls Gemini at all, so unlike the text/link surfaces it had no path
+# that produced text in the user's language - every reason and
+# recommendation here was fixed English sitting inside a reply whose
+# labels were already fully translated.
+_FILE_RECOMMENDATION_KEYS = {
     "dangerous": [
-        "Do not open this file, run it, or extract its contents.",
-        "If you already opened it, disconnect from the internet and run a full antivirus scan.",
-        "Delete the file and block/report whoever sent it.",
+        "rec_file_dangerous_do_not_open",
+        "rec_file_dangerous_already_opened",
+        "rec_file_dangerous_delete_block",
     ],
     "suspicious": [
-        "Don't open this file until you've verified it with the sender through another channel.",
-        "If you must open it, scan it with your own antivirus software first.",
+        "rec_file_suspicious_verify_sender",
+        "rec_file_suspicious_scan_first",
     ],
     "safe": [
-        "No strong threat signals were found, but stay cautious with any unexpected attachment.",
-        "Only open files from senders you actually trust.",
+        "rec_file_safe_no_signals",
+        "rec_file_safe_trusted_senders",
     ],
     "uncertain": [
-        "Treat this file with caution until it can be properly checked.",
-        "Verify the sender through another channel before opening it.",
+        "rec_file_uncertain_caution",
+        "rec_file_uncertain_verify_sender",
     ],
 }
 
 
-def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
+def filename_warning_text(result: dict, lang: str) -> str | None:
+    """Render scanner.py's (key, params) filename warning in `lang`, or
+    None when the name raised nothing. Shared with context_engine.py's
+    offline fallback, which shows the same warning as its own evidence -
+    one renderer so the two surfaces can't drift apart."""
+    key = result.get("filename_warning_key")
+    if not key:
+        return None
+    return t(lang, key).format(**(result.get("filename_warning_params") or {}))
+
+
+def _classify_file_result(result: dict, lang: str = DEFAULT_LANG) -> tuple[str, int | None, list[str]]:
     """(level, risk_percentage, reasons) from a merged scan_file() result.
     risk_percentage is None only for the genuinely-no-signal case (no VT
     match/reachability AND no filename warning) - same "nothing to base
@@ -49,31 +65,32 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
     verdict when VT has NOTHING real to say, exactly matching
     scanner.py's own "VT's malicious count stays untouched by the
     filename heuristic" principle, just extended to the reverse case.
+
+    `lang` renders the reasons. Engine counts, file extensions and the
+    example engine's detection name are real evidence and stay verbatim
+    in every language.
     """
     reasons: list[str] = []
-    filename_warning = result.get("filename_warning")
+    filename_warning = filename_warning_text(result, lang)
     filename_score = result.get("filename_risk_score", 0)
 
     if result.get("checked") and result.get("found"):
         malicious, total = result["malicious"], result["total"]
         if malicious > 0:
             pct = min(100, round(malicious / total * 100)) if total else 100
-            reasons.append(
-                f"{malicious} of {total} security engines on VirusTotal flag this file as "
-                f"malicious (e.g. Microsoft: {result['top_engines']['Microsoft']})."
-            )
+            reasons.append(t(lang, "reason_file_engines_flag").format(
+                malicious=malicious, total=total,
+                top_engine=result["top_engines"]["Microsoft"],
+            ))
             if filename_warning:
                 reasons.append(filename_warning)
             return "dangerous", pct, reasons
 
         if filename_warning:
-            reasons.append(
-                f"VirusTotal found no threats in this exact file ({total} engines checked), "
-                f"but its name is still worth a second look."
-            )
+            reasons.append(t(lang, "reason_file_clean_but_name_suspect").format(total=total))
             reasons.append(filename_warning)
             return ("dangerous" if filename_score >= 50 else "suspicious"), filename_score, reasons
-        reasons.append(f"No security engine out of {total} on VirusTotal flags this file.")
+        reasons.append(t(lang, "reason_file_no_engine_flags").format(total=total))
         return "safe", 0, reasons
 
     # Either VirusTotal has genuinely never seen this hash before, or it
@@ -83,11 +100,9 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
     # down/unreachable - just state the real limitation (no antivirus
     # engine data backing this particular result) without naming why.
     if not result.get("checked"):
-        reasons.append(
-            "This result is based on the file name only, not a full antivirus scan."
-        )
+        reasons.append(t(lang, "reason_file_name_only"))
     else:
-        reasons.append("This file's signature has never been seen by VirusTotal before — no track record either way.")
+        reasons.append(t(lang, "reason_file_never_seen"))
 
     if filename_warning:
         reasons.append(filename_warning)
@@ -100,7 +115,7 @@ def _classify_file_result(result: dict) -> tuple[str, int | None, list[str]]:
     # itself confirms a clean file. Direct user spec: a single unavailable
     # service (VT) shouldn't be enough to blank out a real verdict when
     # the offline check already ran.
-    reasons.append("No filename red flags were found either.")
+    reasons.append(t(lang, "reason_file_no_name_flags"))
     return "safe", 0, reasons
 
 
@@ -114,7 +129,7 @@ def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: 
     verdict = LEVEL_TO_VERDICT[level]
     verdict_icon, verdict_label = verdict_style(verdict, lang)
     risk_icon, risk_label = risk_style(pct, lang)
-    recs = _FILE_RECOMMENDATIONS[level]
+    recs = [t(lang, key) for key in _FILE_RECOMMENDATION_KEYS[level]]
 
     lines = [
         f"{verdict_icon} *{t(lang, 'verdict_label')}: {verdict_label}*",
@@ -186,8 +201,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not already_cached:
         subscription.record_file_scan(user_id)
 
-    level, risk_percentage, reasons = _classify_file_result(result)
+    level, risk_percentage, reasons = _classify_file_result(result, lang)
     reply = _format_file_verdict(level, risk_percentage, reasons, lang)
-    log_scan(user_id, file_name, sha256, result.get("malicious", 0))
+    await asyncio.to_thread(log_scan, user_id, file_name, sha256, result.get("malicious", 0))
 
     await message.edit_text(reply, parse_mode="Markdown")

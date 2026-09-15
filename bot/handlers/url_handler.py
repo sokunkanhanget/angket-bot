@@ -293,7 +293,11 @@ async def _reply_with_verdicts(update, context, message, verdicts: list[dict],
     "see more"/toggle button, which is what the buttons existed for."""
     sender = update.effective_user
     for v in verdicts:
-        log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
+        # Synchronous SQLite write - off the event loop, so one scan's
+        # log write can't stall every other concurrent scan.
+        await asyncio.to_thread(
+            log_url_scan, sender.id if sender else None, v["host"], v["score"], v["level"]
+        )
 
     # No Technical Evidence section on any live reply - the spec'd
     # template has no such section, unlike the old private-DM/group-detail
@@ -511,7 +515,9 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         # `sender` already resolved above (and confirmed not the owner) - no
         # need to re-read update.effective_user a second time.
         for v in link_verdicts:
-            log_url_scan(sender.id if sender else None, v["host"], v["score"], v["level"])
+            await asyncio.to_thread(
+                log_url_scan, sender.id if sender else None, v["host"], v["score"], v["level"]
+            )
 
         # sender is a VERIFIED connected customer here (a Business connection,
         # not a spoofable plain chat display name) - safe to let Gemini weigh

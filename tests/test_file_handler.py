@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot.handlers.file_handler import handle_file
+from bot.handlers.file_handler import (
+    _classify_file_result,
+    _format_file_verdict,
+    handle_file,
+)
 from bot.response.buttons import t
 from bot.storage import subscription
 
@@ -41,7 +45,7 @@ async def test_clean_scan_reports_safe_with_the_shared_reply_shape():
              "checked": True, "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
              "undetected": 5, "total": 75,
              "top_engines": {"Microsoft": "Clean", "Kaspersky": "Clean", "BitDefender": "Clean"},
-             "filename_warning": None, "filename_risk_score": 0,
+             "filename_warning_key": None, "filename_warning_params": {}, "filename_risk_score": 0,
          })), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
@@ -63,7 +67,7 @@ async def test_malicious_scan_reports_a_scam_verdict():
              "checked": True, "found": True, "malicious": 40, "suspicious": 2, "harmless": 20,
              "undetected": 13, "total": 75,
              "top_engines": {"Microsoft": "Trojan", "Kaspersky": "Trojan", "BitDefender": "Trojan"},
-             "filename_warning": None, "filename_risk_score": 0,
+             "filename_warning_key": None, "filename_warning_params": {}, "filename_risk_score": 0,
          })), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
@@ -88,7 +92,7 @@ async def test_unknown_signature_with_clean_filename_reports_safe():
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="c" * 64)), \
          patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
-             "checked": True, "found": False, "filename_warning": None, "filename_risk_score": 0,
+             "checked": True, "found": False, "filename_warning_key": None, "filename_warning_params": {}, "filename_risk_score": 0,
          })), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
@@ -115,7 +119,7 @@ async def test_virustotal_outage_with_clean_filename_still_reports_safe():
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="e" * 64)), \
          patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
              "checked": False, "found": False, "error": "503 UNAVAILABLE",
-             "filename_warning": None, "filename_risk_score": 0,
+             "filename_warning_key": None, "filename_warning_params": {}, "filename_risk_score": 0,
          })), \
          patch("bot.handlers.file_handler.log_scan") as mock_log:
         await handle_file(update, context)
@@ -139,8 +143,8 @@ async def test_virustotal_outage_with_a_bare_executable_flags_it_suspicious():
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="g" * 64)), \
          patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
              "checked": False, "found": False, "error": "503 UNAVAILABLE",
-             "filename_warning": "This is a '.apk' executable/script file — a common "
-                                  "malware vector, especially when unsolicited.",
+             "filename_warning_key": "filename_warning_lone_executable",
+             "filename_warning_params": {"ext": "apk"},
              "filename_risk_score": 35,
          })), \
          patch("bot.handlers.file_handler.log_scan"):
@@ -161,7 +165,8 @@ async def test_virustotal_outage_with_a_disguised_filename_still_flags_it():
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="f" * 64)), \
          patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
              "checked": False, "found": False, "error": "503 UNAVAILABLE",
-             "filename_warning": "File name disguises an executable ('.exe') behind a '.pdf' extension.",
+             "filename_warning_key": "filename_warning_double_extension_executable",
+             "filename_warning_params": {"inner_ext": "pdf", "outer_ext": "exe"},
              "filename_risk_score": 50,
          })), \
          patch("bot.handlers.file_handler.log_scan"):
@@ -261,7 +266,7 @@ async def test_cached_hash_skips_quota_even_when_over_limit():
              "checked": True, "found": True, "malicious": 0, "suspicious": 0, "harmless": 70,
              "undetected": 5, "total": 75,
              "top_engines": {"Microsoft": "Clean", "Kaspersky": "Clean", "BitDefender": "Clean"},
-             "filename_warning": None, "filename_risk_score": 0,
+             "filename_warning_key": None, "filename_warning_params": {}, "filename_risk_score": 0,
          })), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
@@ -285,3 +290,94 @@ async def test_a_failed_scan_does_not_consume_the_daily_quota():
     assert subscription.can_scan_file(uid)  # quota untouched by the failure
     summary = subscription.usage_summary(uid)
     assert summary["files_used"] == 0
+
+
+# --- Khmer file verdicts ----------------------------------------------
+# The file checker never calls Gemini, so unlike the text/link surfaces
+# it had NO path that ever produced text in the user's language: its
+# reasons and recommendations were fixed English inside a reply whose
+# labels were already fully translated.
+
+def _has_khmer(text: str) -> bool:
+    return any(0x1780 <= ord(ch) <= 0x17FF for ch in text)
+
+
+def test_classify_file_result_renders_reasons_in_khmer():
+    result = {
+        "checked": True, "found": True, "malicious": 5, "total": 70,
+        "top_engines": {"Microsoft": "Trojan:Win32/Wacatac"},
+        "filename_warning_key": "filename_warning_lone_executable",
+        "filename_warning_params": {"ext": "apk"},
+        "filename_risk_score": 35,
+    }
+
+    level, pct, reasons = _classify_file_result(result, "km")
+
+    assert level == "dangerous"
+    assert reasons
+    for r in reasons:
+        assert _has_khmer(r), f"not translated: {r!r}"
+    # Engine counts, the detection name and the extension are real
+    # evidence and stay verbatim in every language.
+    joined = " ".join(reasons)
+    assert "5" in joined and "70" in joined
+    assert "Trojan:Win32/Wacatac" in joined
+    assert "apk" in joined
+
+
+def test_classify_file_result_defaults_to_english():
+    result = {"checked": True, "found": True, "malicious": 0, "total": 70,
+              "filename_warning_key": None, "filename_warning_params": {},
+              "filename_risk_score": 0}
+
+    _level, _pct, reasons = _classify_file_result(result)
+
+    assert reasons
+    for r in reasons:
+        assert not _has_khmer(r)
+
+
+def test_no_signal_reasons_render_in_khmer():
+    # The "VT unreachable, nothing in the name either" path - the one
+    # that produces a verdict entirely from offline evidence.
+    result = {"checked": False, "found": False,
+              "filename_warning_key": None, "filename_warning_params": {},
+              "filename_risk_score": 0}
+
+    level, pct, reasons = _classify_file_result(result, "km")
+
+    assert level == "safe"
+    for r in reasons:
+        assert _has_khmer(r), f"not translated: {r!r}"
+
+
+def test_format_file_verdict_recommendations_render_in_khmer():
+    for level in ("dangerous", "suspicious", "safe", "uncertain"):
+        reply = _format_file_verdict(level, 50, ["ហេតុផលសាកល្បង"], "km")
+        # Everything after the WHAT-TO-DO header is a recommendation.
+        what_to_do = reply.split("💡")[1]
+        for line in [l for l in what_to_do.splitlines() if l.startswith("✓")]:
+            assert _has_khmer(line), f"{level}: not translated: {line!r}"
+
+
+@pytest.mark.asyncio
+async def test_handle_file_reply_is_fully_khmer():
+    update, context, sent = _file_update(file_name="Claim_Your_Gift.apk")
+    context.user_data = {"lang": "km"}
+
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="h" * 64)), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
+             "checked": False, "found": False, "error": "503 UNAVAILABLE",
+             "filename_warning_key": "filename_warning_lone_executable",
+             "filename_warning_params": {"ext": "apk"},
+             "filename_risk_score": 35,
+         })), \
+         patch("bot.handlers.file_handler.log_scan"):
+        await handle_file(update, context)
+
+    reply = sent.edit_text.call_args.args[0]
+    assert _has_khmer(reply)
+    # No leftover English prose from the reasons/recommendations.
+    assert "executable/script file" not in reply
+    assert "Verify the sender through another channel" not in reply
+    assert "based on the file name only" not in reply

@@ -43,7 +43,6 @@ import hashlib
 import json
 import logging
 import re
-import sqlite3
 import struct
 import time
 
@@ -53,6 +52,7 @@ from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
 from bot.config.config import SCAN_LOG_DB, SUPABASE_DB_URL
+from bot.storage import sqlite_pool
 
 DIM = 256          # vector dimensionality
 NGRAM = 4          # character n-gram size
@@ -249,19 +249,15 @@ async def nearest(text: str, k: int = 3, kinds: tuple[str, ...] | None = None):
     return [(float(similarity), kind, key, label) for kind, key, label, similarity in rows]
 
 
-# --- SQLite connection (MinHash page dedup only, from here down) -------
-
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(SCAN_LOG_DB)
-    # See bot/storage/scan_log.py's init_db() for why: this file is
-    # shared by several unrelated caches/logs, and WAL mode lets
-    # concurrent access to different tables proceed without blocking
-    # each other. Set defensively here too in case this connects first.
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
-
-
-# --- MinHash-LSH for near-duplicate pages (unchanged, SQLite) ----------
+# --- MinHash-LSH for near-duplicate pages (SQLite) ---------------------
+#
+# Connections come from bot/storage/sqlite_pool.py: one reused connection
+# per thread instead of a connect/close cycle per call. These functions
+# run under asyncio.to_thread, and asyncio's default executor reuses its
+# worker threads, so the connection genuinely survives between calls.
+# Measured: a connect + insert + commit + close cycle costs 9.57ms
+# against 1.49ms on a reused connection. WAL mode is still set on each
+# newly opened connection, inside the pool.
 
 NUM_PERM = 64
 
@@ -290,37 +286,150 @@ def minhash_similarity(sig_a: bytes, sig_b: bytes) -> float:
     return matches / NUM_PERM
 
 
+# --- LSH banding: an EXACT prefilter, not an approximate one -----------
+#
+# nearest_page() used to load EVERY row of page_minhash and compute
+# similarity in Python one row at a time. Measured on real signatures:
+# 11ms at 1k rows, 52ms at 10k, 256ms at 50k - linear, on the hot path of
+# every scan that fetches a page, and the table only ever grows.
+#
+# Textbook LSH banding fixes the cost but is PROBABILISTIC - it misses a
+# true near-duplicate some fraction of the time, which would mean
+# silently losing real detections. This banding is instead exact, by
+# counting rather than probability:
+#
+#   A pair at similarity >= NEARDUP_THRESHOLD (0.90, see pipeline.py)
+#   matches on at least ceil(0.90 * 64) = 58 of NUM_PERM=64 positions,
+#   so it MISMATCHES on at most 64 - 58 = 6.
+#
+#   Split the signature into 6 + 1 = 7 bands. Six mismatched positions
+#   can fall in at most six distinct bands, so at least one band is
+#   guaranteed byte-identical for every pair above the threshold.
+#
+# So indexing the bands and only comparing candidates that share a whole
+# band cannot miss anything the full scan would have found: zero false
+# negatives, guaranteed by pigeonhole. False POSITIVE candidates are
+# still filtered by the exact minhash_similarity() check afterwards, so
+# the returned value is bit-for-bit what the full scan returned.
+#
+# INVARIANT: NUM_BANDS must stay >= (NUM_PERM - ceil(threshold*NUM_PERM)) + 1.
+# Lowering NEARDUP_THRESHOLD without raising NUM_BANDS would break
+# exactness - locked in by test_lsh_band_count_is_exact_for_threshold.
+NUM_BANDS = 7
+
+
+def _band_bounds() -> list[tuple[int, int]]:
+    """Start/end offsets partitioning all NUM_PERM positions into
+    NUM_BANDS contiguous bands. Sizes differ by at most one when the
+    split isn't even (64 into 7 gives 10,9,9,9,9,9,9); the pigeonhole
+    argument above only needs a partition, not equal sizes."""
+    bounds = []
+    start = 0
+    for b in range(NUM_BANDS):
+        size = NUM_PERM // NUM_BANDS + (1 if b < NUM_PERM % NUM_BANDS else 0)
+        bounds.append((start, start + size))
+        start += size
+    return bounds
+
+
+def _band_keys(sig: bytes) -> list[str]:
+    """One lookup key per band: "<band index>:<hash of that band's bytes>".
+    Hashed rather than stored raw so the key is a short fixed-width
+    string regardless of band size."""
+    keys = []
+    for index, (start, end) in enumerate(_band_bounds()):
+        chunk = sig[start * 4:end * 4]
+        keys.append(f"{index}:{hashlib.md5(chunk).hexdigest()[:16]}")
+    return keys
+
+
+def _ensure_page_tables(conn) -> None:
+    conn.execute(
+        """
+        create table if not exists page_minhash(
+            host text primary key,
+            sig blob not null,
+            checked_at text
+        )
+        """
+    )
+    conn.execute(
+        """
+        create table if not exists page_minhash_bands(
+            band_key text not null,
+            host text not null,
+            primary key (band_key, host)
+        )
+        """
+    )
+    conn.execute(
+        "create index if not exists idx_page_minhash_bands_key on page_minhash_bands(band_key)"
+    )
+
+
+def _backfill_bands(conn) -> None:
+    """One-time population of the band index from rows written before it
+    existed. Without this, every pre-existing page signature would be
+    invisible to the banded lookup - a silent loss of exactly the
+    historical data the near-duplicate check exists to compare against."""
+    if conn.execute("select 1 from page_minhash_bands limit 1").fetchone():
+        return
+    rows = conn.execute("select host, sig from page_minhash").fetchall()
+    if not rows:
+        return
+    conn.executemany(
+        "insert or ignore into page_minhash_bands(band_key, host) values (?, ?)",
+        [(key, host) for host, sig in rows for key in _band_keys(sig)],
+    )
+
+
 def store_page_signature(host: str, page_text: str) -> bytes:
     """Save a page's MinHash under its host; returns the signature."""
     sig = minhash_signature(page_text)
-    conn = _connect()
-    try:
-        conn.execute(
-            """
-            create table if not exists page_minhash(
-                host text primary key,
-                sig blob not null,
-                checked_at text
-            )
-            """
-        )
+    host = host.lower()
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_page_tables(conn)
+        _backfill_bands(conn)
         conn.execute(
             "insert or replace into page_minhash(host, sig, checked_at) values (?, ?, ?)",
-            (host.lower(), sig, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+            (host, sig, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
         )
-        conn.commit()
-    finally:
-        conn.close()
+        # This host's OLD band rows have to go: a re-scan whose content
+        # changed would otherwise stay indexed under the bands of the
+        # page it used to serve.
+        conn.execute("delete from page_minhash_bands where host = ?", (host,))
+        conn.executemany(
+            "insert or ignore into page_minhash_bands(band_key, host) values (?, ?)",
+            [(key, host) for key in _band_keys(sig)],
+        )
     return sig
 
 
 def nearest_page(host: str, sig: bytes) -> tuple[str, float] | None:
-    """Closest stored page signature to `sig`, excluding `host` itself."""
-    conn = _connect()
-    try:
-        rows = conn.execute("select host, sig from page_minhash where host != ?", (host.lower(),)).fetchall()
-    finally:
-        conn.close()
+    """Closest stored page signature to `sig`, excluding `host` itself.
+
+    Compares only against hosts sharing at least one whole MinHash band,
+    which provably cannot exclude anything at or above
+    NEARDUP_THRESHOLD (see the NUM_BANDS comment). Returns the same
+    (host, similarity) shape the full scan did.
+    """
+    host = host.lower()
+    keys = _band_keys(sig)
+    placeholders = ", ".join("?" * len(keys))
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_page_tables(conn)
+        _backfill_bands(conn)
+        rows = conn.execute(
+            f"""
+            select m.host, m.sig
+            from page_minhash m
+            where m.host != ?
+              and m.host in (
+                  select host from page_minhash_bands where band_key in ({placeholders})
+              )
+            """,
+            (host, *keys),
+        ).fetchall()
     best_host, best_sim = None, 0.0
     for other_host, other_sig in rows:
         sim = minhash_similarity(sig, other_sig)

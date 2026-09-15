@@ -3,6 +3,13 @@
 venv/
 *.pyc
 scan_logs.db
+# WAL mode keeps two sidecar files next to the database (-shm shared
+# memory, -wal write-ahead log). They are as generated as the .db itself
+# and must never be tracked - `scan_logs.db` alone did not match them.
+scan_logs.db-shm
+scan_logs.db-wal
+*.db-shm
+*.db-wal
 *.log
 logs/
 __pycache__/

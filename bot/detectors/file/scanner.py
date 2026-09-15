@@ -47,16 +47,23 @@ async def scan_file(file_hash: str, file_name: str) -> dict:
     confirmed "not on VT" vs. VT itself being unreachable - see its own
     docstring for `checked`) and check_filename() is pure/local, so a
     caller always gets a real dict back, even when VirusTotal is fully
-    down - handle_file's own reply-building can then use `filename_warning`
-    as a fallback signal instead of showing nothing at all.
+    down - handle_file's own reply-building can then use the filename
+    warning as a fallback signal instead of showing nothing at all.
 
     filename_risk_score is the raw check_filename() severity number
-    (0 when there's no warning) - kept separate from filename_warning's
-    text so a caller building its OWN risk percentage (unlike VT's
+    (0 when there's no warning) - kept separate from the warning text so
+    a caller building its OWN risk percentage (unlike VT's
     engine-count-derived one) has a real number to show, not just prose.
+
+    The warning is carried as a TRANSLATION KEY plus format params
+    (filename_warning_key / filename_warning_params) rather than a
+    finished English sentence: this layer is pure and offline and has no
+    idea which language the eventual reply is in, so each display site
+    renders it (see filename_check.py's docstring).
     """
     result = await scan_vt_hash(file_hash)
     warning = check_filename(file_name)
-    result["filename_warning"] = warning[1] if warning else None
+    result["filename_warning_key"] = warning[1] if warning else None
+    result["filename_warning_params"] = warning[2] if warning else {}
     result["filename_risk_score"] = warning[0] if warning else 0
     return result

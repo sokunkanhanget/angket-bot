@@ -24,7 +24,6 @@ data never changes for an existing domain.
 from __future__ import annotations
 
 import asyncio
-import socket
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -32,19 +31,41 @@ from datetime import datetime, timezone
 import httpx
 
 from bot.config.config import SCAN_LOG_DB
+from bot.detectors.url.online import safe_net
 
 RDAP_TIMEOUT = 8.0
-DNS_TIMEOUT = 5.0          # same bound class as RDAP_TIMEOUT/cert_info.TIMEOUT
+# Duplicate constant, found by code review (2026-09-16): this used to be
+# its own separate `5.0` literal, coincidentally always kept equal to
+# safe_net.DNS_TIMEOUT by hand rather than by anything enforcing it - both
+# bound the exact same underlying call (socket.getaddrinfo, now shared via
+# safe_net._resolve_all_sync, see _resolve_sync below). Aliasing to
+# safe_net.DNS_TIMEOUT makes that one real value instead of two that
+# happen to agree today.
+DNS_TIMEOUT = safe_net.DNS_TIMEOUT
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 
 def _resolve_sync(host: str) -> list[str] | None:
+    # Shares safe_net._resolve_all_sync's short-lived per-host cache
+    # (2026-09-16, found by code review) instead of running its own
+    # independent socket.getaddrinfo - this and safe_net's own SSRF
+    # resolution (network.py, cert_info.py) used to each resolve the
+    # SAME host separately for the SAME scan, 3 real DNS lookups where
+    # 1 would do. Resolved IPs don't depend on the `port` argument at
+    # all, so a fixed placeholder port here is safe - see
+    # _resolve_all_sync's own docstring on why it's keyed by host alone.
     try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+        return safe_net._resolve_all_sync(host, 0)
+    except safe_net._UNRESOLVABLE_ERRORS:
+        # UnicodeError (confirmed live: UnicodeEncodeError, "'idna'
+        # codec can't encode... label too long") - Python's own idna
+        # codec refuses to even attempt the lookup for a hostname with
+        # a label over 63 characters, a real, common phishing-link
+        # shape (long garbage subdomains). Only gaierror was caught
+        # here originally, so this shape crashed resolve_host outright
+        # instead of returning None as its own docstring promises.
         return None
-    return sorted({info[4][0] for info in infos})
 
 
 async def resolve_host(host: str) -> list[str] | None:

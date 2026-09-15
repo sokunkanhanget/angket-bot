@@ -92,9 +92,7 @@ def _get_client() -> httpx.AsyncClient:
             follow_redirects=True,
             timeout=TIMEOUT,
             headers={"User-Agent": USER_AGENT},
-            verify=True,                       # invalid certs raise -> flagged below
             max_redirects=MAX_REDIRECTS,
-            limits=LIMITS,
             cookies=_NoStoreCookieJar(),
             # SSRF guard (see safe_net.py's module docstring): every TCP
             # connection this client opens - including a redirect hop to
@@ -103,6 +101,15 @@ def _get_client() -> httpx.AsyncClient:
             # private/loopback/link-local/reserved/metadata addresses
             # before it's made, not just checked against the hostname
             # string, which DNS rebinding would sail straight past.
+            #
+            # Dead kwargs, found by code review (2026-09-16): AsyncClient
+            # builds its own transport from verify=/limits= only when NO
+            # transport= is given (confirmed against httpx 0.28.1's
+            # Client._init_transport - it returns `transport` immediately
+            # when one is passed, never touching verify/limits at all).
+            # Passing verify=True/limits=LIMITS here alongside transport=
+            # silently did nothing - the real verify/limits that matter
+            # are the ones passed into SafeAsyncHTTPTransport below.
             transport=safe_net.SafeAsyncHTTPTransport(verify=True, limits=LIMITS),
         )
     return _client

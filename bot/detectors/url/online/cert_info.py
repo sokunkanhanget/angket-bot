@@ -89,24 +89,36 @@ def _get_cert_sync(host: str, port: int = 443) -> dict | None:
     outbound connection network.py's trace() makes, on a separate
     code path (raw socket, not httpx), so it needs its own SSRF guard
     rather than assuming trace()'s covers it too. safe_net's
-    first_safe_ip_sync resolves and validates in one step and returns
-    the exact IP to connect to - connecting to THAT (not re-resolving
-    `host` again here) is what actually closes the DNS-rebinding gap;
-    server_hostname stays the original `host` so SNI and certificate
-    hostname verification are completely unaffected by which literal
-    address the socket happened to connect to.
+    safe_ips_sync resolves and validates in one step and returns the
+    candidate IPs to connect to - connecting to one of THOSE (not
+    re-resolving `host` again here) is what actually closes the
+    DNS-rebinding gap; server_hostname stays the original `host` so SNI
+    and certificate hostname verification are completely unaffected by
+    which literal address the socket happened to connect to.
+
+    Real bug, found by code review (2026-09-16): this used to connect
+    to only the FIRST safe IP with no fallback - a real regression from
+    the original bare socket.create_connection(host, port), which tries
+    every one of getaddrinfo's results in turn. Trying each
+    safe_ips_sync candidate restores that same behavior, each with the
+    same TIMEOUT bound the original single attempt had - a domain
+    behind a temporarily-down IP (common for CDN/DR setups) is no
+    longer reported as "no cert"/unreachable when its other IPs are
+    fine.
     """
     ctx = ssl.create_default_context()
     try:
-        safe_ip = safe_net.first_safe_ip_sync(host, port)
+        safe_ips = safe_net.safe_ips_sync(host, port)
     except safe_net.BlockedAddressError:
         return None
-    try:
-        with socket.create_connection((safe_ip, port), timeout=TIMEOUT) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
-                return ssock.getpeercert()
-    except Exception:                          # noqa: BLE001 - no cert, timeout, refused, self-signed...
-        return None
+    for safe_ip in safe_ips:
+        try:
+            with socket.create_connection((safe_ip, port), timeout=TIMEOUT) as sock:
+                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                    return ssock.getpeercert()
+        except Exception:                      # noqa: BLE001 - try the next candidate
+            continue
+    return None
 
 
 def _parse_cert_date(raw: str) -> str | None:

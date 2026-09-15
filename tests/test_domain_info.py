@@ -197,10 +197,17 @@ async def test_resolve_host_unresolvable_and_timed_out_are_both_none(monkeypatch
     # A DNS timeout must degrade exactly like a genuinely unresolvable
     # host (NXDOMAIN) - both are "we don't know", and analyze_url must
     # not be able to tell them apart and score one differently.
-    def raises_gaierror(host, port):
-        raise domain_info.socket.gaierror("simulated NXDOMAIN")
+    import socket as socket_module
 
-    monkeypatch.setattr(domain_info.socket, "getaddrinfo", raises_gaierror)
+    from bot.detectors.url.online import safe_net
+
+    def raises_gaierror(host, port):
+        raise socket_module.gaierror("simulated NXDOMAIN")
+
+    # _resolve_sync now delegates to safe_net._resolve_all_sync (2026-09-16,
+    # found by code review) instead of calling socket.getaddrinfo itself -
+    # patch at that boundary so _resolve_sync's own try/except still runs.
+    monkeypatch.setattr(safe_net, "_resolve_all_sync", raises_gaierror)
     unresolvable = await domain_info.resolve_host("nxdomain.example")
     assert unresolvable is None
 

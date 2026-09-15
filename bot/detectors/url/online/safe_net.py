@@ -39,6 +39,7 @@ reason.
 from __future__ import annotations
 
 import asyncio
+import time
 import ipaddress
 import logging
 import socket
@@ -106,26 +107,87 @@ def is_host_allowlisted(host: str) -> bool:
     return (host or "").strip().lower() in SSRF_ALLOWED_HOSTS
 
 
+# Both raised by socket.getaddrinfo() for a genuinely bad host, just
+# from two unrelated causes: gaierror is the resolver saying "no such
+# host"; UnicodeError (confirmed live: UnicodeEncodeError, "'idna' codec
+# can't encode... label too long") is Python's OWN idna codec refusing
+# to even ATTEMPT the lookup for a hostname with a label over 63
+# characters - a real, common shape (long garbage subdomains are a
+# standard phishing-link pattern). Only socket.gaierror was originally
+# caught here, so that link shape crashed instead of degrading -
+# pipeline.py's asyncio.gather(return_exceptions=True) hid the crash for
+# the one production path that goes through it, but silently dropped
+# the DNS/cert-age signal with no log trace, and any other caller
+# (including several of this module's own tests, which call these
+# functions directly) got a real unhandled exception.
+_UNRESOLVABLE_ERRORS = (socket.gaierror, UnicodeError)
+
+
+# Real inefficiency, found by code review (2026-09-16): network.py's
+# SSRF check, cert_info.py's SSRF check, and domain_info.py's plain DNS
+# lookup all independently resolve the SAME host for the SAME scan -
+# pipeline.py's asyncio.gather runs all three concurrently with no
+# sharing, so one link costs 3 real getaddrinfo calls (each its own
+# to_thread worker) where 1 would do. A short-lived cache closes this:
+# resolved IPs for a hostname don't depend on the `port` argument at all
+# (getaddrinfo's port only matters for service-name lookups, never for
+# WHICH addresses come back), so this is keyed by host alone and shared
+# by every caller in this process, including domain_info.py's own
+# resolution (see that module's _resolve_sync).
+#
+# Deliberately short (a few seconds, not a real DNS TTL respected) -
+# long enough to cover one scan's own concurrent lookups, short enough
+# that staleness is a non-issue for what this data is used for (SSRF
+# validation always re-checks whatever IP is actually used to connect;
+# this cache only saves repeating the LOOKUP itself). No lock: a
+# concurrent cache miss from two threads at once just means one wasted
+# extra lookup, not an incorrect result - not worth the complexity of
+# guarding a pure optimization.
+_RESOLUTION_CACHE_TTL_SECONDS = 5.0
+_resolution_cache: dict[str, tuple[float, list[str]]] = {}
+
+
 def _resolve_all_sync(host: str, port: int) -> list[str]:
-    """Every IP `host` resolves to, as plain strings. Raises
-    socket.gaierror on a genuinely unresolvable host - left to the
+    """Every IP `host` resolves to, as plain strings. Raises one of
+    _UNRESOLVABLE_ERRORS on a genuinely unresolvable host - left to the
     caller, same contract as domain_info._resolve_sync, rather than
     swallowed here where a caller couldn't tell "didn't resolve" apart
     from "resolved to something blocked"."""
+    key = host.lower()
+    cached = _resolution_cache.get(key)
+    if cached is not None:
+        cached_at, ips = cached
+        if time.monotonic() - cached_at < _RESOLUTION_CACHE_TTL_SECONDS:
+            return ips
+
     infos = socket.getaddrinfo(host, port)
-    return sorted({info[4][0] for info in infos})
+    result = sorted({info[4][0] for info in infos})
+    _resolution_cache[key] = (time.monotonic(), result)
+    return result
 
 
-def first_safe_ip_sync(host: str, port: int) -> str:
-    """Resolve `host` and return the first IP that is NOT blocked.
-    Raises BlockedAddressError if the host is unresolvable, allowlisted-
-    but-unresolvable, or every resolved IP is blocked - callers
-    (_ValidatingNetworkBackend.connect_tcp, cert_info's own connect
-    helper) are expected to let that surface as a normal connection
-    failure, not catch it and retry with something else.
+def safe_ips_sync(host: str, port: int) -> list[str]:
+    """Resolve `host` and return EVERY resolved IP that is NOT blocked,
+    in the host's own resolved order. Raises BlockedAddressError if the
+    host is unresolvable, allowlisted-but-unresolvable, or every
+    resolved IP is blocked.
 
-    The caller MUST use this returned IP for the real connection and
-    never re-resolve `host` itself afterward - see this module's
+    Real bug, found by code review (2026-09-16): first_safe_ip_sync used
+    to return only the FIRST safe IP, and callers connected to that one
+    literal address with no fallback if it happened to be down - a real
+    regression from the pre-SSRF-fix behavior (socket.create_connection
+    on a hostname, and a bare hostname handed to httpcore's default
+    backend) which both iterate every getaddrinfo result automatically.
+    A domain with multiple public IPs (common for CDN/load-balanced/DR
+    setups) where the first-sorted one is temporarily down used to
+    transparently retry the next one; after the SSRF fix it just failed
+    outright. Callers now get the full list and are expected to try each
+    one in order until one actually connects, same as the OS/httpcore
+    always did - see network.py's _ValidatingNetworkBackend.connect_tcp
+    and cert_info.py's _get_cert_sync for the two real retry loops.
+
+    The caller MUST use these returned IPs for the real connection(s)
+    and never re-resolve `host` itself afterward - see this module's
     docstring for why that's the part that actually closes the DNS
     rebinding gap, not just checking the host once somewhere earlier.
     """
@@ -136,32 +198,41 @@ def first_safe_ip_sync(host: str, port: int) -> str:
 
     if is_host_allowlisted(host):
         if literal is not None:
-            return str(literal)
+            return [str(literal)]
         try:
             candidates = _resolve_all_sync(host, port)
-        except socket.gaierror as error:
+        except _UNRESOLVABLE_ERRORS as error:
             raise BlockedAddressError(f"unresolvable: {host}") from error
         if not candidates:
             raise BlockedAddressError(f"unresolvable: {host}")
-        return candidates[0]
+        return candidates
 
     if literal is not None:
         if is_blocked_ip(str(literal)):
             raise BlockedAddressError(f"blocked: internal or reserved address ({host})")
-        return str(literal)
+        return [str(literal)]
 
     try:
         candidates = _resolve_all_sync(host, port)
-    except socket.gaierror as error:
+    except _UNRESOLVABLE_ERRORS as error:
         raise BlockedAddressError(f"unresolvable: {host}") from error
 
-    for candidate in candidates:
-        if not is_blocked_ip(candidate):
-            return candidate
+    safe = [candidate for candidate in candidates if not is_blocked_ip(candidate)]
+    if safe:
+        return safe
 
     logger.info("SSRF guard blocked %s - every resolved address is internal/reserved: %s",
                 host, candidates)
     raise BlockedAddressError(f"blocked: internal or reserved address ({host})")
+
+
+def first_safe_ip_sync(host: str, port: int) -> str:
+    """First safe IP only - see safe_ips_sync's own docstring for why a
+    caller that actually opens a connection should use safe_ips_sync and
+    try each candidate instead of just this one. Kept as a thin wrapper
+    (rather than removed) since a caller that only needs ONE validated
+    IP - not a connect-and-retry loop - has no reason to handle a list."""
+    return safe_ips_sync(host, port)[0]
 
 
 class _ValidatingNetworkBackend(httpcore.AnyIOBackend):
@@ -188,16 +259,51 @@ class _ValidatingNetworkBackend(httpcore.AnyIOBackend):
         # domain_info.resolve_host bounds the equivalent unbounded
         # getaddrinfo call, so a hung resolver degrades this ONE
         # connection attempt instead of hanging the whole scan.
+        #
+        # Real bug, found by code review (2026-09-16), confirmed against
+        # httpcore 1.0.9 source: the REAL AnyIOBackend.connect_tcp this
+        # overrides bounds DNS resolution and the TCP connect TOGETHER
+        # under one shared anyio.fail_after(timeout) - resolving a
+        # hostname is part of what anyio.connect_tcp does internally.
+        # An earlier version of this override gave DNS its own SEPARATE
+        # DNS_TIMEOUT budget and then still passed the full `timeout` to
+        # super().connect_tcp() for the connect step - two stacked
+        # budgets where the original code had one, silently doubling
+        # the worst-case latency per TCP connection (and this recurs on
+        # every redirect hop, up to MAX_REDIRECTS=10). Using ONE overall
+        # deadline for DNS + every connect attempt below restores the
+        # original "one combined budget" behavior instead of just
+        # matching the original NUMBER twice.
+        budget = timeout if timeout is not None else DNS_TIMEOUT
+        deadline = time.monotonic() + budget
         try:
-            safe_ip = await asyncio.wait_for(
-                asyncio.to_thread(first_safe_ip_sync, host, port), timeout=DNS_TIMEOUT,
+            safe_ips = await asyncio.wait_for(
+                asyncio.to_thread(safe_ips_sync, host, port), timeout=budget,
             )
         except asyncio.TimeoutError as error:
             raise BlockedAddressError(f"DNS resolution timed out: {host}") from error
-        return await super().connect_tcp(
-            safe_ip, port, timeout=timeout, local_address=local_address,
-            socket_options=socket_options,
-        )
+
+        # Real bug, found by code review (2026-09-16): this used to
+        # connect to only the FIRST safe IP with no fallback - a real
+        # regression from socket.create_connection/httpcore's own
+        # default backend, both of which try every resolved address.
+        # Trying each safe_ips_sync candidate in turn restores that,
+        # still under the SAME overall deadline set above rather than a
+        # fresh budget per candidate (so a host with many bad IPs can't
+        # cost N times the configured timeout).
+        last_error: Exception | None = None
+        for candidate in safe_ips:
+            remaining = timeout
+            if timeout is not None:
+                remaining = max(deadline - time.monotonic(), 0.0)
+            try:
+                return await super().connect_tcp(
+                    candidate, port, timeout=remaining, local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except Exception as error:                  # noqa: BLE001 - try the next candidate
+                last_error = error
+        raise last_error
 
 
 class SafeAsyncHTTPTransport(httpx.AsyncHTTPTransport):

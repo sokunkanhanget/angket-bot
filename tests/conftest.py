@@ -221,3 +221,17 @@ def _reset_gemini_circuit_breaker():
     import bot.detectors.text.online.gemini_retry as gemini_retry
     gemini_retry._consecutive_failures = 0
     gemini_retry._circuit_open_until = 0.0
+
+
+@pytest.fixture(autouse=True)
+def _reset_dns_resolution_cache():
+    """safe_net._resolve_all_sync's per-host cache (2026-09-16) is a
+    module-level dict with a 5s TTL, shared across the WHOLE test run -
+    a test that monkeypatches socket.getaddrinfo/safe_net._resolve_all_sync
+    to raise or return a specific value for some host, then a LATER,
+    unrelated test happening to reuse that same hostname string within
+    5 real wall-clock seconds, would get the FIRST test's cached result
+    instead of exercising its own mocked behavior. Cleared before every
+    test, same defensive pattern as _reset_gemini_circuit_breaker above."""
+    from bot.detectors.url.online import safe_net
+    safe_net._resolution_cache.clear()

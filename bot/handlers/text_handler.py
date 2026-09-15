@@ -222,6 +222,107 @@ def format_unified_response(
     return "\n\n".join(lines)
 
 
+async def _check_quota_gate(message, lang: str, user_id: int | None, trusted_shape: bool,
+                             reply_markup=None) -> bool:
+    """True if the sender is over today's limit and must be turned away
+    here. Shared gate/notify-once logic, found duplicated between
+    handle_text's private-DM branch and handle_check by code review
+    (2026-09-16) - both differed only in lang (lang vs DEFAULT_LANG) and
+    whether a main-menu keyboard is attached to the notice."""
+    if user_id is None or trusted_shape or subscription.can_scan_link_or_message(user_id):
+        return False
+    # Direct user spec (2026-09-15): tell them once, not on every
+    # message they send while still over today's limit - see
+    # should_notify_link_limit's own docstring.
+    if subscription.should_notify_link_limit(user_id):
+        await message.reply_text(
+            t(lang, "daily_scan_limit_reached").format(
+                limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+                reset_time=subscription.reset_time_display(),
+            ),
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+    return True
+
+
+async def _run_full_check_and_reply(
+    message, context: ContextTypes.DEFAULT_TYPE, text: str, hidden_links: list,
+    document, keyword_result: dict, lang: str, user_id: int | None, trusted_shape: bool,
+    has_text_fn, log_context: str,
+) -> None:
+    """check_message_full (+ file scan if attached) -> analyze_unified ->
+    build the reply (short trusted-link notice or the full template) ->
+    charge quota -> edit the status message. Shared body of handle_text's
+    private-DM branch and handle_check, found duplicated by code review
+    (2026-09-16) - the two differed only in lang, how has_text is
+    computed (has_text_fn, since it needs link_verdicts which isn't known
+    until after the real check runs), and the log message on failure."""
+    await ensure_vectors_seeded(context.bot_data)
+
+    status = await message.reply_text(t(lang, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
+    animation_task = asyncio.create_task(animate_status(status, lang))
+
+    async def _check_file():
+        sha256 = await download_and_hash(context, document.file_id)
+        return await scan_file(sha256, document.file_name or "")
+
+    # Concurrent, independent network chains - return_exceptions=True so
+    # a file-check failure can't discard an already-succeeded link result.
+    tasks = [check_message_full(text, hidden_links)]
+    if document is not None:
+        tasks.append(_check_file())
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    link_verdicts = results[0] if not isinstance(results[0], Exception) else []
+    file_verdict = None
+    if document is not None:
+        file_verdict = results[1] if not isinstance(results[1], Exception) else None
+
+    # try/finally-equivalent (except/re-stop) so the animation task can
+    # never outlive this handler.
+    try:
+        unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
+        trusted_host = unified.get("trusted_link_notice_host")
+        if trusted_host:
+            # Direct user spec (2026-09-16): a bare trusted-brand link
+            # gets this one-line notice instead of the full VERDICT/KEY
+            # REASONS/WHAT TO DO template - see verdict_style.trusted_link_notice.
+            reply_text = trusted_link_notice(trusted_host, lang, style="html")
+        else:
+            reply_text = format_unified_response(
+                unified, keyword_result, lang,
+                has_link=bool(link_verdicts),
+                has_file=document is not None,
+                has_text=has_text_fn(link_verdicts),
+                evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
+            )
+        # Real bug, found by code review (2026-09-16), confirmed live:
+        # trusted_host alone (from _message_is_only_links, deduped-verdict-
+        # based) can disagree with trusted_shape (from bare_trusted_link,
+        # raw-URL-count-based) - e.g. "facebook.com facebook.com" makes
+        # trusted_shape False (2 raw URL occurrences) but trusted_host
+        # truthy (dedupes to 1 verdict). Charging quota only when BOTH
+        # agree means the charge decision can never diverge from what the
+        # pre-check gate already committed to - an over-quota sender
+        # already either got blocked by trusted_shape=False above or was
+        # let through by trusted_shape=True, and this must not silently
+        # give a free pass trusted_shape itself wouldn't have granted.
+        # The DISPLAY choice (short notice vs full template) stays driven
+        # by trusted_host alone - a display simplification, not a
+        # billing decision.
+        if user_id is not None and not (trusted_shape and trusted_host):
+            subscription.record_link_or_message_scan(user_id)
+    except Exception:                          # noqa: BLE001 - must still stop the animation and reply
+        logger.exception("Unified analysis failed for %s", log_context)
+        await stop_status_animation(animation_task)
+        await status.edit_text(t(lang, "scan_failed"))
+        return
+
+    await stop_status_animation(animation_task)
+    await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if message is None:
@@ -317,88 +418,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         and bare_trusted_link(text, hidden_links) is not None
     )
 
-    if user_id is not None and not trusted_shape and not subscription.can_scan_link_or_message(user_id):
-        # Direct user spec (2026-09-15): tell them once, not on every
-        # message they send while still over today's limit - see
-        # should_notify_link_limit's own docstring. No status message
-        # exists yet at this point in the handler, so "stay silent" here
-        # really is silent, not a stray message to clean up.
-        if subscription.should_notify_link_limit(user_id):
-            await message.reply_text(
-                t(lang, "daily_scan_limit_reached").format(
-                    limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
-                    reset_time=subscription.reset_time_display(),
-                ),
-                reply_markup=main_menu_keyboard,
-                parse_mode="HTML",
-            )
+    # No status message exists yet at this point in the handler, so
+    # "stay silent" on a blocked sender really is silent, not a stray
+    # message to clean up.
+    if await _check_quota_gate(message, lang, user_id, trusted_shape, main_menu_keyboard):
         return
 
     keyword_result = analyze_text(text)
 
     if is_plain_private:
-        await ensure_vectors_seeded(context.bot_data)
-
-        # Always shown now - a text-only message (no link, no file) still
-        # goes through the same analyze_unified() call (Gemini + bge-m3),
-        # which is just as slow as the link/file path; leaving it silent
-        # made the bot look unresponsive on exactly that path.
-        status = await message.reply_text(t(lang, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
-        animation_task = asyncio.create_task(animate_status(status, lang))
-
-        async def _check_file():
-            sha256 = await download_and_hash(context, document.file_id)
-            return await scan_file(sha256, document.file_name or "")
-
-        # Concurrent, independent network chains - return_exceptions=True
-        # so a file-check failure can't discard an already-succeeded link
-        # result (same pattern handle_business_message already uses).
-        tasks = [check_message_full(text, hidden_links)]
-        if document is not None:
-            tasks.append(_check_file())
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        link_verdicts = results[0] if not isinstance(results[0], Exception) else []
-        file_verdict = None
-        if document is not None:
-            file_verdict = results[1] if not isinstance(results[1], Exception) else None
-
-        # try/finally so the animation task can never outlive this handler -
-        # without it, an exception here (e.g. a "database is locked" SQLite
-        # conflict from record_link_or_message_scan) would leave
-        # animation_task running forever, editing the status message every
-        # 1.5s for the rest of the process with no way to reach it again,
-        # and the user would never get a real reply. Same defense-in-depth
-        # pattern file_handler.py's handle_file already uses around its own
-        # risky awaits.
-        try:
-            unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
-            trusted_host = unified.get("trusted_link_notice_host")
-            if trusted_host:
-                # Direct user spec (2026-09-16): a bare trusted-brand
-                # link gets this one-line notice instead of the full
-                # VERDICT/KEY REASONS/WHAT TO DO template - see
-                # verdict_style.trusted_link_notice.
-                reply_text = trusted_link_notice(trusted_host, lang, style="html")
-            else:
-                reply_text = format_unified_response(
-                    unified, keyword_result, lang,
-                    has_link=bool(link_verdicts),
-                    has_file=document is not None,
-                    has_text=not _message_is_only_links(text, link_verdicts),
-                    evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
-                )
-            if user_id is not None and not trusted_host:
-                subscription.record_link_or_message_scan(user_id)
-        except Exception:                          # noqa: BLE001 - must still stop the animation and reply
-            logger.exception("Unified analysis failed for a private-DM message")
-            await stop_status_animation(animation_task)
-            await status.edit_text(t(lang, "scan_failed"))
-            return
-
-        await stop_status_animation(animation_task)
-
-        await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)
+        # Always checked now - a text-only message (no link, no file)
+        # still goes through the same analyze_unified() call (Gemini +
+        # bge-m3), which is just as slow as the link/file path; leaving
+        # it silent made the bot look unresponsive on exactly that path.
+        await _run_full_check_and_reply(
+            message, context, text, hidden_links, document, keyword_result, lang, user_id, trusted_shape,
+            has_text_fn=lambda link_verdicts: not _message_is_only_links(text, link_verdicts),
+            log_context="a private-DM message",
+        )
         return
 
     # Group/supergroup chat: unchanged text-only reasoning - any link in
@@ -505,73 +542,19 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # below via trusted_host before the quota charge is skipped).
     trusted_shape = document is None and bare_trusted_link(target_text, hidden_links) is not None
 
-    if user_id is not None and not trusted_shape and not subscription.can_scan_link_or_message(user_id):
-        # Same notify-once contract as handle_text's private-DM path -
-        # see should_notify_link_limit's docstring. This shares that
-        # SAME per-user counter, so a user already told once today via
-        # private DM won't be told again here, and vice versa.
-        if subscription.should_notify_link_limit(user_id):
-            await message.reply_text(
-                t(DEFAULT_LANG, "daily_scan_limit_reached").format(
-                    limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
-                    reset_time=subscription.reset_time_display(),
-                ),
-                parse_mode="HTML",
-            )
+    # Same notify-once contract as handle_text's private-DM path - shares
+    # that SAME per-user counter, so a user already told once today via
+    # private DM won't be told again here, and vice versa.
+    if await _check_quota_gate(message, DEFAULT_LANG, user_id, trusted_shape):
         return
 
     # After the quota gate, not before - matches the established,
     # deliberately-fixed pattern (url_handler.handle_url had this
     # backwards once; a real Supabase call shouldn't happen for an
     # over-quota sender).
-    await ensure_vectors_seeded(context.bot_data)
-
     keyword_result = analyze_text(target_text)
-    status = await message.reply_text(t(DEFAULT_LANG, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
-    animation_task = asyncio.create_task(animate_status(status, DEFAULT_LANG))
-
-    async def _check_file():
-        sha256 = await download_and_hash(context, document.file_id)
-        return await scan_file(sha256, document.file_name or "")
-
-    # return_exceptions=True - same pattern handle_text's own private-DM
-    # path uses, so a file-check failure can't discard an
-    # already-succeeded link result.
-    tasks = [check_message_full(target_text, hidden_links)]
-    if document is not None:
-        tasks.append(_check_file())
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    link_verdicts = results[0] if not isinstance(results[0], Exception) else []
-    file_verdict = None
-    if document is not None:
-        file_verdict = results[1] if not isinstance(results[1], Exception) else None
-
-    # try/finally-equivalent (except/re-stop) so the animation task can
-    # never outlive this handler - same defense-in-depth as handle_text's
-    # own private-DM path.
-    try:
-        unified = await analyze_unified(
-            target_text, keyword_result, link_verdicts, file_verdict, DEFAULT_LANG, user_id,
-        )
-        trusted_host = unified.get("trusted_link_notice_host")
-        if trusted_host:
-            reply_text = trusted_link_notice(trusted_host, DEFAULT_LANG, style="html")
-        else:
-            reply_text = format_unified_response(
-                unified, keyword_result, DEFAULT_LANG,
-                has_link=bool(link_verdicts),
-                has_file=document is not None,
-                has_text=bool(target_text.strip()),
-                evidence_degraded=any(v.get("evidence_degraded") for v in link_verdicts),
-            )
-        if user_id is not None and not trusted_host:
-            subscription.record_link_or_message_scan(user_id)
-    except Exception:                          # noqa: BLE001 - must still stop the animation and reply
-        logger.exception("Unified analysis failed for /check")
-        await stop_status_animation(animation_task)
-        await status.edit_text(t(DEFAULT_LANG, "scan_failed"))
-        return
-
-    await stop_status_animation(animation_task)
-    await status.edit_text(reply_text, parse_mode="HTML", disable_web_page_preview=True)
+    await _run_full_check_and_reply(
+        message, context, target_text, hidden_links, document, keyword_result, DEFAULT_LANG, user_id, trusted_shape,
+        has_text_fn=lambda link_verdicts: bool(target_text.strip()),
+        log_context="/check",
+    )

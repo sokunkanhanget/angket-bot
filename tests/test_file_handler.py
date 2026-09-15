@@ -405,9 +405,9 @@ async def test_daily_file_limit_only_notifies_once():
         await handle_file(update, context)  # 1st over-quota upload: notified
         sent.edit_text.assert_awaited_once_with(
             t("en", "daily_file_limit_reached").format(
-            limit=subscription.FREEMIUM_DAILY_FILES,
-            reset_time=subscription.reset_time_display(),
-        ),
+                limit=subscription.FREEMIUM_DAILY_FILES,
+                reset_time=subscription.reset_time_display(),
+            ),
             parse_mode="HTML",
         )
         sent.edit_text.reset_mock()

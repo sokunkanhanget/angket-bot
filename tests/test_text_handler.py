@@ -614,6 +614,7 @@ async def test_handle_check_blocked_by_daily_quota():
             limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
             reset_time=subscription.reset_time_display(),
         ),
+        reply_markup=None,
         parse_mode="HTML",
     )
 

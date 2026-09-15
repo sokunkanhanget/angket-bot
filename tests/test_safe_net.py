@@ -12,8 +12,11 @@ connect, which a mocked resolver/transport could hide a real gap in.
 """
 
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import httpcore
+import httpx
 import pytest
 
 from bot.detectors.url.online import cert_info, network, safe_net
@@ -171,14 +174,21 @@ async def test_trace_does_not_hang_forever_on_a_stuck_resolver(monkeypatch):
     # reintroduced here in the SSRF check's own resolution step. A
     # hung/slow resolver must degrade THIS connection, not stall the
     # whole scan up to the OS default (20-30s).
-    import time
-
+    #
+    # Patches network.TIMEOUT (not safe_net.DNS_TIMEOUT) - since the
+    # 2026-09-16 timeout-stacking fix, DNS resolution shares the SAME
+    # budget as httpx's own configured connect timeout rather than a
+    # separately-tunable constant (see connect_tcp's own comment for
+    # why: the original bug was exactly two independent budgets
+    # stacking). aclose() forces the shared client to rebuild with the
+    # patched timeout, since it's normally cached across calls.
     def hangs(host, port):
-        time.sleep(2)  # well past DNS_TIMEOUT below; no need for a real 30s hang
+        time.sleep(2)  # well past the patched connect timeout below
         return ["203.0.113.5"]
 
     monkeypatch.setattr(safe_net, "_resolve_all_sync", hangs)
-    monkeypatch.setattr(safe_net, "DNS_TIMEOUT", 0.2)
+    monkeypatch.setattr(network, "TIMEOUT", httpx.Timeout(10.0, connect=0.2))
+    await network.aclose()
 
     started = time.perf_counter()
     result = await network.trace("http://hung-resolver.example/")
@@ -294,3 +304,226 @@ def test_get_cert_sync_does_not_leak_a_blocked_address_into_the_cache(monkeypatc
     # connection attempt happened.
     monkeypatch.setattr(cert_info, "SCAN_LOG_DB", str(tmp_path / "cert.db"))
     assert cert_info._get_cert_sync("127.0.0.1") is None
+
+
+# --- DNS+connect timeout budget (2026-09-16, found by code review) ------
+# Real bug, confirmed against httpcore 1.0.9 source: the real
+# AnyIOBackend.connect_tcp this overrides bounds DNS resolution and the
+# TCP connect TOGETHER under one shared anyio.fail_after(timeout) - an
+# earlier version of this override gave DNS its own separate budget on
+# top, silently doubling the worst-case connect latency per hop.
+
+@pytest.mark.asyncio
+async def test_connect_tcp_shares_one_budget_between_dns_and_connect(monkeypatch):
+    def slow_resolve(host, port):
+        time.sleep(3)
+        return ["203.0.113.5"]
+
+    monkeypatch.setattr(safe_net, "safe_ips_sync", slow_resolve)
+
+    captured = {}
+
+    async def fake_super_connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        captured["timeout"] = timeout
+        raise RuntimeError("stub - never actually connects")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", fake_super_connect_tcp)
+
+    backend = safe_net._ValidatingNetworkBackend()
+    with pytest.raises(RuntimeError):
+        await backend.connect_tcp("slow.example", 443, timeout=5.0)
+
+    # ~2s should remain out of the original 5s budget after the 3s
+    # resolution - NOT a fresh 5.0s, which is what the bug produced.
+    assert captured["timeout"] is not None
+    assert captured["timeout"] < 3.0
+    assert captured["timeout"] > 0.5
+
+
+@pytest.mark.asyncio
+async def test_connect_tcp_leaves_almost_no_time_when_dns_eats_most_of_the_budget(monkeypatch):
+    # If DNS eats almost the whole budget (but still finishes within
+    # it), the connect step must get whatever's actually left, not a
+    # fresh full timeout as if DNS had been free.
+    def slow_resolve(host, port):
+        time.sleep(0.18)
+        return ["203.0.113.5"]
+
+    monkeypatch.setattr(safe_net, "safe_ips_sync", slow_resolve)
+
+    captured = {}
+
+    async def fake_super_connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        captured["timeout"] = timeout
+        raise RuntimeError("stub - never actually connects")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", fake_super_connect_tcp)
+
+    backend = safe_net._ValidatingNetworkBackend()
+    with pytest.raises(RuntimeError):
+        await backend.connect_tcp("slow.example", 443, timeout=0.2)
+
+    # ~0.02s should remain out of the 0.2s budget - nowhere near a
+    # fresh 0.2s, which is what the bug produced.
+    assert captured["timeout"] is not None
+    assert 0.0 <= captured["timeout"] < 0.1
+
+
+@pytest.mark.asyncio
+async def test_connect_tcp_dns_timeout_fires_when_dns_alone_exceeds_the_budget(monkeypatch):
+    # The other side of the same behavior: if DNS resolution alone takes
+    # longer than the whole budget, it must raise from the DNS-timeout
+    # path (a clean BlockedAddressError) rather than ever reaching the
+    # real connect step with a negative/zero timeout.
+    def too_slow_resolve(host, port):
+        time.sleep(0.3)
+        return ["203.0.113.5"]
+
+    monkeypatch.setattr(safe_net, "safe_ips_sync", too_slow_resolve)
+
+    async def fake_super_connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        raise AssertionError("must not reach the real connect step")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", fake_super_connect_tcp)
+
+    backend = safe_net._ValidatingNetworkBackend()
+    with pytest.raises(safe_net.BlockedAddressError, match="timed out"):
+        await backend.connect_tcp("too-slow.example", 443, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_connect_tcp_with_no_timeout_falls_back_to_dns_timeout_only_for_resolution(monkeypatch):
+    # timeout=None (httpx allows this, "no timeout") must still bound
+    # the DNS step somehow - falls back to DNS_TIMEOUT for resolution
+    # only, and passes None through unchanged for the connect step
+    # (nothing to subtract from).
+    def fast_resolve(host, port):
+        return ["203.0.113.5"]
+
+    monkeypatch.setattr(safe_net, "safe_ips_sync", fast_resolve)
+
+    captured = {}
+
+    async def fake_super_connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        captured["timeout"] = timeout
+        raise RuntimeError("stub - never actually connects")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", fake_super_connect_tcp)
+
+    backend = safe_net._ValidatingNetworkBackend()
+    with pytest.raises(RuntimeError):
+        await backend.connect_tcp("fast.example", 443, timeout=None)
+
+    assert captured["timeout"] is None
+
+
+# --- Multi-IP failover (2026-09-16, found by code review) ---------------
+# Real regression: first_safe_ip_sync returned only the FIRST safe IP,
+# so a domain with multiple public IPs (CDN/DR setups) where the
+# first-sorted one is down got no fallback - the original bare
+# socket.create_connection/httpcore default backend both tried every
+# resolved IP automatically.
+
+def test_safe_ips_sync_returns_every_safe_candidate_in_order(monkeypatch):
+    monkeypatch.setattr(safe_net, "_resolve_all_sync",
+                        lambda host, port: ["93.184.216.34", "8.8.8.8"])
+    assert safe_net.safe_ips_sync("multi.example", 443) == ["93.184.216.34", "8.8.8.8"]
+
+
+def test_safe_ips_sync_excludes_blocked_ips_from_the_list(monkeypatch):
+    monkeypatch.setattr(safe_net, "_resolve_all_sync",
+                        lambda host, port: ["127.0.0.1", "93.184.216.34", "10.0.0.1", "8.8.8.8"])
+    assert safe_net.safe_ips_sync("mixed.example", 443) == ["93.184.216.34", "8.8.8.8"]
+
+
+def test_first_safe_ip_sync_is_the_first_element_of_safe_ips_sync(monkeypatch):
+    monkeypatch.setattr(safe_net, "_resolve_all_sync",
+                        lambda host, port: ["93.184.216.34", "8.8.8.8"])
+    assert safe_net.first_safe_ip_sync("multi.example", 443) == "93.184.216.34"
+
+
+@pytest.mark.asyncio
+async def test_connect_tcp_falls_back_to_the_second_ip_when_the_first_fails(monkeypatch):
+    # The real fix: a first-candidate connection failure must not be
+    # the final answer when a second safe candidate exists.
+    monkeypatch.setattr(safe_net, "safe_ips_sync",
+                        lambda host, port: ["203.0.113.1", "203.0.113.2"])
+
+    attempted = []
+
+    async def fake_super_connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        attempted.append(host)
+        if host == "203.0.113.1":
+            raise OSError("simulated: first IP is down")
+        return "connected-stream"
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", fake_super_connect_tcp)
+
+    backend = safe_net._ValidatingNetworkBackend()
+    result = await backend.connect_tcp("multi.example", 443, timeout=5.0)
+
+    assert result == "connected-stream"
+    assert attempted == ["203.0.113.1", "203.0.113.2"]  # tried first, failed, tried second
+
+
+@pytest.mark.asyncio
+async def test_connect_tcp_raises_the_last_error_when_every_candidate_fails(monkeypatch):
+    monkeypatch.setattr(safe_net, "safe_ips_sync",
+                        lambda host, port: ["203.0.113.1", "203.0.113.2"])
+
+    async def fake_super_connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        raise OSError(f"simulated: {host} is down")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", fake_super_connect_tcp)
+
+    backend = safe_net._ValidatingNetworkBackend()
+    with pytest.raises(OSError, match="203.0.113.2"):
+        await backend.connect_tcp("multi.example", 443, timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_connect_tcp_does_not_exceed_the_shared_deadline_across_multiple_candidates(monkeypatch):
+    # Trying a second (or third...) candidate must not reset the clock -
+    # a host with many bad IPs can't cost N times the configured timeout.
+    monkeypatch.setattr(safe_net, "safe_ips_sync",
+                        lambda host, port: ["203.0.113.1", "203.0.113.2", "203.0.113.3"])
+
+    captured_timeouts = []
+
+    async def fake_super_connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        captured_timeouts.append(timeout)
+        time.sleep(0.1)  # simulate each failed attempt taking real time
+        raise OSError(f"simulated: {host} is down")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", fake_super_connect_tcp)
+
+    backend = safe_net._ValidatingNetworkBackend()
+    with pytest.raises(OSError):
+        await backend.connect_tcp("multi.example", 443, timeout=0.25)
+
+    # Each later candidate must get LESS time than the one before it,
+    # not a fresh 0.25s each - proves the deadline is shared, not reset.
+    assert captured_timeouts == sorted(captured_timeouts, reverse=True)
+    assert captured_timeouts[0] < 0.25
+
+
+def test_get_cert_sync_falls_back_to_the_second_ip_when_the_first_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(cert_info, "SCAN_LOG_DB", str(tmp_path / "cert.db"))
+    monkeypatch.setattr(safe_net, "safe_ips_sync",
+                        lambda host, port: ["203.0.113.1", "93.184.216.34"])
+
+    attempted = []
+
+    def fake_create_connection(address, timeout=None):
+        host, port = address
+        attempted.append(host)
+        if host == "203.0.113.1":
+            raise OSError("simulated: first IP refuses connection")
+        raise ConnectionRefusedError("simulated: no real TLS server here either, just proving retry happened")
+
+    monkeypatch.setattr(cert_info.socket, "create_connection", fake_create_connection)
+
+    result = cert_info._get_cert_sync("multi.example")
+
+    assert result is None  # both attempts fail in this test, but both were TRIED
+    assert attempted == ["203.0.113.1", "93.184.216.34"]

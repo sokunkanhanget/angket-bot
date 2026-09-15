@@ -82,8 +82,30 @@ async def test_handle_url_checks_quota_before_seeding_vectors():
     mock_seed.assert_not_awaited()
     mock_check.assert_not_awaited()
     update.effective_message.reply_text.assert_awaited_once_with(
-        t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
+        t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+        parse_mode="HTML",
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_url_only_notifies_once():
+    # Direct user spec (2026-09-15): tell them once, not on every link
+    # they send while still over today's limit.
+    update = _group_update("claim now http://free-prize-winner.tk/claim")
+    update.effective_message.reply_text = AsyncMock()
+    context = _context()
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(42)
+
+    with patch("bot.handlers.url_handler.ensure_vectors_seeded", AsyncMock()), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock()):
+        await handle_url(update, context)  # 1st over-quota message: notified
+        update.effective_message.reply_text.assert_awaited_once()
+        update.effective_message.reply_text.reset_mock()
+
+        await handle_url(update, context)  # 2nd over-quota message: silent
+
+    update.effective_message.reply_text.assert_not_called()
 
 
 def _trusted_verdict(**over):

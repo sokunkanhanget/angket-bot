@@ -388,7 +388,31 @@ async def test_daily_scan_limit_blocks_before_any_real_work():
     update.message.reply_text.assert_awaited_once_with(
         t("en", "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
         reply_markup=MAIN_MENU_KEYBOARD,
+        parse_mode="HTML",
     )
+
+
+@pytest.mark.asyncio
+async def test_daily_scan_limit_only_notifies_once_in_private_dm():
+    # Direct user spec (2026-09-15): tell them once, not on every message
+    # they send while still over today's limit.
+    update = _private_update("free bitcoin now, click nowhere")
+    context = _private_context()
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(update.effective_user.id)
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.analyze_unified") as mock_unified, \
+         patch("bot.handlers.text_handler.check_message_full") as mock_check:
+        await handle_text(update, context)  # 1st over-quota message: notified
+        update.message.reply_text.assert_awaited_once()
+        update.message.reply_text.reset_mock()
+
+        await handle_text(update, context)  # 2nd over-quota message: silent
+
+    mock_unified.assert_not_called()
+    mock_check.assert_not_called()
+    update.message.reply_text.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -527,8 +551,34 @@ async def test_handle_check_blocked_by_daily_quota():
     mock_seed.assert_not_awaited()
     mock_check.assert_not_awaited()
     update.effective_message.reply_text.assert_awaited_once_with(
-        t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
+        t(DEFAULT_LANG, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+        parse_mode="HTML",
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_check_only_notifies_once():
+    # Same notify-once contract as handle_text's private-DM path, and
+    # the SAME shared per-user counter - proven here by exhausting the
+    # quota via handle_text's own uid (42) and confirming /check's first
+    # call is still silent because handle_text already spent today's
+    # notification.
+    update = _private_update("free bitcoin now, click nowhere")
+    private_context = _private_context()
+    for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
+        subscription.record_link_or_message_scan(42)
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.analyze_unified"), \
+         patch("bot.handlers.text_handler.check_message_full"):
+        await handle_text(update, private_context)
+    update.message.reply_text.assert_awaited_once()  # sanity: private DM got the one notification
+
+    check_update, check_context = _group_check_update(args=["http://example.com"])
+    with patch("bot.handlers.text_handler.ensure_vectors_seeded", AsyncMock()), \
+         patch("bot.handlers.text_handler.check_message_full", AsyncMock()):
+        await handle_check(check_update, check_context)
+
+    check_update.effective_message.reply_text.assert_not_called()
 
 
 @pytest.mark.asyncio

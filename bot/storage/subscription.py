@@ -40,6 +40,22 @@ INDIVIDUAL_DAILY_LINKS_MESSAGES = 15
 INDIVIDUAL_DAILY_TOKENS = 60_000
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """`create table if not exists` only creates a table that doesn't
+    exist yet - it does nothing for a table that already exists with an
+    older schema, which is exactly the real case here: daily_usage and
+    trial_status both predate the *_limit_notified/notified_trial_ended
+    columns below, and a deployed scan_logs.db already has rows in them.
+    ALTER TABLE ... ADD COLUMN has no "IF NOT EXISTS" in the SQLite
+    version this project targets, so this catches the one error SQLite
+    raises for an already-present column instead."""
+    try:
+        conn.execute(f"alter table {table} add column {column} {ddl}")
+    except sqlite3.OperationalError as error:
+        if "duplicate column" not in str(error).lower():
+            raise
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(SCAN_LOG_DB)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -63,6 +79,19 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    # Direct user spec (2026-09-15): tell a user their quota/trial ran
+    # out ONCE, not on every message they send while still over it - see
+    # should_notify_file_limit/should_notify_link_limit/
+    # should_notify_live_detect_ended below. Both flags live in the same
+    # row as the counter they guard, so a file/link quota's notified flag
+    # resets automatically with tomorrow's fresh daily_usage row, exactly
+    # matching the "resets tomorrow" wording already in the user-facing
+    # message. The trial flag has no reset today - is_paid_user() is
+    # always False, so nothing currently clears it - by design: once the
+    # 7-day trial is over it stays over until a real subscription exists.
+    _add_column_if_missing(conn, "daily_usage", "file_limit_notified", "integer not null default 0")
+    _add_column_if_missing(conn, "daily_usage", "links_messages_limit_notified", "integer not null default 0")
+    _add_column_if_missing(conn, "trial_status", "notified_trial_ended", "integer not null default 0")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -176,6 +205,79 @@ def record_token_usage(user_id: int, tokens: int) -> None:
             (tokens, user_id, _today()),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def should_notify_file_limit(user_id: int) -> bool:
+    """True exactly once per day: the first call after can_scan_file()
+    turns False for this user flips today's flag and returns True; every
+    later call the same day - however many more messages arrive while
+    still over quota - returns False, so the caller sends the
+    "limit reached" reply only that one time. Only meaningful to call
+    once can_scan_file() has already returned False; calling it while
+    still under quota just spends the flag for nothing.
+    """
+    conn = _connect()
+    try:
+        row = _get_or_create_today(conn, user_id)
+        if row["file_limit_notified"]:
+            return False
+        conn.execute(
+            "update daily_usage set file_limit_notified = 1 where user_id = ? and usage_date = ?",
+            (user_id, _today()),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def should_notify_link_limit(user_id: int) -> bool:
+    """Same one-notification-per-day contract as should_notify_file_limit,
+    for the links/messages counter - shared by every surface that draws
+    from it (private DM, group /check, group link checker), so a user
+    hitting the limit in one surface doesn't get told again from another
+    the same day."""
+    conn = _connect()
+    try:
+        row = _get_or_create_today(conn, user_id)
+        if row["links_messages_limit_notified"]:
+            return False
+        conn.execute(
+            "update daily_usage set links_messages_limit_notified = 1 "
+            "where user_id = ? and usage_date = ?",
+            (user_id, _today()),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def should_notify_live_detect_ended(user_id: int) -> bool:
+    """True exactly once: the first call after live_detect_allowed()
+    turns False for this owner flips the flag and returns True; every
+    later customer message that arrives while the trial is still over
+    returns False, so the owner is told Live Detect stopped working once,
+    not on every incoming message. Unlike the two daily counters above,
+    nothing resets this today - see _connect()'s comment on why that's
+    deliberate, not an oversight. Only meaningful to call once
+    live_detect_allowed() has already returned False; ensure_trial_started
+    must have run first so the row exists."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "select notified_trial_ended from trial_status where user_id = ?", (user_id,)
+        ).fetchone()
+        if row is None or row["notified_trial_ended"]:
+            return False
+        conn.execute(
+            "update trial_status set notified_trial_ended = 1 where user_id = ?",
+            (user_id,),
+        )
+        conn.commit()
+        return True
     finally:
         conn.close()
 

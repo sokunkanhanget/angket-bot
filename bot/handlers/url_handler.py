@@ -235,9 +235,14 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         # module already imports FROM this one (extract_text_link_entities),
         # so the reverse import would be circular.
         lang = str(context.user_data.get("lang", DEFAULT_LANG))
-        await message.reply_text(
-            t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES)
-        )
+        # Same notify-once contract, same shared counter, as
+        # handle_text/handle_check - see should_notify_link_limit's
+        # docstring.
+        if subscription.should_notify_link_limit(sender.id):
+            await message.reply_text(
+                t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+                parse_mode="HTML",
+            )
         return
 
     # Full pipeline: lexical + network trace + DNS/domain age + vector
@@ -430,15 +435,19 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     # Live Detect (this automation) is a 7-day Freemium trial, then
     # gated behind the paid tier. ensure_trial_started is idempotent -
     # only the FIRST business message from a given owner actually starts
-    # their clock. NOTE: this notifies the owner on EVERY message once
-    # expired, not just once - simple for now, but could get spammy for
-    # a business receiving many messages after expiry; worth revisiting
-    # if that turns out to be a real annoyance.
+    # their clock. Direct user spec (2026-09-15): tell the owner ONCE
+    # that Live Detect stopped working, not on every customer message
+    # that arrives afterward - previously every message after expiry
+    # re-sent the same notice, which would get spammy for a business
+    # receiving many messages. See should_notify_live_detect_ended's own
+    # docstring for why nothing resets this flag today.
     subscription.ensure_trial_started(owner_chat_id)
     if not subscription.live_detect_allowed(owner_chat_id):
-        await context.bot.send_message(
-            chat_id=owner_chat_id, text=t(_owner_lang(context, owner_chat_id), "live_detect_trial_ended")
-        )
+        if subscription.should_notify_live_detect_ended(owner_chat_id):
+            await context.bot.send_message(
+                chat_id=owner_chat_id, text=t(_owner_lang(context, owner_chat_id), "live_detect_trial_ended"),
+                parse_mode="HTML",
+            )
         return
 
     # The OWNER reads this notification, not the customer who sent the

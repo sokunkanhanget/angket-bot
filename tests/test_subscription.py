@@ -179,3 +179,135 @@ def test_paid_users_get_the_individual_tier_limit_not_the_freemium_one(monkeypat
     assert sub.INDIVIDUAL_DAILY_FILES > sub.FREEMIUM_DAILY_FILES  # sanity: this really is a bypass
 
     assert sub.live_detect_allowed(uid)  # never started a trial, still allowed - paid tier
+
+
+# --- Notify-once (2026-09-15 direct user spec) --------------------------
+# Tell the user the quota/trial ran out ONCE, not on every message they
+# send while still over it.
+
+def test_should_notify_file_limit_is_true_once_then_false():
+    uid = 4001
+    for _ in range(sub.FREEMIUM_DAILY_FILES):
+        sub.record_file_scan(uid)
+    assert not sub.can_scan_file(uid)
+
+    assert sub.should_notify_file_limit(uid) is True
+    assert sub.should_notify_file_limit(uid) is False
+    assert sub.should_notify_file_limit(uid) is False  # still False, not flaky
+
+
+def test_should_notify_link_limit_is_true_once_then_false():
+    uid = 4002
+    for _ in range(sub.FREEMIUM_DAILY_LINKS_MESSAGES):
+        sub.record_link_or_message_scan(uid)
+    assert not sub.can_scan_link_or_message(uid)
+
+    assert sub.should_notify_link_limit(uid) is True
+    assert sub.should_notify_link_limit(uid) is False
+
+
+def test_file_and_link_notify_flags_are_independent():
+    uid = 4003
+    for _ in range(sub.FREEMIUM_DAILY_FILES):
+        sub.record_file_scan(uid)
+    for _ in range(sub.FREEMIUM_DAILY_LINKS_MESSAGES):
+        sub.record_link_or_message_scan(uid)
+
+    assert sub.should_notify_file_limit(uid) is True
+    # The file flag being spent must not affect the separate link flag.
+    assert sub.should_notify_link_limit(uid) is True
+    assert sub.should_notify_file_limit(uid) is False
+    assert sub.should_notify_link_limit(uid) is False
+
+
+def test_notify_flags_are_independent_per_user():
+    uid_a, uid_b = 4004, 4005
+    for uid in (uid_a, uid_b):
+        for _ in range(sub.FREEMIUM_DAILY_FILES):
+            sub.record_file_scan(uid)
+
+    assert sub.should_notify_file_limit(uid_a) is True
+    assert sub.should_notify_file_limit(uid_a) is False
+    # A different user must still get their own first notification.
+    assert sub.should_notify_file_limit(uid_b) is True
+
+
+def test_notify_flags_reset_on_a_new_day():
+    # Matches the "resets tomorrow" wording already in the user-facing
+    # message - notified-today must not suppress notified-tomorrow.
+    uid = 4006
+    conn = sub._connect()
+    try:
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+        conn.execute(
+            "insert into daily_usage (user_id, usage_date, files_used, "
+            "links_messages_used, tokens_used, file_limit_notified, "
+            "links_messages_limit_notified) values (?, ?, ?, ?, ?, ?, ?)",
+            (uid, yesterday, sub.FREEMIUM_DAILY_FILES, sub.FREEMIUM_DAILY_LINKS_MESSAGES, 0, 1, 1),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Yesterday's row was already notified - today's fresh row must not
+    # inherit that.
+    assert sub.should_notify_file_limit(uid) is True
+    assert sub.should_notify_link_limit(uid) is True
+
+
+def test_should_notify_live_detect_ended_is_true_once_then_false():
+    uid = 4007
+    conn = sub._connect()
+    try:
+        eight_days_ago = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        conn.execute(
+            "insert into trial_status (user_id, trial_started_at) values (?, ?)",
+            (uid, eight_days_ago),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert not sub.live_detect_allowed(uid)
+
+    assert sub.should_notify_live_detect_ended(uid) is True
+    assert sub.should_notify_live_detect_ended(uid) is False
+
+
+def test_should_notify_live_detect_ended_false_with_no_trial_row():
+    # ensure_trial_started is supposed to run first in the real call
+    # site; calling this without a row must fail safe (no crash, no
+    # spurious True) rather than assume "never notified" means "notify".
+    uid = 4008
+    assert sub.should_notify_live_detect_ended(uid) is False
+
+
+def test_live_detect_notify_flag_is_independent_per_user():
+    uid_a, uid_b = 4009, 4010
+    conn = sub._connect()
+    try:
+        eight_days_ago = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        for uid in (uid_a, uid_b):
+            conn.execute(
+                "insert into trial_status (user_id, trial_started_at) values (?, ?)",
+                (uid, eight_days_ago),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert sub.should_notify_live_detect_ended(uid_a) is True
+    assert sub.should_notify_live_detect_ended(uid_a) is False
+    assert sub.should_notify_live_detect_ended(uid_b) is True
+
+
+def test_add_column_if_missing_is_safe_to_call_twice():
+    # _connect() runs this on every real connection - a deployed
+    # scan_logs.db already has the column after the first process
+    # restart, so every later connection must not raise on the
+    # "duplicate column" case this exists to handle.
+    conn = sub._connect()
+    try:
+        sub._add_column_if_missing(conn, "daily_usage", "file_limit_notified", "integer not null default 0")
+        conn.execute("select file_limit_notified from daily_usage limit 1")
+    finally:
+        conn.close()

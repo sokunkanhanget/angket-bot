@@ -183,9 +183,17 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     already_cached = cached_result(sha256) is not None
     if not already_cached and not subscription.can_scan_file(user_id):
         await stop_status_animation(animation_task)
-        await message.edit_text(
-            t(lang, "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES)
-        )
+        # Direct user spec (2026-09-15): tell them once, not on every
+        # file they try to send while still over today's limit - see
+        # should_notify_file_limit's own docstring. The scan itself is
+        # blocked either way; only whether we SAY so is conditional.
+        if subscription.should_notify_file_limit(user_id):
+            await message.edit_text(
+                t(lang, "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES),
+                parse_mode="HTML",
+            )
+        else:
+            await message.delete()
         return
 
     try:

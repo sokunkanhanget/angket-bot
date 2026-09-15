@@ -240,7 +240,8 @@ async def test_daily_file_limit_blocks_scanning_once_reached():
     # status message goes out before the hash is even known, since the
     # gate itself needs that hash. See handle_file's own comment.
     sent.edit_text.assert_awaited_once_with(
-        t("en", "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES)
+        t("en", "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES),
+        parse_mode="HTML",
     )
 
 
@@ -381,3 +382,33 @@ async def test_handle_file_reply_is_fully_khmer():
     assert "executable/script file" not in reply
     assert "Verify the sender through another channel" not in reply
     assert "based on the file name only" not in reply
+
+
+@pytest.mark.asyncio
+async def test_daily_file_limit_only_notifies_once():
+    # Direct user spec (2026-09-15): the first over-quota upload gets the
+    # "limit reached" reply; every later one the same day gets silence
+    # (the in-flight "Checking..." status message deleted, not left
+    # showing forever, and nothing new sent).
+    update, context, sent = _file_update()
+    sent.delete = AsyncMock()
+    uid = update.effective_user.id
+    for _ in range(subscription.FREEMIUM_DAILY_FILES):
+        subscription.record_file_scan(uid)
+
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="a" * 64)), \
+         patch("bot.handlers.file_handler.cached_result", return_value=None), \
+         patch("bot.handlers.file_handler.scan_file") as mock_scan:
+        await handle_file(update, context)  # 1st over-quota upload: notified
+        sent.edit_text.assert_awaited_once_with(
+            t("en", "daily_file_limit_reached").format(limit=subscription.FREEMIUM_DAILY_FILES),
+            parse_mode="HTML",
+        )
+        sent.edit_text.reset_mock()
+        sent.delete.reset_mock()
+
+        await handle_file(update, context)  # 2nd over-quota upload: silent
+
+    mock_scan.assert_not_called()
+    sent.edit_text.assert_not_called()
+    sent.delete.assert_awaited_once()

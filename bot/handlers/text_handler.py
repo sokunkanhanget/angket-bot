@@ -318,10 +318,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
     if user_id is not None and not trusted_shape and not subscription.can_scan_link_or_message(user_id):
-        await message.reply_text(
-            t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
-            reply_markup=main_menu_keyboard,
-        )
+        # Direct user spec (2026-09-15): tell them once, not on every
+        # message they send while still over today's limit - see
+        # should_notify_link_limit's own docstring. No status message
+        # exists yet at this point in the handler, so "stay silent" here
+        # really is silent, not a stray message to clean up.
+        if subscription.should_notify_link_limit(user_id):
+            await message.reply_text(
+                t(lang, "daily_scan_limit_reached").format(limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES),
+                reply_markup=main_menu_keyboard,
+                parse_mode="HTML",
+            )
         return
 
     keyword_result = analyze_text(text)
@@ -492,11 +499,17 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     trusted_shape = document is None and bare_trusted_link(target_text, hidden_links) is not None
 
     if user_id is not None and not trusted_shape and not subscription.can_scan_link_or_message(user_id):
-        await message.reply_text(
-            t(DEFAULT_LANG, "daily_scan_limit_reached").format(
-                limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+        # Same notify-once contract as handle_text's private-DM path -
+        # see should_notify_link_limit's docstring. This shares that
+        # SAME per-user counter, so a user already told once today via
+        # private DM won't be told again here, and vice versa.
+        if subscription.should_notify_link_limit(user_id):
+            await message.reply_text(
+                t(DEFAULT_LANG, "daily_scan_limit_reached").format(
+                    limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
+                ),
+                parse_mode="HTML",
             )
-        )
         return
 
     # After the quota gate, not before - matches the established,

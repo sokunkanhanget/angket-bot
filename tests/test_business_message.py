@@ -668,6 +668,33 @@ async def test_live_detect_trial_expiry_blocks_automation_and_notifies_owner():
 
 
 @pytest.mark.asyncio
+async def test_live_detect_trial_expiry_only_notifies_owner_once():
+    # Direct user spec (2026-09-15): the owner is told Live Detect
+    # stopped working ONCE, not on every customer message that arrives
+    # while the trial is still over - previously every message re-sent
+    # the same notice.
+    context = _context()
+    context.application.user_data = {}
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.url_handler.check_message_full") as mock_check, \
+         patch("bot.handlers.url_handler.analyze_unified") as mock_unified, \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch.object(subscription, "live_detect_allowed", return_value=False):
+        first_update = _business_update(text="URGENT: send $800 now, don't call")
+        await handle_business_message(first_update, context)
+        context.bot.send_message.assert_awaited_once()  # 1st customer message: notified
+        context.bot.send_message.reset_mock()
+
+        second_update = _business_update(text="another urgent message")
+        await handle_business_message(second_update, context)  # 2nd: silent
+
+    mock_check.assert_not_called()
+    mock_unified.assert_not_called()
+    context.bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_live_detect_within_trial_runs_normally():
     # Sanity check for the opposite branch - an active trial must not
     # block anything (already implicitly covered by every other test in

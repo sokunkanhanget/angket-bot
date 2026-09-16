@@ -166,56 +166,50 @@ def _resolve_all_sync(host: str, port: int) -> list[str]:
     return result
 
 
-def safe_ips_sync(host: str, port: int) -> list[str]:
-    """Resolve `host` and return EVERY resolved IP that is NOT blocked,
-    in the host's own resolved order. Raises BlockedAddressError if the
-    host is unresolvable, allowlisted-but-unresolvable, or every
-    resolved IP is blocked.
+def _resolve_candidates_sync(host: str, port: int) -> list[str]:
+    """Every candidate IP for `host`, unfiltered - a literal IP as its own
+    single-item list, otherwise every _resolve_all_sync result. Raises
+    BlockedAddressError when a hostname is genuinely unresolvable.
 
-    Real bug, found by code review (2026-09-16): first_safe_ip_sync used
-    to return only the FIRST safe IP, and callers connected to that one
-    literal address with no fallback if it happened to be down - a real
-    regression from the pre-SSRF-fix behavior (socket.create_connection
-    on a hostname, and a bare hostname handed to httpcore's default
-    backend) which both iterate every getaddrinfo result automatically.
-    A domain with multiple public IPs (common for CDN/load-balanced/DR
-    setups) where the first-sorted one is temporarily down used to
-    transparently retry the next one; after the SSRF fix it just failed
-    outright. Callers now get the full list and are expected to try each
-    one in order until one actually connects, same as the OS/httpcore
-    always did - see network.py's _ValidatingNetworkBackend.connect_tcp
-    and cert_info.py's _get_cert_sync for the two real retry loops.
-
-    The caller MUST use these returned IPs for the real connection(s)
-    and never re-resolve `host` itself afterward - see this module's
-    docstring for why that's the part that actually closes the DNS
-    rebinding gap, not just checking the host once somewhere earlier.
-    """
+    Split out of safe_ips_sync, which used to inline this literal-vs-
+    hostname resolution twice (once per allowlist branch) - unifying it
+    here leaves safe_ips_sync itself as just "get candidates, then decide
+    allowlist-bypass vs blocked-IP-filter." Verified behavior-identical
+    against the previous version for every combination."""
     try:
         literal = ipaddress.ip_address(host)
     except ValueError:
         literal = None
-
-    if is_host_allowlisted(host):
-        if literal is not None:
-            return [str(literal)]
-        try:
-            candidates = _resolve_all_sync(host, port)
-        except _UNRESOLVABLE_ERRORS as error:
-            raise BlockedAddressError(f"unresolvable: {host}") from error
-        if not candidates:
-            raise BlockedAddressError(f"unresolvable: {host}")
-        return candidates
-
     if literal is not None:
-        if is_blocked_ip(str(literal)):
-            raise BlockedAddressError(f"blocked: internal or reserved address ({host})")
         return [str(literal)]
 
     try:
         candidates = _resolve_all_sync(host, port)
     except _UNRESOLVABLE_ERRORS as error:
         raise BlockedAddressError(f"unresolvable: {host}") from error
+    if not candidates:
+        raise BlockedAddressError(f"unresolvable: {host}")
+    return candidates
+
+
+def safe_ips_sync(host: str, port: int) -> list[str]:
+    """Every resolved IP for `host` that is NOT blocked, in resolved
+    order. Raises BlockedAddressError when unresolvable, allowlisted-
+    but-unresolvable, or every resolved IP is blocked.
+
+    Returns the full candidate list (not just one) so a caller can retry
+    each in turn, same as socket.create_connection/httpcore's own
+    default backend both already do natively - see
+    network.py's _ValidatingNetworkBackend.connect_tcp and
+    cert_info.py's _get_cert_sync for the two real retry loops.
+
+    Callers MUST use these exact IPs for the real connection and never
+    re-resolve `host` again - see this module's own docstring for why
+    that's what actually closes the DNS-rebinding gap."""
+    candidates = _resolve_candidates_sync(host, port)
+
+    if is_host_allowlisted(host):
+        return candidates
 
     safe = [candidate for candidate in candidates if not is_blocked_ip(candidate)]
     if safe:
@@ -254,45 +248,43 @@ class _ValidatingNetworkBackend(httpcore.AnyIOBackend):
     """
 
     async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
-        # first_safe_ip_sync's own DNS resolution has no timeout of its
-        # own (see DNS_TIMEOUT's comment) - bounded here the same way
+        # httpcore's real AnyIOBackend.connect_tcp bounds DNS resolution
+        # and the TCP connect TOGETHER under one shared timeout budget
+        # (confirmed against httpcore 1.0.9 source - resolving a hostname
+        # is part of what anyio.connect_tcp does internally). This
+        # `deadline`, shared across both helpers below, restores that
+        # single combined budget instead of giving DNS and connect each
+        # their own separate one (which would double worst-case latency
+        # per hop, on every redirect up to MAX_REDIRECTS=10).
+        budget = timeout if timeout is not None else DNS_TIMEOUT
+        deadline = time.monotonic() + budget
+        safe_ips = await self._resolve_safe_ips(host, port, budget)
+        return await self._connect_to_first_reachable(
+            safe_ips, port, deadline, timeout, local_address, socket_options,
+        )
+
+    async def _resolve_safe_ips(self, host, port, budget):
+        # safe_ips_sync's own DNS resolution has no timeout of its own
+        # (see DNS_TIMEOUT's comment) - bounded here the same way
         # domain_info.resolve_host bounds the equivalent unbounded
         # getaddrinfo call, so a hung resolver degrades this ONE
         # connection attempt instead of hanging the whole scan.
-        #
-        # Real bug, found by code review (2026-09-16), confirmed against
-        # httpcore 1.0.9 source: the REAL AnyIOBackend.connect_tcp this
-        # overrides bounds DNS resolution and the TCP connect TOGETHER
-        # under one shared anyio.fail_after(timeout) - resolving a
-        # hostname is part of what anyio.connect_tcp does internally.
-        # An earlier version of this override gave DNS its own SEPARATE
-        # DNS_TIMEOUT budget and then still passed the full `timeout` to
-        # super().connect_tcp() for the connect step - two stacked
-        # budgets where the original code had one, silently doubling
-        # the worst-case latency per TCP connection (and this recurs on
-        # every redirect hop, up to MAX_REDIRECTS=10). Using ONE overall
-        # deadline for DNS + every connect attempt below restores the
-        # original "one combined budget" behavior instead of just
-        # matching the original NUMBER twice.
-        budget = timeout if timeout is not None else DNS_TIMEOUT
-        deadline = time.monotonic() + budget
         try:
-            safe_ips = await asyncio.wait_for(
+            return await asyncio.wait_for(
                 asyncio.to_thread(safe_ips_sync, host, port), timeout=budget,
             )
         except asyncio.TimeoutError as error:
             raise BlockedAddressError(f"DNS resolution timed out: {host}") from error
 
-        # Real bug, found by code review (2026-09-16): this used to
-        # connect to only the FIRST safe IP with no fallback - a real
-        # regression from socket.create_connection/httpcore's own
-        # default backend, both of which try every resolved address.
-        # Trying each safe_ips_sync candidate in turn restores that,
-        # still under the SAME overall deadline set above rather than a
-        # fresh budget per candidate (so a host with many bad IPs can't
-        # cost N times the configured timeout).
+    async def _connect_to_first_reachable(self, candidates, port, deadline, timeout,
+                                           local_address, socket_options):
+        # Tries each candidate in turn (matching socket.create_connection/
+        # httpcore's own default backend), all under the SAME overall
+        # deadline set by connect_tcp rather than a fresh budget per
+        # candidate - a host with many bad IPs can't cost N times the
+        # configured timeout.
         last_error: Exception | None = None
-        for candidate in safe_ips:
+        for candidate in candidates:
             remaining = timeout
             if timeout is not None:
                 remaining = max(deadline - time.monotonic(), 0.0)

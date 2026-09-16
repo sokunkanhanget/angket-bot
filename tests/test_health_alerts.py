@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot.response import verdict_style
 from bot.storage import health_alerts as alerts
 
 

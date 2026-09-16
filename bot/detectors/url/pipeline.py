@@ -390,27 +390,9 @@ async def analyze_url(
         # here instead - _safe_nearest already never raises (catches its
         # own errors and returns []), so return_exceptions=True is just
         # defensive consistency with the other four, not load-bearing.
-        net_task = asyncio.create_task(network.trace(normalized))
-        dns_task = asyncio.create_task(resolve_host(host))
-        age_task = asyncio.create_task(domain_age_days(host))
-        cert_task = asyncio.create_task(cert_issued_days_ago(host))
-        sim_task = asyncio.create_task(_safe_nearest(normalized))
-
-        net, ips, age_days, cert_age_days, sim_result = await asyncio.gather(
-            net_task, dns_task, age_task, cert_task, sim_task, return_exceptions=True
+        net, ips, age_days, cert_age_days, sim_hits, vector_search_unavailable = (
+            await _gather_online_signals(normalized, host)
         )
-        if isinstance(net, Exception):
-            net = None
-        if isinstance(ips, Exception):
-            ips = None
-        if isinstance(age_days, Exception):
-            age_days = None
-        if isinstance(cert_age_days, Exception):
-            cert_age_days = None
-        if isinstance(sim_result, Exception):
-            sim_hits, vector_search_unavailable = [], True
-        else:
-            sim_hits, vector_search_unavailable = sim_result
 
         phish_sims = [s for s, kind, *_ in sim_hits if kind == "phish"]
         brand_sims = [s for s, kind, key, label in sim_hits if kind == "brand"]
@@ -441,7 +423,7 @@ async def analyze_url(
             score += age_scored[0]
             reasons.append(age_scored[1])
         elif age_days:
-            detail.append(f"Domain first registered {age_days}.")
+            detail.append(f"Domain first registered {age_days} day(s) ago.")
 
         cert_scored = score_cert_age(cert_age_days)
         if cert_scored:
@@ -464,47 +446,27 @@ async def analyze_url(
             # A REAL certificate failure (handshake rejected) is strong
             # evidence; a plain-HTTP page is only worth the small padlock
             # signal — Google itself serves http://www.google.com.
-            if net["tls_valid"] is False:
-                add_network(30, "TLS certificate is invalid — connections are not secure.")
-                detail.append(f"network: {net['error']}")
-            else:
-                add_network(15, "The server could not be reached (dead site or blocking bots).")
-                detail.append(f"network: {net['error']}")
+            points, reason = _score_network_error(net)
+            add_network(points, reason)
+            detail.append(f"network: {net['error']}")
         elif net:
             chain = net.get("redirect_chain") or []
             final_url = net["final_url"]
             final_host = network._host(final_url)
 
-            if chain:
-                hops = " → ".join(network._host(u) for _, u in chain[-4:] + [(0, final_url)])
-                detail.append(f"redirect chain ({len(chain)} hop(s)): {hops}")
-
-            if net.get("cross_domain_redirect") and registered_domain(final_host) in KNOWN_FIRST_PARTY_REDIRECTS.get(reg_domain, ()):
-                detail.append(f"redirects to '{final_host}', its own known first-party domain — not scored.")
-            elif net.get("cross_domain_redirect"):
-                add_network(20, f"The link redirects to a different domain ({final_host}) — "
-                                f"the visible address was not the real destination.")
-
-                # Only a CROSS-DOMAIN redirect justifies re-scoring the
-                # landing URL. google.com -> www.google.com is normal and
-                # must not double-count signals.
-                rescore = check_url(final_url)
-                extra_points = min(rescore["score"], 30)
-                if extra_points > 0:
-                    score += extra_points
-                    reasons.append(f"After following redirects it lands on '{final_host}', "
-                                   f"which shows its own warning signs.")
-                detail.append(f"final destination: {final_host}")
-
-            if len(chain) >= 4:
-                add_network(10, f"Redirects through {len(chain)} hops before landing.")
-
-            if net.get("tls_valid") is False:
-                add_network(5, "The final page is served over plain HTTP — "
-                               "anything you submit there is not encrypted.")
-
-            if net["status"] and net["status"] >= 400:
-                add_network(10, f"Server answered HTTP {net['status']} (error page).")
+            # NOT `score += _score_redirect(...)`: _score_redirect calls
+            # add_network internally (mutating `score` via its own
+            # nonlocal), and Python evaluates the LEFT side of `+=` before
+            # the call - `score += f()` would read the stale pre-call
+            # `score`, then overwrite add_network's already-applied
+            # mutation with `stale_score + extra_points`, silently
+            # dropping whatever add_network just added. Two statements
+            # instead: let _score_redirect fully run (and its internal
+            # add_network mutation land) before reading `score` again.
+            extra_rescore_points = _score_redirect(net, chain, final_url, final_host, reg_domain,
+                                                     add_network, reasons, detail)
+            score += extra_rescore_points
+            _score_response_shape(net, chain, add_network)
 
             # The landing page may impersonate even when the URL doesn't.
             page_text = net.get("page_text") or ""
@@ -610,8 +572,98 @@ async def analyze_url(
             score += mismatch[0]
             reasons.append(mismatch[1])
 
-    # Final level from the fully merged score (intrinsic + this
-    # message's own context signals).
+    return _finalize_verdict(verdict, host, score, reasons, detail, vector_search_unavailable, is_official_brand)
+
+
+async def _gather_online_signals(normalized: str, host: str):
+    """(net, ips, age_days, cert_age_days, sim_hits, vector_search_unavailable) -
+    the 5-way concurrent fetch (network trace, DNS, domain age, TLS cert
+    age, vector similarity) + exception normalization. Split out of
+    analyze_url's cache-miss branch."""
+    net_task = asyncio.create_task(network.trace(normalized))
+    dns_task = asyncio.create_task(resolve_host(host))
+    age_task = asyncio.create_task(domain_age_days(host))
+    cert_task = asyncio.create_task(cert_issued_days_ago(host))
+    sim_task = asyncio.create_task(_safe_nearest(normalized))
+
+    net, ips, age_days, cert_age_days, sim_result = await asyncio.gather(
+        net_task, dns_task, age_task, cert_task, sim_task, return_exceptions=True
+    )
+    if isinstance(net, Exception):
+        net = None
+    if isinstance(ips, Exception):
+        ips = None
+    if isinstance(age_days, Exception):
+        age_days = None
+    if isinstance(cert_age_days, Exception):
+        cert_age_days = None
+    if isinstance(sim_result, Exception):
+        sim_hits, vector_search_unavailable = [], True
+    else:
+        sim_hits, vector_search_unavailable = sim_result
+    return net, ips, age_days, cert_age_days, sim_hits, vector_search_unavailable
+
+
+def _score_network_error(net: dict) -> tuple[int, str]:
+    """(points, reason) for a trace that errored out - a REAL certificate
+    failure (handshake rejected) is strong evidence; a plain-HTTP page is
+    only worth the small padlock signal, since Google itself serves
+    http://www.google.com."""
+    if net["tls_valid"] is False:
+        return 30, "TLS certificate is invalid — connections are not secure."
+    return 15, "The server could not be reached (dead site or blocking bots)."
+
+
+def _score_redirect(net: dict, chain: list, final_url: str, final_host: str, reg_domain: str,
+                     add_network, reasons: list[str], detail: list[str]) -> int:
+    """Cross-domain-redirect scoring, including a re-score of the final
+    landing URL - returns the extra score from that re-score (added
+    directly by the caller, bypassing the network cap on purpose - see
+    MAX_NETWORK_POINTS), or 0. Everything else goes through add_network.
+    reasons/detail are mutated in place (plain lists)."""
+    if chain:
+        hops = " → ".join(network._host(u) for _, u in chain[-4:] + [(0, final_url)])
+        detail.append(f"redirect chain ({len(chain)} hop(s)): {hops}")
+
+    if not net.get("cross_domain_redirect"):
+        return 0
+
+    if registered_domain(final_host) in KNOWN_FIRST_PARTY_REDIRECTS.get(reg_domain, ()):
+        detail.append(f"redirects to '{final_host}', its own known first-party domain — not scored.")
+        return 0
+
+    add_network(20, f"The link redirects to a different domain ({final_host}) — "
+                    f"the visible address was not the real destination.")
+
+    # Only a CROSS-DOMAIN redirect justifies re-scoring the landing URL.
+    # google.com -> www.google.com is normal and must not double-count
+    # signals.
+    rescore = check_url(final_url)
+    extra_points = min(rescore["score"], 30)
+    if extra_points > 0:
+        reasons.append(f"After following redirects it lands on '{final_host}', "
+                       f"which shows its own warning signs.")
+    detail.append(f"final destination: {final_host}")
+    return extra_points
+
+
+def _score_response_shape(net: dict, chain: list, add_network) -> None:
+    """Three independent, cheap checks on the trace result - long
+    redirect chain, plain-HTTP final page, HTTP error status - combined
+    into one helper rather than three separate one-liner functions."""
+    if len(chain) >= 4:
+        add_network(10, f"Redirects through {len(chain)} hops before landing.")
+    if net.get("tls_valid") is False:
+        add_network(5, "The final page is served over plain HTTP — "
+                       "anything you submit there is not encrypted.")
+    if net["status"] and net["status"] >= 400:
+        add_network(10, f"Server answered HTTP {net['status']} (error page).")
+
+
+def _finalize_verdict(verdict: dict, host: str, score: int, reasons: list[str], detail: list[str],
+                       vector_search_unavailable: bool, is_official_brand: bool) -> dict:
+    """Final level/emoji/label + evidence_degraded + the merged return
+    dict - split out of analyze_url's tail."""
     level, emoji, label = _verdict_labels(score)
 
     # "Genuinely too thin to be confident" - direct user/mentor spec
@@ -774,24 +826,34 @@ def _brand_page_spoof(page_text: str, final_host: str, best_brand_sim: float) ->
     if not domain_resembles_a_brand and not any(phrase in low for phrase in BRAND_SPOOF_PORTAL_PHRASES):
         return None
     for domain, label in PROTECTED_BRANDS.items():
-        brand = domain.split(".")[0]
-        # Same length guard lexical.py's own buried-brand-name check
-        # already uses (len(brand_name) >= 4): a short/single-letter
-        # brand name (e.g. "x" from x.com) is a substring of countless
-        # ordinary English words ("example", "text", "next") - without
-        # this, adding a brand like "X (Twitter)" made almost any real
-        # page's text falsely "impersonate" it. Confirmed live:
-        # example.com's placeholder page tripped this before the guard.
-        if len(brand) < 4:
-            continue
-        if registered_domain(final_host) == domain:
-            continue
-        brand_positions = _substring_positions(low, brand)
-        if len(brand_positions) < BRAND_PAGE_SPOOF_MIN:
-            continue
-        if domain_resembles_a_brand or _portal_phrase_near(low, brand_positions):
-            return (f"The page presents itself as {label}, but it lives on "
-                    f"'{registered_domain(final_host)}' — not the official {label} domain.")
+        match = _brand_spoof_match_for(domain, label, low, domain_resembles_a_brand, final_host)
+        if match:
+            return match
+    return None
+
+
+def _brand_spoof_match_for(domain: str, label: str, low: str, domain_resembles_a_brand: bool,
+                            final_host: str) -> str | None:
+    """One PROTECTED_BRANDS entry's own spoof check - split out of
+    _brand_page_spoof's loop body."""
+    brand = domain.split(".")[0]
+    # Same length guard lexical.py's own buried-brand-name check
+    # already uses (len(brand_name) >= 4): a short/single-letter
+    # brand name (e.g. "x" from x.com) is a substring of countless
+    # ordinary English words ("example", "text", "next") - without
+    # this, adding a brand like "X (Twitter)" made almost any real
+    # page's text falsely "impersonate" it. Confirmed live:
+    # example.com's placeholder page tripped this before the guard.
+    if len(brand) < 4:
+        return None
+    if registered_domain(final_host) == domain:
+        return None
+    brand_positions = _substring_positions(low, brand)
+    if len(brand_positions) < BRAND_PAGE_SPOOF_MIN:
+        return None
+    if domain_resembles_a_brand or _portal_phrase_near(low, brand_positions):
+        return (f"The page presents itself as {label}, but it lives on "
+                f"'{registered_domain(final_host)}' — not the official {label} domain.")
     return None
 
 
@@ -822,25 +884,14 @@ def _portal_phrase_near(low: str, brand_positions: list[int]) -> bool:
     return False
 
 
-async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | None = None) -> list[dict]:
-    """Check every link in a message through the full pipeline.
-
-    hidden_links: [(display_text, actual_url), ...] pulled from Telegram
-    MessageEntity.TEXT_LINK entities - a link whose real destination
-    never appears in the visible message text at all (the message shows
-    "Click here", the entity alone carries the real URL) is invisible to
-    extract_urls()'s regex, so the caller (message/handler.py) passes
-    these in separately so the bot actually sees and scores them.
-    """
-    urls = _web_urls(text)
+def _merge_hidden_links(urls: list[str], hidden_links: list[tuple[str, str]]) -> dict[str, str]:
+    """Appends any hidden TEXT_LINK entity urls not already covered by
+    `urls` (mutated in place), capped at MAX_URLS_PER_MESSAGE - returns
+    the display-text-by-url map for the ones it added. Split out of
+    check_message_full."""
     display_by_url: dict[str, str] = {}
-    # Scoped to visible-text-derived urls only - a hidden TEXT_LINK
-    # entity's url comes from Telegram's own API field, always
-    # well-formed, so it can never carry this malformed-text signal.
-    malformed_visible_urls = {u.lower() for u in urls} if has_malformed_protocol(text) else set()
-
     seen = {u.lower() for u in urls}
-    for display_text, url in (hidden_links or []):
+    for display_text, url in hidden_links:
         if not url or "://" not in url:
             continue
         if urlsplit(url).scheme.lower() not in ("http", "https"):
@@ -852,6 +903,26 @@ async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | No
         urls.append(url)
         if len(urls) >= MAX_URLS_PER_MESSAGE:
             break
+    return display_by_url
+
+
+async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | None = None) -> list[dict]:
+    """Check every link in a message through the full pipeline.
+
+    hidden_links: [(display_text, actual_url), ...] pulled from Telegram
+    MessageEntity.TEXT_LINK entities - a link whose real destination
+    never appears in the visible message text at all (the message shows
+    "Click here", the entity alone carries the real URL) is invisible to
+    extract_urls()'s regex, so the caller (message/handler.py) passes
+    these in separately so the bot actually sees and scores them.
+    """
+    urls = _web_urls(text)
+    # Scoped to visible-text-derived urls only - a hidden TEXT_LINK
+    # entity's url comes from Telegram's own API field, always
+    # well-formed, so it can never carry this malformed-text signal.
+    malformed_visible_urls = {u.lower() for u in urls} if has_malformed_protocol(text) else set()
+
+    display_by_url = _merge_hidden_links(urls, hidden_links or [])
 
     if not urls:
         return []

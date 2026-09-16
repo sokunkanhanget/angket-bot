@@ -123,21 +123,26 @@ _SYSTEM_PROMPT = (
 _LANGUAGE_NAMES = {"en": "English", "km": "Khmer (Central Khmer, in the Khmer script)"}
 
 
+# Appended to _SYSTEM_PROMPT for any non-default lang - split out as its
+# own constant so _system_prompt itself is just a 1-line concatenation.
+_NON_DEFAULT_LANG_SUFFIX_TEMPLATE = (
+    " Write every key_reasons[].text and every recommendations[] entry in "
+    "natural, fluent {language_name} - not a stiff word-for-word "
+    "translation. The evidence and the user's own message may be in a "
+    "different language than this; read and reason over them as given, "
+    "just WRITE your output in {language_name}. The \"verdict\" field "
+    "itself must still be exactly one of the three fixed English enum "
+    "values (\"Scam\", \"Not a Scam\", \"Uncertain\") - that field is a "
+    "machine-read code, never shown to the user directly, so it does not "
+    "get translated."
+)
+
+
 def _system_prompt(lang: str) -> str:
-    language_name = _LANGUAGE_NAMES.get(lang, _LANGUAGE_NAMES[DEFAULT_LANG])
     if lang == DEFAULT_LANG:
         return _SYSTEM_PROMPT
-    return _SYSTEM_PROMPT + (
-        f" Write every key_reasons[].text and every recommendations[] entry in "
-        f"natural, fluent {language_name} - not a stiff word-for-word "
-        f"translation. The evidence and the user's own message may be in a "
-        f"different language than this; read and reason over them as given, "
-        f"just WRITE your output in {language_name}. The \"verdict\" field "
-        f"itself must still be exactly one of the three fixed English enum "
-        f"values (\"Scam\", \"Not a Scam\", \"Uncertain\") - that field is a "
-        f"machine-read code, never shown to the user directly, so it does not "
-        f"get translated."
-    )
+    language_name = _LANGUAGE_NAMES.get(lang, _LANGUAGE_NAMES[DEFAULT_LANG])
+    return _SYSTEM_PROMPT + _NON_DEFAULT_LANG_SUFFIX_TEMPLATE.format(language_name=language_name)
 
 _RESPONSE_SCHEMA = {
     "type": "object",
@@ -228,6 +233,57 @@ def _message_is_only_links(text: str, link_verdicts: list[dict]) -> bool:
     return not re.sub(r"[^\w]", "", leftover, flags=re.UNICODE).strip()
 
 
+def _single_link_or_none(link_verdicts: list[dict]) -> dict | None:
+    """The one link verdict, only when there's exactly one - both
+    deterministic short-circuits below (_unverifiable_dead_link,
+    _trusted_bare_link_verdict) only ever apply to a genuinely bare
+    single-link message, and used to each inline this same
+    len-check-then-unwrap."""
+    if len(link_verdicts) != 1:
+        return None
+    return link_verdicts[0]
+
+
+def _dead_link_disqualified(
+    v: dict, link_verdicts: list[dict], file_verdict: dict | None,
+    pattern_match: tuple[float, str] | None, text: str,
+) -> bool:
+    """True when ANY condition rules out the dead-link short-circuit -
+    written to fail SAFE, so a caller only treats `v` as the pure-noise
+    case when every one of these returns False."""
+    if file_verdict and file_verdict.get("malicious", 0) > 0:
+        return True
+    if pattern_match is not None:
+        return True
+    # Only the middle "suspicious" band: a 'safe' link needs no caution,
+    # a 'dangerous' one is too strong to short-circuit as mere noise.
+    if v.get("level") != "suspicious":
+        return True
+    if _has_confirmed_evidence(link_verdicts, file_verdict):
+        return True
+    if v.get("score", 0) > _CONNECTIVITY_ONLY_MAX:
+        return True
+    reasons = v.get("reasons") or []
+    if not any(any(m in r for m in _CONNECTIVITY_REASON_MARKERS) for r in reasons):
+        return True
+    return not _message_is_only_links(text, link_verdicts)
+
+
+def _dead_link_verdict(host, lang: str) -> dict:
+    return {
+        "verdict": "Uncertain",
+        "risk_percentage": UNVERIFIABLE_DEAD_LINK_RISK,
+        "key_reasons": [{
+            "text": t(lang, "reason_dead_link"),
+            "source": "link_evidence",
+        }],
+        "recommendations": [
+            t(lang, "rec_dead_link_no_credentials"),
+            t(lang, "rec_dead_link_check_sender"),
+        ],
+    }
+
+
 def _unverifiable_dead_link(
     text: str,
     link_verdicts: list[dict],
@@ -246,40 +302,49 @@ def _unverifiable_dead_link(
     language - so without translating here, a Khmer user got an
     otherwise-Khmer reply with an English reason and recommendations
     inside it."""
-    if file_verdict and file_verdict.get("malicious", 0) > 0:
-        return None
-    if pattern_match is not None:
-        return None
-    if len(link_verdicts) != 1:
-        return None
-    v = link_verdicts[0]
-    # Only the middle "suspicious" band: a 'safe' link needs no caution,
-    # a 'dangerous' one is too strong to short-circuit as mere noise.
-    if v.get("level") != "suspicious":
-        return None
-    if _has_confirmed_evidence(link_verdicts, file_verdict):
-        return None
-    if v.get("score", 0) > _CONNECTIVITY_ONLY_MAX:
-        return None
-    reasons = v.get("reasons") or []
-    if not any(any(m in r for m in _CONNECTIVITY_REASON_MARKERS) for r in reasons):
-        return None
-    if not _message_is_only_links(text, link_verdicts):
+    v = _single_link_or_none(link_verdicts)
+    if v is None or _dead_link_disqualified(v, link_verdicts, file_verdict, pattern_match, text):
         return None
 
     logger.info("deterministic dead-link short-circuit for %s (score=%s)",
                 v.get("host"), v.get("score"))
+    return _dead_link_verdict(v.get("host"), lang)
+
+
+def _trusted_link_disqualified(
+    v: dict, link_verdicts: list[dict], file_verdict: dict | None,
+    keyword_result: dict, pattern_match: tuple[float, str] | None, text: str,
+) -> bool:
+    """True when ANY condition rules out the trusted-bare-link
+    short-circuit - same fail-safe shape as _dead_link_disqualified."""
+    if file_verdict is not None:
+        return True
+    if keyword_result.get("suspicious"):
+        return True
+    if pattern_match is not None:
+        return True
+    if not v.get("trusted_brand") or v.get("level") != "safe":
+        return True
+    return not _message_is_only_links(text, link_verdicts)
+
+
+def _trusted_link_verdict(v: dict, lang: str) -> dict:
+    host = v.get("host")
     return {
-        "verdict": "Uncertain",
-        "risk_percentage": UNVERIFIABLE_DEAD_LINK_RISK,
+        "verdict": "Not a Scam",
+        "risk_percentage": v.get("score", 0),
         "key_reasons": [{
-            "text": t(lang, "reason_dead_link"),
+            "text": t(lang, "reason_trusted_brand").format(host=host),
             "source": "link_evidence",
         }],
-        "recommendations": [
-            t(lang, "rec_dead_link_no_credentials"),
-            t(lang, "rec_dead_link_check_sender"),
-        ],
+        "recommendations": _fallback_recommendations("Not a Scam", lang),
+        # Direct user spec (2026-09-16): every caller renders this as
+        # verdict_style.trusted_link_notice(host, lang) instead of the
+        # normal full VERDICT/KEY REASONS/WHAT TO DO template - the
+        # existing keys above stay populated too (tests, and anything
+        # that reads a plain verdict dict, keep working unchanged), this
+        # is purely an additional marker for callers that know to check it.
+        "trusted_link_notice_host": host,
     }
 
 
@@ -307,37 +372,21 @@ def _trusted_bare_link_verdict(
     (pipeline.py's bare_trusted_link) so it never even reaches this
     point for a message that would end up paying anyway.
     """
-    if file_verdict is not None:
-        return None
-    if keyword_result.get("suspicious"):
-        return None
-    if pattern_match is not None:
-        return None
-    if len(link_verdicts) != 1:
-        return None
-    v = link_verdicts[0]
-    if not v.get("trusted_brand") or v.get("level") != "safe":
-        return None
-    if not _message_is_only_links(text, link_verdicts):
+    v = _single_link_or_none(link_verdicts)
+    if v is None or _trusted_link_disqualified(v, link_verdicts, file_verdict, keyword_result, pattern_match, text):
         return None
 
     logger.info("deterministic trusted-brand short-circuit for %s", v.get("host"))
-    return {
-        "verdict": "Not a Scam",
-        "risk_percentage": v.get("score", 0),
-        "key_reasons": [{
-            "text": t(lang, "reason_trusted_brand").format(host=v.get("host")),
-            "source": "link_evidence",
-        }],
-        "recommendations": _fallback_recommendations("Not a Scam", lang),
-        # Direct user spec (2026-09-16): every caller renders this as
-        # verdict_style.trusted_link_notice(host, lang) instead of the
-        # normal full VERDICT/KEY REASONS/WHAT TO DO template - the
-        # existing keys above stay populated too (tests, and anything
-        # that reads a plain verdict dict, keep working unchanged), this
-        # is purely an additional marker for callers that know to check it.
-        "trusted_link_notice_host": v.get("host"),
-    }
+    return _trusted_link_verdict(v, lang)
+
+
+def _link_is_vt_confirmed(v: dict) -> bool:
+    """True when one link finding's own reasons include a real
+    VirusTotal detection - vs. everything else being a heuristic this
+    bot computed itself. Shared by _has_confirmed_evidence, _build_contents,
+    and _reconcile_with_evidence, which each used to derive this same
+    `any("VirusTotal" in r for r in ...)` expression independently."""
+    return any("VirusTotal" in r for r in (v.get("reasons") or []))
 
 
 def _has_confirmed_evidence(link_verdicts: list[dict], file_verdict: dict | None) -> bool:
@@ -350,21 +399,19 @@ def _has_confirmed_evidence(link_verdicts: list[dict], file_verdict: dict | None
     point the same direction."""
     if file_verdict and file_verdict.get("malicious", 0) > 0:
         return True
-    return any(
-        "VirusTotal" in reason
-        for v in link_verdicts
-        for reason in (v.get("reasons") or [])
-    )
+    return any(_link_is_vt_confirmed(v) for v in link_verdicts)
 
 
-def _build_contents(
-    text: str,
+def _evidence_dict(
     keyword_result: dict,
     link_verdicts: list[dict],
     file_verdict: dict | None,
-    pattern_match: tuple[float, str] | None = None,
-    sender_identity: dict | None = None,
-) -> str:
+    pattern_match: tuple[float, str] | None,
+    sender_identity: dict | None,
+) -> dict:
+    """The SYSTEM-GATHERED EVIDENCE payload _build_contents sends Gemini -
+    split out so that function is just "build this dict, then template
+    it into a string"."""
     evidence = {
         "keyword_prescan": keyword_result,
         "link_findings": [
@@ -378,7 +425,7 @@ def _build_contents(
                 # vs. everything else here being a heuristic the bot
                 # computed itself. The system prompt explains how to
                 # weigh the two differently.
-                "confirmed": any("VirusTotal" in r for r in (v.get("reasons") or [])),
+                "confirmed": _link_is_vt_confirmed(v),
             }
             for v in link_verdicts
         ],
@@ -396,6 +443,18 @@ def _build_contents(
         # docstring and the system prompt) - private DM/group chat never
         # pass this, so this field is simply absent there, not empty.
         evidence["sender_identity"] = sender_identity
+    return evidence
+
+
+def _build_contents(
+    text: str,
+    keyword_result: dict,
+    link_verdicts: list[dict],
+    file_verdict: dict | None,
+    pattern_match: tuple[float, str] | None = None,
+    sender_identity: dict | None = None,
+) -> str:
+    evidence = _evidence_dict(keyword_result, link_verdicts, file_verdict, pattern_match, sender_identity)
     return (
         "SYSTEM-GATHERED EVIDENCE (not written by the user; already gathered - "
         "do not re-derive it. Each link finding carries a \"confirmed\" flag - "
@@ -425,6 +484,75 @@ def _fallback_recommendations(verdict: str, lang: str) -> list[str]:
     """A fresh list every call, so no caller can mutate shared state -
     the same reason the old code wrapped its constant in list()."""
     return [t(lang, key) for key in _FALLBACK_RECOMMENDATION_KEYS[verdict]]
+
+
+def _fallback_keyword_reason(keyword_result: dict, lang: str) -> dict | None:
+    if not keyword_result.get("suspicious"):
+        return None
+    return {
+        "text": t(lang, "reason_keyword_match").format(
+            matches=", ".join(keyword_result["matches"])),
+        "source": "keyword_match",
+    }
+
+
+def _fallback_pattern_reason(text: str, lang: str) -> tuple[dict | None, float]:
+    """(reason, similarity) - similarity is 0.0 when nothing matched.
+    Returned separately from the reason since analyze_url-style risk
+    aggregation downstream needs the raw number, not just the rendered
+    text."""
+    if not text:
+        return None, 0.0
+    # No longer a DB call - nearest_scam_pattern is a local, in-memory
+    # search (see scam_patterns.py), so unlike the old Supabase-backed
+    # lookup this can't fail from a broken connection/exhausted pool.
+    # One less way for this LAST-RESORT fallback (Gemini already
+    # failed) to itself fail.
+    pattern_hits = nearest_scam_pattern(text, k=1)
+    if not pattern_hits or pattern_hits[0][0] < SCAM_PATTERN_THRESHOLD:
+        return None, 0.0
+    similarity, _kind, _key, category = pattern_hits[0]
+    return {
+        "text": t(lang, "reason_scam_script").format(category=category),
+        "source": "message_text",
+    }, similarity
+
+
+def _fallback_link_reasons(link_verdicts: list[dict], lang: str) -> list[dict]:
+    reasons = []
+    for v in link_verdicts:
+        if v.get("level") != "safe":
+            detail = v["reasons"][0] if v.get("reasons") else f"{v.get('host')} flagged {v.get('level')}"
+            reasons.append({
+                "text": t(lang, "reason_link_flagged").format(host=v.get("host"), detail=detail),
+                "source": "link_evidence",
+            })
+    return reasons
+
+
+def _fallback_file_reasons(file_verdict: dict | None, lang: str) -> tuple[list[dict], bool, int]:
+    """(reasons, file_flagged, filename_score)."""
+    reasons: list[dict] = []
+    file_flagged = bool(file_verdict and file_verdict.get("malicious", 0) > 0)
+    if file_flagged:
+        reasons.append({
+            "text": t(lang, "reason_file_malicious").format(count=file_verdict["malicious"]),
+            "source": "file_evidence",
+        })
+    filename_score = 0
+    if file_verdict:
+        # Imported here, not at module scope: file_handler.py imports
+        # text_handler.py, which would make this a real import cycle at
+        # load time. The renderer is shared rather than duplicated so the
+        # file reply and this fallback can't word the same warning
+        # differently.
+        from bot.handlers.file_handler import filename_warning_text
+
+        warning = filename_warning_text(file_verdict, lang)
+        if warning:
+            reasons.append({"text": warning, "source": "file_evidence"})
+        filename_score = file_verdict.get("filename_risk_score", 0)
+    return reasons, file_flagged, filename_score
 
 
 async def _grounded_fallback(
@@ -467,53 +595,18 @@ async def _grounded_fallback(
     logger.info("Falling back to offline detection: %s", reason)
     reasons: list[dict] = []
 
-    if keyword_result.get("suspicious"):
-        reasons.append({
-            "text": t(lang, "reason_keyword_match").format(
-                matches=", ".join(keyword_result["matches"])),
-            "source": "keyword_match",
-        })
+    keyword_reason = _fallback_keyword_reason(keyword_result, lang)
+    if keyword_reason:
+        reasons.append(keyword_reason)
 
-    pattern_similarity = 0.0
-    if text:
-        # No longer a DB call - nearest_scam_pattern is a local, in-memory
-        # search (see scam_patterns.py), so unlike the old Supabase-backed
-        # lookup this can't fail from a broken connection/exhausted pool.
-        # One less way for this LAST-RESORT fallback (Gemini already
-        # failed) to itself fail.
-        pattern_hits = nearest_scam_pattern(text, k=1)
-        if pattern_hits and pattern_hits[0][0] >= SCAM_PATTERN_THRESHOLD:
-            pattern_similarity, _kind, _key, category = pattern_hits[0]
-            reasons.append({
-                "text": t(lang, "reason_scam_script").format(category=category),
-                "source": "message_text",
-            })
+    pattern_reason, pattern_similarity = _fallback_pattern_reason(text, lang)
+    if pattern_reason:
+        reasons.append(pattern_reason)
 
-    for v in link_verdicts:
-        if v.get("level") != "safe":
-            detail = v["reasons"][0] if v.get("reasons") else f"{v.get('host')} flagged {v.get('level')}"
-            reasons.append({
-                "text": t(lang, "reason_link_flagged").format(host=v.get("host"), detail=detail),
-                "source": "link_evidence",
-            })
+    reasons.extend(_fallback_link_reasons(link_verdicts, lang))
 
-    file_flagged = bool(file_verdict and file_verdict.get("malicious", 0) > 0)
-    if file_flagged:
-        reasons.append({
-            "text": t(lang, "reason_file_malicious").format(count=file_verdict["malicious"]),
-            "source": "file_evidence",
-        })
-    if file_verdict:
-        # Imported here, not at module scope: file_handler.py imports
-        # text_handler.py, which would make this a real import cycle at
-        # load time. The renderer is shared rather than duplicated so the
-        # file reply and this fallback can't word the same warning
-        # differently.
-        from bot.handlers.file_handler import filename_warning_text
-
-        warning = filename_warning_text(file_verdict, lang)
-        if warning:
-            reasons.append({"text": warning, "source": "file_evidence"})
+    file_reasons, file_flagged, filename_score = _fallback_file_reasons(file_verdict, lang)
+    reasons.extend(file_reasons)
 
     # Derived from whatever evidence actually got appended above - not
     # hand-tracked, so a future evidence source can't add a reason and
@@ -529,7 +622,18 @@ async def _grounded_fallback(
         # scam-script match with no link/file renders as "N/A Unknown
         # Risk" right next to an "Uncertain" verdict, undercutting
         # exactly the signal this fallback exists to surface.
-        risk_percentage = 100 if file_flagged else max(min(worst_link_score, 100), pattern_score)
+        #
+        # filename_score included here too (found by code review,
+        # 2026-09-16): a file with only a filename-warning (not a VT
+        # malicious hit) made has_concern True -> verdict "Uncertain"
+        # while contributing nothing to this number, rendering as
+        # "Uncertain / 0%". file_handler.py's own _classify_file_result
+        # already uses this exact same filename_risk_score field as the
+        # percentage for the identical filename-only-warning case (see
+        # scanner.py's filename_risk_score / filename_check.py) - reusing
+        # it here instead of inventing a new number keeps the two
+        # surfaces consistent.
+        risk_percentage = 100 if file_flagged else max(min(worst_link_score, 100), pattern_score, filename_score)
         if not _has_confirmed_evidence(link_verdicts, file_verdict):
             risk_percentage = min(risk_percentage, UNCORROBORATED_RISK_CAP)
 
@@ -552,6 +656,100 @@ async def _grounded_fallback(
         # why the formatters no longer special-case display on this.
         "ai_unavailable": True,
     }
+
+
+class _EvidenceFlags:
+    """Bundles the 5 evidence flags _reconcile_with_evidence's two
+    override branches each need - a plain attribute-holder rather than a
+    dict so callers get typo-safe `.file_flagged` access."""
+
+    __slots__ = ("file_flagged", "worst_link_score", "confirmed_link_flagged",
+                 "pattern_similarity", "pattern_category", "pattern_flagged")
+
+    def __init__(self, file_flagged, worst_link_score, confirmed_link_flagged,
+                 pattern_similarity, pattern_category, pattern_flagged):
+        self.file_flagged = file_flagged
+        self.worst_link_score = worst_link_score
+        self.confirmed_link_flagged = confirmed_link_flagged
+        self.pattern_similarity = pattern_similarity
+        self.pattern_category = pattern_category
+        self.pattern_flagged = pattern_flagged
+
+
+def _classify_evidence(
+    link_verdicts: list[dict], file_verdict: dict | None,
+    pattern_match: tuple[float, str] | None,
+) -> _EvidenceFlags:
+    """Pure "read the evidence" step, independent of Gemini's own `data`
+    - split out of _reconcile_with_evidence so its two override branches
+    below are just flag checks instead of re-deriving these inline."""
+    pattern_similarity, pattern_category = pattern_match or (0.0, None)
+    return _EvidenceFlags(
+        file_flagged=bool(file_verdict and file_verdict.get("malicious", 0) > 0),
+        worst_link_score=max((v.get("score", 0) for v in link_verdicts), default=0),
+        confirmed_link_flagged=any(
+            v.get("level") != "safe" and _link_is_vt_confirmed(v)
+            for v in link_verdicts
+        ),
+        pattern_similarity=pattern_similarity,
+        pattern_category=pattern_category,
+        pattern_flagged=pattern_similarity >= SCAM_PATTERN_THRESHOLD,
+    )
+
+
+def _override_for_malicious_file(data: dict, lang: str) -> None:
+    """Mutates `data` in place - a malicious file finding always wins,
+    regardless of what Gemini said."""
+    logger.warning(
+        "context_engine: Gemini returned verdict=%r despite a malicious file "
+        "finding - overriding to Scam", data.get("verdict"),
+    )
+    data["verdict"] = "Scam"
+    data["risk_percentage"] = 100
+    reasons = list(data.get("key_reasons") or [])
+    reasons.append({
+        "text": t(lang, "reason_override_file"),
+        "source": "file_evidence",
+    })
+    data["key_reasons"] = reasons
+
+
+def _override_for_flagged_evidence(data: dict, evidence: "_EvidenceFlags", lang: str) -> None:
+    """Mutates `data` in place - escalates a "Not a Scam" Gemini verdict
+    to "Uncertain" when a CONFIRMED link or a scam-script pattern match
+    contradicts it."""
+    logger.warning(
+        "context_engine: Gemini returned verdict='Not a Scam' despite "
+        "confirmed_link_flagged=%s pattern_flagged=%s (pattern=%r sim=%.2f) - "
+        "overriding to Uncertain",
+        evidence.confirmed_link_flagged, evidence.pattern_flagged,
+        evidence.pattern_category, evidence.pattern_similarity,
+    )
+    data["verdict"] = "Uncertain"
+    data["risk_percentage"] = max(
+        data.get("risk_percentage") or 0,
+        min(evidence.worst_link_score, 100),
+        int(evidence.pattern_similarity * 100),
+    )
+    reasons = list(data.get("key_reasons") or [])
+    if evidence.confirmed_link_flagged:
+        reasons.append({
+            "text": t(lang, "reason_override_link"),
+            "source": "link_evidence",
+        })
+    if evidence.pattern_flagged:
+        # The similarity number used to be shown here as
+        # "(0.54 similarity)". Dropped: internal detection-method and
+        # confidence details must never reach the user (the same
+        # suffix was removed from _grounded_fallback's own
+        # scam-script reason for this reason, but this override path
+        # kept it). The substantive finding - which known scam script
+        # it matches - is unchanged.
+        reasons.append({
+            "text": t(lang, "reason_override_scam_script").format(category=evidence.pattern_category),
+            "source": "message_text",
+        })
+    data["key_reasons"] = reasons
 
 
 def _reconcile_with_evidence(
@@ -589,58 +787,14 @@ def _reconcile_with_evidence(
     CONFIRMED (VirusTotal) finding is never allowed to be reasoned away
     this way, matching the file-malicious override just above.
     """
-    file_flagged = bool(file_verdict and file_verdict.get("malicious", 0) > 0)
-    worst_link_score = max((v.get("score", 0) for v in link_verdicts), default=0)
-    confirmed_link_flagged = any(
-        v.get("level") != "safe" and any("VirusTotal" in r for r in (v.get("reasons") or []))
-        for v in link_verdicts
-    )
-    pattern_similarity, pattern_category = pattern_match or (0.0, None)
-    pattern_flagged = pattern_similarity >= SCAM_PATTERN_THRESHOLD
+    evidence = _classify_evidence(link_verdicts, file_verdict, pattern_match)
 
     verdict = data.get("verdict")
-    reasons = list(data.get("key_reasons") or [])
-    risk = data.get("risk_percentage")
 
-    if file_flagged and verdict != "Scam":
-        logger.warning(
-            "context_engine: Gemini returned verdict=%r despite a malicious file "
-            "finding - overriding to Scam", verdict,
-        )
-        data["verdict"] = "Scam"
-        data["risk_percentage"] = 100
-        reasons.append({
-            "text": t(lang, "reason_override_file"),
-            "source": "file_evidence",
-        })
-        data["key_reasons"] = reasons
-    elif verdict == "Not a Scam" and (confirmed_link_flagged or pattern_flagged):
-        logger.warning(
-            "context_engine: Gemini returned verdict='Not a Scam' despite "
-            "confirmed_link_flagged=%s pattern_flagged=%s (pattern=%r sim=%.2f) - "
-            "overriding to Uncertain",
-            confirmed_link_flagged, pattern_flagged, pattern_category, pattern_similarity,
-        )
-        data["verdict"] = "Uncertain"
-        data["risk_percentage"] = max(risk or 0, min(worst_link_score, 100), int(pattern_similarity * 100))
-        if confirmed_link_flagged:
-            reasons.append({
-                "text": t(lang, "reason_override_link"),
-                "source": "link_evidence",
-            })
-        if pattern_flagged:
-            # The similarity number used to be shown here as
-            # "(0.54 similarity)". Dropped: internal detection-method and
-            # confidence details must never reach the user (the same
-            # suffix was removed from _grounded_fallback's own
-            # scam-script reason for this reason, but this override path
-            # kept it). The substantive finding - which known scam script
-            # it matches - is unchanged.
-            reasons.append({
-                "text": t(lang, "reason_override_scam_script").format(category=pattern_category),
-                "source": "message_text",
-            })
-        data["key_reasons"] = reasons
+    if evidence.file_flagged and verdict != "Scam":
+        _override_for_malicious_file(data, lang)
+    elif verdict == "Not a Scam" and (evidence.confirmed_link_flagged or evidence.pattern_flagged):
+        _override_for_flagged_evidence(data, evidence, lang)
 
     # Final, uniform policy step regardless of which branch above (or
     # neither) produced this number: a risk_percentage this high must be
@@ -651,6 +805,87 @@ def _reconcile_with_evidence(
     if isinstance(data.get("risk_percentage"), int) and not _has_confirmed_evidence(link_verdicts, file_verdict):
         data["risk_percentage"] = min(data["risk_percentage"], UNCORROBORATED_RISK_CAP)
 
+    return data
+
+
+async def _compute_pattern_match(text: str) -> tuple[float, str] | None:
+    """(similarity, category) once it clears the calibrated pattern
+    threshold, else None - only surfaced to the model once confident, so
+    a low, near-every-message similarity number doesn't become noise in
+    the evidence blob. Split out of analyze_unified."""
+    if not text:
+        return None
+    # The live path prefers bge-m3 (genuinely Khmer-capable) when
+    # enabled, with a safe, automatic fallback to the fast hashed
+    # scheme baked into nearest_scam_pattern_live itself - see
+    # scam_patterns.py. _grounded_fallback deliberately keeps calling
+    # the plain synchronous nearest_scam_pattern() instead: that path
+    # only runs once Gemini has ALREADY failed, and it exists
+    # specifically to answer fast without depending on anything else
+    # that could also be down (Ollama included) - adding a possible
+    # embedding-timeout wait to an "everything's already on fire"
+    # fallback would work against its own purpose.
+    pattern_hits, used_bge_m3 = await nearest_scam_pattern_live(text, k=1)
+    # bge-m3 runs measurably hotter than the hashed scheme (real
+    # benign text can score ~0.59) - reusing SCAM_PATTERN_THRESHOLD
+    # for it would false-positive on ordinary messages, so the
+    # threshold has to match whichever scheme actually ran, not
+    # just whether the feature flag is on (bge-m3 can still fall
+    # back to the hashed scheme mid-call if Ollama drops out).
+    threshold = BGE_M3_PATTERN_THRESHOLD if used_bge_m3 else SCAM_PATTERN_THRESHOLD
+    if pattern_hits and pattern_hits[0][0] >= threshold:
+        return pattern_hits[0][0], pattern_hits[0][3]
+    return None
+
+
+async def _degrade(
+    reason: str, text: str, keyword_result: dict, link_verdicts: list[dict],
+    file_verdict: dict | None, lang: str,
+) -> dict:
+    """Thin wrapper collapsing analyze_unified's 4 identical
+    _grounded_fallback(...) call sites (only `reason` ever varied) into
+    one, found duplicated during code review."""
+    return await _grounded_fallback(reason, text, keyword_result, link_verdicts, file_verdict, lang)
+
+
+async def _call_gemini(
+    text: str, keyword_result: dict, link_verdicts: list[dict], file_verdict: dict | None,
+    pattern_match: tuple[float, str] | None, sender_identity: dict | None,
+    lang: str, user_id: int | None,
+) -> dict:
+    """The actual live Gemini call + usage recording + response parsing/
+    clamping - split out of analyze_unified's try body. Raises exactly
+    what generate_content_with_backup raises (GeminiCircuitOpenError or
+    any other Exception); the caller's except clauses are unchanged."""
+    response = await generate_content_with_backup(
+        _client, _backup_client,
+        model=GEMINI_MODEL,
+        contents=_build_contents(
+            text, keyword_result, link_verdicts, file_verdict, pattern_match, sender_identity,
+        ),
+        config=types.GenerateContentConfig(
+            system_instruction=_system_prompt(lang),
+            response_mime_type="application/json",
+            response_schema=_RESPONSE_SCHEMA,
+            # No `tools` are ever passed here, so automatic function
+            # calling was never actually in play - but the SDK still
+            # warns "Direct use of AFC in AsyncModels.generate_content
+            # is not recommended" on every single call by default.
+            # Explicitly disabling it (rather than migrating to the
+            # SDK's AsyncChat.send_message wrapper, a bigger structural
+            # change for a call that's genuinely one-shot, not a real
+            # multi-turn conversation) silences the warning without
+            # changing any actual behavior - confirmed live before
+            # this change: the exact same call, with only this field
+            # added, prints nothing where it used to warn every time.
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        ),
+    )
+    if user_id is not None and response.usage_metadata is not None:
+        subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
+    data = json.loads(response.text)
+    if data.get("risk_percentage") is not None:
+        data["risk_percentage"] = max(0, min(100, int(data["risk_percentage"])))
     return data
 
 
@@ -697,32 +932,7 @@ async def analyze_unified(
     this for private DM/group chat - a plain chat display name is
     trivially spoofable, unlike a Business connection's verified
     customer identity, so the same leniency there would be exploitable."""
-    # Only surfaced to the model once it clears the same calibrated
-    # SCAM_PATTERN_THRESHOLD the fallback already trusts - a low,
-    # near-every-message similarity number would just be noise in the
-    # evidence blob, not a real signal worth Gemini's attention.
-    pattern_match = None
-    if text:
-        # The live path prefers bge-m3 (genuinely Khmer-capable) when
-        # enabled, with a safe, automatic fallback to the fast hashed
-        # scheme baked into nearest_scam_pattern_live itself - see
-        # scam_patterns.py. _grounded_fallback below deliberately keeps
-        # calling the plain synchronous nearest_scam_pattern() instead:
-        # that path only runs once Gemini has ALREADY failed, and it
-        # exists specifically to answer fast without depending on
-        # anything else that could also be down (Ollama included) -
-        # adding a possible embedding-timeout wait to an "everything's
-        # already on fire" fallback would work against its own purpose.
-        pattern_hits, used_bge_m3 = await nearest_scam_pattern_live(text, k=1)
-        # bge-m3 runs measurably hotter than the hashed scheme (real
-        # benign text can score ~0.59) - reusing SCAM_PATTERN_THRESHOLD
-        # for it would false-positive on ordinary messages, so the
-        # threshold has to match whichever scheme actually ran, not
-        # just whether the feature flag is on (bge-m3 can still fall
-        # back to the hashed scheme mid-call if Ollama drops out).
-        threshold = BGE_M3_PATTERN_THRESHOLD if used_bge_m3 else SCAM_PATTERN_THRESHOLD
-        if pattern_hits and pattern_hits[0][0] >= threshold:
-            pattern_match = (pattern_hits[0][0], pattern_hits[0][3])
+    pattern_match = await _compute_pattern_match(text)
 
     # Deterministic short-circuit BEFORE the Gemini call (and before the
     # budget check - it costs no tokens): a bare, non-resolving/unreachable
@@ -744,51 +954,22 @@ async def analyze_unified(
         return trusted
 
     if not _client:
-        return await _grounded_fallback(
-            "LLM analysis is not configured.", text, keyword_result, link_verdicts,
-            file_verdict, lang,
-        )
+        return await _degrade("LLM analysis is not configured.",
+                               text, keyword_result, link_verdicts, file_verdict, lang)
 
     if user_id is not None and not subscription.has_token_budget(user_id):
         # Same graceful-degradation path as "Gemini isn't configured" -
         # the offline signals (keyword/link/file verdicts, scam-pattern
         # similarity) still produce a real answer, just without live AI
         # reasoning, exactly like an actual Gemini outage would.
-        return await _grounded_fallback(
-            "Daily AI token budget exhausted.", text, keyword_result, link_verdicts,
-            file_verdict, lang,
-        )
+        return await _degrade("Daily AI token budget exhausted.",
+                               text, keyword_result, link_verdicts, file_verdict, lang)
 
     try:
-        response = await generate_content_with_backup(
-            _client, _backup_client,
-            model=GEMINI_MODEL,
-            contents=_build_contents(
-                text, keyword_result, link_verdicts, file_verdict, pattern_match, sender_identity,
-            ),
-            config=types.GenerateContentConfig(
-                system_instruction=_system_prompt(lang),
-                response_mime_type="application/json",
-                response_schema=_RESPONSE_SCHEMA,
-                # No `tools` are ever passed here, so automatic function
-                # calling was never actually in play - but the SDK still
-                # warns "Direct use of AFC in AsyncModels.generate_content
-                # is not recommended" on every single call by default.
-                # Explicitly disabling it (rather than migrating to the
-                # SDK's AsyncChat.send_message wrapper, a bigger structural
-                # change for a call that's genuinely one-shot, not a real
-                # multi-turn conversation) silences the warning without
-                # changing any actual behavior - confirmed live before
-                # this change: the exact same call, with only this field
-                # added, prints nothing where it used to warn every time.
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            ),
+        data = await _call_gemini(
+            text, keyword_result, link_verdicts, file_verdict, pattern_match,
+            sender_identity, lang, user_id,
         )
-        if user_id is not None and response.usage_metadata is not None:
-            subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
-        data = json.loads(response.text)
-        if data.get("risk_percentage") is not None:
-            data["risk_percentage"] = max(0, min(100, int(data["risk_percentage"])))
         return _reconcile_with_evidence(data, link_verdicts, file_verdict, pattern_match, lang)
     except GeminiCircuitOpenError as error:
         # The circuit breaker already recorded and logged the real
@@ -799,15 +980,11 @@ async def analyze_unified(
         # whole point of the breaker (skip real work while Gemini is
         # known-down).
         logger.info("Unified context-engine analysis skipped: %s", error)
-        return await _grounded_fallback(
-            "LLM analysis skipped: Gemini circuit open.", text, keyword_result,
-            link_verdicts, file_verdict, lang,
-        )
+        return await _degrade("LLM analysis skipped: Gemini circuit open.",
+                               text, keyword_result, link_verdicts, file_verdict, lang)
     except Exception as error:                       # noqa: BLE001 - must never break the reply path
         logger.exception("Unified context-engine analysis failed")
         health_alerts.record_failure("Gemini", str(error))
         await health_alerts.maybe_alert("Gemini", str(error))
-        return await _grounded_fallback(
-            "LLM analysis failed, please try again later.", text, keyword_result,
-            link_verdicts, file_verdict, lang,
-        )
+        return await _degrade("LLM analysis failed, please try again later.",
+                               text, keyword_result, link_verdicts, file_verdict, lang)

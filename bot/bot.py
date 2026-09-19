@@ -36,24 +36,26 @@ from bot.handlers.file_handler import handle_file
 from bot.handlers.text_handler import COMMAND_KEYS, handle_check, handle_command, handle_text, start
 from bot.handlers.url_handler import (
     handle_business_message,
-    handle_url,
     on_business_connection,
 )
 from bot.storage.scan_log import init_db, init_url_db
 
-# Routing policy for the text/LLM scanner. Group/supergroup and plain
-# private chat only; Business chat is handled by handle_business_message.
-TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.UpdateType.BUSINESS_MESSAGE & ~filters.ChatType.CHANNEL
+# Routing policy for the text/LLM scanner. PRIVATE chat only now - no live
+# (unprompted) scanning in GROUP/supergroup chat, per teammate-reported
+# 2026-09-19 issue: adding the bot to a group auto-scanned every message,
+# which isn't wanted. /check (CommandHandler, ChatType.GROUPS-only, below)
+# is the only group-scanning entry point going forward; ~ChatType.CHANNEL
+# stays for the same effective_user/None crash class as start/handle_command.
+# Group/channel live detection is a deferred future plan, not built.
+TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.UpdateType.BUSINESS_MESSAGE & ~filters.ChatType.CHANNEL & ~filters.ChatType.GROUPS
 
 # Handler groups (PTB runs every group per update, independently; within
 # a group, only the FIRST matching handler runs, so anything meant to
 # fire alongside another check needs its own group):
 #   group 0  — /start menu, file scan (non-Business only) + its
 #              Delete/Ignore result buttons, business-connection plumbing
-#   group 1  — link checker (text or caption; silent when no links).
-#              GROUP/supergroup chat only — see below.
-#   group 2  — teammate's text/LLM scan (text or caption). GROUP/supergroup
-#              and plain PRIVATE chat only — see below.
+#   group 2  — teammate's text/LLM scan (text or caption). Plain PRIVATE
+#              chat only — see below.
 #   group 3  — Business chat automation: ONE unified text+link+file check
 #              per message (bot/context_engine/context_engine.py + handle_business_message)
 #
@@ -62,8 +64,13 @@ TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.Upd
 #
 # Plain PRIVATE chat: handle_text (group 2) runs there UNCONDITIONALLY and
 # internally checks any link itself, reasoning about it together with the
-# message text in one Gemini call — group 1's url_filter excludes plain
-# private chat so that link doesn't also get a second, uncoordinated reply.
+# message text in one Gemini call.
+#
+# GROUP/supergroup chat: no live/unprompted scanning at all - /check
+# (CommandHandler, ChatType.GROUPS-only, below) is the sole entry point,
+# reusing the same _run_full_check_and_reply helper handle_text uses. The
+# old always-on group auto-scan (a separate handle_url MessageHandler,
+# group 1) has been removed entirely, not just filtered inert.
 #
 # Business chat: fully owned by group 3 now. A Business connection lets a
 # user automate their own chat with Angket — every customer message (text,
@@ -226,23 +233,13 @@ def main():
     # handlers/url_handler.on_business_connection for why this matters).
     app.add_handler(BusinessConnectionHandler(on_business_connection))
 
-    # Link checker — text or caption, GROUP/supergroup chat only; silent
-    # when no links are found. Plain PRIVATE chat and Business chat are
-    # both excluded here on purpose: handle_text (private) and
-    # handle_business_message (business) each check and reason over any
-    # link themselves, in the same call as the message text/file - this
-    # filter firing too would produce a second, uncoordinated reply. Own
-    # group so it always runs alongside the text/LLM scan below, even
-    # when both match the same photo-with-caption message in a group chat.
-    url_filter = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.ChatType.PRIVATE
-    app.add_handler(MessageHandler(url_filter, handle_url), group=1)
-
-    # Teammate's text/LLM scan — text or caption, GROUP/supergroup chat and
-    # plain PRIVATE chat (private reasons over any link itself - see
-    # bot/context_engine/context_engine.py). Business chat is excluded: it's fully owned
-    # by group 3 now. Own group so a document's caption doesn't get
-    # shadowed by handle_file's earlier, unconditional match on the same
-    # message in group 0.
+    # Teammate's text/LLM scan — text or caption, plain PRIVATE chat only
+    # (reasons over any link itself - see bot/context_engine/context_engine.py).
+    # GROUP/supergroup and Business are both excluded: groups get no live
+    # scanning at all (see /check above and TEXT_FILTER's own comment for
+    # why), Business is fully owned by group 3 now. Own group so a
+    # document's caption doesn't get shadowed by handle_file's earlier,
+    # unconditional match on the same message in group 0.
     app.add_handler(MessageHandler(TEXT_FILTER, handle_text), group=2)
 
     # Business chat automation: one unified text+link+file check per

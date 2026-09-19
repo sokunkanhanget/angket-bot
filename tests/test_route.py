@@ -5,30 +5,31 @@ Regression tests for routing behavior:
 
 1. Caption blindness fix: a message that carries its scam text/link in
    a photo/document CAPTION (rather than plain .text) must not be
-   invisible to the text/LLM scanner or the link checker - every filter
-   used to check filters.TEXT only.
+   invisible to the text/LLM scanner - every filter used to check
+   filters.TEXT only.
 
 2. Context-engineering routing: plain PRIVATE chat is no longer
    suppressed by a link (handle_text reasons over text + link together
-   itself - see bot/context_engine/context_engine.py). GROUP/supergroup chat keeps the
-   old two-independent-replies behavior, untouched.
+   itself - see bot/context_engine/context_engine.py).
 
-3. Business chat automation: Business messages are now excluded from
-   BOTH the old text scanner (TEXT_FILTER) and the old link checker
-   (url_filter) entirely - they're fully owned by
+3. Business chat automation: Business messages are excluded from the
+   text scanner (TEXT_FILTER) entirely - fully owned by
    handle_business_message (bot.py group 3), which checks text, links,
    and files together in one call and reports privately to the owner.
+
+4. GROUP/supergroup chat: no live/unprompted scanning at all as of
+   2026-09-19 (a teammate reported the bot auto-scanning every group
+   message, which wasn't wanted). /check (ChatType.GROUPS-only
+   CommandHandler) is the sole group-scanning entry point now; the old
+   always-on group auto-scan (a separate handle_url MessageHandler,
+   plus TEXT_FILTER matching GROUPS too) has been removed entirely.
 """
 
 import datetime
 
 from telegram import Chat, Message, Update
-from telegram.ext import filters
 
 from bot.bot import TEXT_FILTER
-
-# Mirrors bot.py's url_filter exactly (group 1, handle_url).
-URL_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.ChatType.PRIVATE
 
 
 def _update(caption=None, text=None, chat_type=Chat.PRIVATE, message_id=1):
@@ -65,27 +66,12 @@ def test_text_filter_reaches_a_caption_with_no_link():
     assert bool(TEXT_FILTER.check_update(update))
 
 
-def test_url_filter_reaches_a_group_caption_containing_a_link():
-    update = _update(
-        caption="claim now http://free-prize-winner.tk/claim", chat_type=Chat.GROUP
-    )
-    assert bool(URL_FILTER.check_update(update))
-
-
 def test_plain_private_chat_link_no_longer_suppresses_text_scanner():
     # This is the whole point of context-engineering: handle_text now
     # runs unconditionally in plain private chat, link or not, and
     # gathers/reasons over the link evidence itself.
     update = _update(text="claim now http://free-prize-winner.tk/claim")
     assert bool(TEXT_FILTER.check_update(update))
-
-
-def test_plain_private_chat_link_is_excluded_from_the_old_link_checker():
-    # The old, separate link-checker flow (handle_url) must stay out of
-    # plain private chat now, or the same link would get a second,
-    # uncoordinated reply alongside handle_text's unified one.
-    update = _update(text="claim now http://free-prize-winner.tk/claim")
-    assert not bool(URL_FILTER.check_update(update))
 
 
 def test_business_chat_never_reaches_the_old_text_scanner():
@@ -99,17 +85,14 @@ def test_business_chat_never_reaches_the_old_text_scanner():
     assert not bool(TEXT_FILTER.check_update(update))
 
 
-def test_business_chat_never_reaches_the_old_link_checker():
-    # Same reasoning: handle_business_message now checks links itself.
-    update = _business_update(text="claim now http://free-prize-winner.tk/claim")
-    assert not bool(URL_FILTER.check_update(update))
-
-
-def test_group_chat_caption_link_does_not_suppress_text_scanner():
-    # Group chat behavior is untouched by this pass: both scans still
-    # run independently, same as before.
+def test_group_chat_no_longer_reaches_the_text_scanner():
+    # 2026-09-19: group auto-scan removed - /check is the only way to
+    # scan a group message now, live or not, link or not.
     update = _update(
         caption="claim now http://free-prize-winner.tk/claim",
         chat_type=Chat.GROUP,
     )
-    assert bool(TEXT_FILTER.check_update(update))
+    assert not bool(TEXT_FILTER.check_update(update))
+
+    update = _update(text="urgent, verify your account now", chat_type=Chat.SUPERGROUP)
+    assert not bool(TEXT_FILTER.check_update(update))

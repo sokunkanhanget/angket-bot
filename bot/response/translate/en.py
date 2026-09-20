@@ -30,6 +30,19 @@ TEXT = {
         "🟡 <b>Medium Risk:</b> Some suspicious signs detected. Be cautious.\n"
         "🔴 <b>High Risk:</b> Strong signs of a potential threat. Avoid interacting with it."
     ),
+    # Group-chat variant (2026-09-19): the private-DM how_to_use text
+    # above talks about sending content directly, which doesn't apply in
+    # a group - a group member only ever scans something via /check.
+    "how_to_use_group": (
+        "📖 <b>How to Use Angket Bot in a Group</b>\n\n"
+        "Angket checks messages here on demand with <b>/check</b> - not automatically.\n\n"
+        "<b>Reply to a suspicious message</b>\n\n"
+        "Reply to it with <code>/check</code>. Angket will DM you the full verdict privately.\n\n"
+        "<b>Or check a link/text directly</b>\n\n"
+        "<code>/check &lt;url or text&gt;</code> - no reply needed.\n\n"
+        "<b>Also available here</b>\n\n"
+        "• /policy - View Angket's policy"
+    ),
     "usage": (
         "📈 <b>Daily Usage</b>\n\n"
         "📄 Files scanned: <b>{files_used}/{files_limit}</b>\n"

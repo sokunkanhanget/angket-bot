@@ -221,11 +221,30 @@ def _message_is_only_links(text: str, link_verdicts: list[dict]) -> bool:
     the link(s) themselves - i.e. a bare pasted URL. Strips URLs, the
     known link hosts, and any bare-domain tokens, then checks that no
     wordy content remains. Unicode-aware, so a Khmer sentence around the
-    link correctly counts as real context and keeps this from firing."""
+    link correctly counts as real context and keeps this from firing.
+
+    Real bug fixed 2026-09-19: this used to strip each verdict's bare
+    `host` only, never the verdict's own `raw` (the exact matched URL,
+    path/query included - see lexical.check_url's "raw" key). A schemeless
+    shortened link with a path (e.g. "bit.ly/promo123") never matches
+    _URL_LIKE at all (no http://, no www.), so stripping only "bit.ly"
+    left "/promo123" behind - and since it has no dot, _DOMAINISH doesn't
+    catch it either - so the leftover "promo123" made this wrongly return
+    False for a message that really is nothing but a bare link. That, in
+    turn, disqualified the message from both the dead-link short-circuit
+    (_dead_link_disqualified) and the free trusted-bare-link notice
+    (_trusted_bare_link_verdict), silently forcing an unnecessary live
+    Gemini call - in private DM and in Business chat automation alike,
+    since both route through this same function. pipeline.py's own
+    sibling shape-check, bare_trusted_link(), already strips the FULL
+    matched URL for exactly this reason - this now matches it."""
     if not text or not text.strip():
         return True
     leftover = _URL_LIKE.sub(" ", text)
     for v in link_verdicts:
+        raw = v.get("raw")
+        if raw:
+            leftover = leftover.replace(raw, " ")
         host = v.get("host")
         if host:
             leftover = leftover.replace(host, " ")

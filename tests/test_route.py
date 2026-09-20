@@ -23,13 +23,25 @@ Regression tests for routing behavior:
    CommandHandler) is the sole group-scanning entry point now; the old
    always-on group auto-scan (a separate handle_url MessageHandler,
    plus TEXT_FILTER matching GROUPS too) has been removed entirely.
+
+5. Group command exposure: also as of 2026-09-19, a group only ever
+   exposes /check, /howto, /policy - /language, /usage, /subscription
+   are private-account concepts with no group equivalent. Real gating
+   happens at bot.py's CommandHandler filter registration (per command,
+   picked from _GROUP_ALLOWED_COMMANDS), NOT inside handle_command
+   itself, which has no chat-type awareness of its own for this - a
+   test against handle_command's behavior directly would pass even if
+   the real filter regressed, so this is tested at the filter/constant
+   level instead, same reasoning as TEXT_FILTER above.
 """
 
 import datetime
 
+from telegram.ext import filters
+
 from telegram import Chat, Message, Update
 
-from bot.bot import TEXT_FILTER
+from bot.bot import COMMAND_KEYS, TEXT_FILTER, _GROUP_ALLOWED_COMMANDS, _PRIVATE_CHAT_ONLY
 
 
 def _update(caption=None, text=None, chat_type=Chat.PRIVATE, message_id=1):
@@ -96,3 +108,19 @@ def test_group_chat_no_longer_reaches_the_text_scanner():
 
     update = _update(text="urgent, verify your account now", chat_type=Chat.SUPERGROUP)
     assert not bool(TEXT_FILTER.check_update(update))
+
+
+def test_group_command_exposure_matches_the_direct_user_spec():
+    assert _GROUP_ALLOWED_COMMANDS == {"howto", "policy"}
+
+    for command in COMMAND_KEYS:
+        filt = ~filters.ChatType.CHANNEL if command in _GROUP_ALLOWED_COMMANDS else _PRIVATE_CHAT_ONLY
+        group_update = _update(text=f"/{command}", chat_type=Chat.SUPERGROUP)
+        private_update = _update(text=f"/{command}", chat_type=Chat.PRIVATE)
+        if command in _GROUP_ALLOWED_COMMANDS:
+            assert bool(filt.check_update(group_update)), command
+        else:
+            assert not bool(filt.check_update(group_update)), command
+        # Every command must still reach private chat regardless - only
+        # GROUP exposure is being restricted here.
+        assert bool(filt.check_update(private_update)), command

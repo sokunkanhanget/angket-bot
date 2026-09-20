@@ -728,6 +728,23 @@ def test_message_is_only_links_detects_bare_vs_contextful():
     assert ce._message_is_only_links("តើនេះជាការបោកទេ http://jam.example.com", links) is False
 
 
+def test_message_is_only_links_strips_schemeless_link_with_a_path():
+    # Real bug fixed 2026-09-19: a schemeless shortened link with a path
+    # never matches _URL_LIKE (no http://, no www.) - stripping only the
+    # bare host ("bit.ly") left the path ("/promo123") behind, and since
+    # it has no dot, _DOMAINISH didn't catch it either, so this used to
+    # wrongly return False for a message that really is nothing but a
+    # bare link. lexical.check_url's real verdict dicts always carry the
+    # exact matched substring under "raw" - this must be stripped too.
+    links = [{"host": "bit.ly", "raw": "bit.ly/promo123"}]
+    assert ce._message_is_only_links("bit.ly/promo123", links) is True
+    links = [{"host": "facebook.com", "raw": "facebook.com/somepage"}]
+    assert ce._message_is_only_links("facebook.com/somepage", links) is True
+    # Real surrounding text must still count as real content.
+    links = [{"host": "bit.ly", "raw": "bit.ly/promo123"}]
+    assert ce._message_is_only_links("check this out bit.ly/promo123", links) is False
+
+
 # --- Deterministic trusted-bare-link short-circuit -------------------------
 # A bare link to an exact PROTECTED_BRANDS domain that already came back
 # 'safe' after the real redirect trace needs no LLM opinion, no quota, no

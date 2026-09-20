@@ -47,7 +47,25 @@ from bot.storage.scan_log import init_db, init_url_db
 # is the only group-scanning entry point going forward; ~ChatType.CHANNEL
 # stays for the same effective_user/None crash class as start/handle_command.
 # Group/channel live detection is a deferred future plan, not built.
-TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & ~filters.UpdateType.BUSINESS_MESSAGE & ~filters.ChatType.CHANNEL & ~filters.ChatType.GROUPS
+#
+# Named as one shared constant, not re-derived per handler: this exact
+# "updated one filter, forgot its sibling" pattern is literally what
+# caused the group-auto-scan bug above - TEXT_FILTER got its GROUPS
+# exclusion first, and the file-upload handler below kept auto-scanning
+# groups for a full extra pass until a teammate caught it. Any future
+# chat-type policy change (e.g. if channel support is ever built) now
+# only needs to happen here, once, for both handlers that share it.
+_PRIVATE_CHAT_ONLY = ~filters.UpdateType.BUSINESS_MESSAGE & ~filters.ChatType.CHANNEL & ~filters.ChatType.GROUPS
+
+TEXT_FILTER = (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & _PRIVATE_CHAT_ONLY
+
+# Direct user spec (2026-09-19): group chat should only ever expose
+# /check, /howto, and /policy - /language, /usage, /subscription are all
+# private-account concepts (a group has no single "whose plan/language
+# is this" the way a private chat does). Module-level (not a local
+# inside main()) for the same testability reason as TEXT_FILTER/
+# _PRIVATE_CHAT_ONLY above - see test_route.py.
+_GROUP_ALLOWED_COMMANDS = {"howto", "policy"}
 
 # Handler groups (PTB runs every group per update, independently; within
 # a group, only the FIRST matching handler runs, so anything meant to
@@ -137,19 +155,18 @@ async def set_bot_commands(application: Application) -> None:
             ("subscription", "View Premium plans"),
         )]
     )
-    # Default scope above covers private chats too, so /check (group-only,
-    # bot.py's CommandHandler filters=filters.ChatType.GROUPS) is left out
-    # of it on purpose - a private-chat user tapping Menu should never see
-    # a command that does nothing there. Group-scope list adds it back for
-    # group/supergroup members, where it's actually usable.
+    # Group scope is deliberately a SHORT, DIFFERENT list, not the default
+    # list plus /check - direct user spec (2026-09-19): a group member
+    # should only ever see /check, /howto, /policy. /language, /usage,
+    # /subscription are all private-account concepts with no group
+    # equivalent (see the matching CommandHandler filter split above) -
+    # showing them in a group's Menu picker would offer a command that
+    # silently does nothing when tapped.
     await application.bot.set_my_commands(
         [BotCommand(command, description) for command, description in (
-            ("language", "Switch between English and Khmer"),
             ("check", "Check a replied-to message, link, or file"),
             ("howto", "Learn how to use Angket"),
-            ("usage", "Check your daily scan"),
             ("policy", "View Angket's policy"),
-            ("subscription", "View Premium plans"),
         )],
         scope=BotCommandScopeAllGroupChats(),
     )
@@ -207,8 +224,15 @@ def main():
     # all, per the group/channel research) - excluded here rather than
     # made to silently "work", matching that decision.
     app.add_handler(CommandHandler("start", start, filters=~filters.ChatType.CHANNEL))
+    # /language/usage/subscription now don't respond in groups at all,
+    # not just hidden from the Menu picker (see set_bot_commands' matching
+    # group-scope trim below) - howto/policy stay reachable everywhere
+    # (~ChatType.CHANNEL only, same as before) since they're pure static
+    # info, not per-account state. See _GROUP_ALLOWED_COMMANDS' own
+    # docstring above for the full rationale.
     for command in COMMAND_KEYS:
-        app.add_handler(CommandHandler(command, handle_command, filters=~filters.ChatType.CHANNEL))
+        filt = ~filters.ChatType.CHANNEL if command in _GROUP_ALLOWED_COMMANDS else _PRIVATE_CHAT_ONLY
+        app.add_handler(CommandHandler(command, handle_command, filters=filt))
 
     # /check: on-demand group/supergroup scan, researched and scoped
     # 2026-09-11 (memory: project_group_channel_plan.md), live-tested as
@@ -224,10 +248,16 @@ def main():
     # update.business_message). ~ChatType.CHANNEL for the same reason -
     # handle_file() reads update.message.document unconditionally, and
     # update.message is also None for a channel post (the real object
-    # is update.channel_post).
-    app.add_handler(MessageHandler(
-        filters.Document.ALL & ~filters.UpdateType.BUSINESS_MESSAGE & ~filters.ChatType.CHANNEL, handle_file,
-    ))
+    # is update.channel_post). _PRIVATE_CHAT_ONLY's GROUPS exclusion
+    # matters here too, added 2026-09-19 in the same pass as TEXT_FILTER's
+    # own - this handler had NO chat-type restriction at all until then,
+    # so a group file upload kept getting auto-scanned even after
+    # TEXT_FILTER/url_filter were fixed, until a teammate caught it (see
+    # _PRIVATE_CHAT_ONLY's own docstring for why this is now one shared
+    # constant instead of two independently-hand-copied filter chains).
+    # /check's reply-to-message path already covers a file (replied.
+    # document, see handle_check), so groups lose nothing real.
+    app.add_handler(MessageHandler(filters.Document.ALL & _PRIVATE_CHAT_ONLY, handle_file))
 
     # Keeps the business-connection -> owner-chat-id cache warm (see
     # handlers/url_handler.on_business_connection for why this matters).

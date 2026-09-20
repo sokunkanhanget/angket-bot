@@ -111,19 +111,24 @@ async def _fallback(reason: str, error: str, text: str) -> dict:
     degrade to the SAME offline evidence context_engine.py's unified path
     already falls back to, instead of a blank "Uncertain, N/A risk" with
     no real reasons. This group-chat path only ever has message text (no
-    link/file evidence - that's handle_url's own separate reply), so
-    link_verdicts/file_verdict are empty/None; _grounded_fallback already
-    handles that shape (keyword match + offline scam-pattern similarity
-    only) - see its own docstring in context_engine.py. Direct user spec
-    (2026-09-11): a single unavailable online service (Gemini here, VT
-    for files) shouldn't blank a verdict out to "unknown" when other real
-    detectors already ran and have something to say.
+    link/file evidence - a link used to get its own separate reply from
+    url_handler.py's handle_url, deleted 2026-09-19 once group chat lost
+    all live/unprompted scanning), so link_verdicts/file_verdict are
+    empty/None; _grounded_fallback already handles that shape (keyword
+    match + offline scam-pattern similarity only) - see its own
+    docstring in context_engine.py. Direct user spec (2026-09-11): a
+    single unavailable online service (Gemini here, VT for files)
+    shouldn't blank a verdict out to "unknown" when other real detectors
+    already ran and have something to say.
 
     key_reasons here is flattened to plain strings - unlike
     context_engine.py's {text, source}-object schema (format_unified_
     response's contract), this function's only real caller
-    (format_analysis_response) has always expected plain strings, same
-    as Gemini's own live JSON response above."""
+    (analyze_text_with_llm, via format_analysis_response) has always
+    expected plain strings, same as Gemini's own live JSON response
+    above. Neither has a production caller of its own anymore as of
+    2026-09-19 (text_handler.py's handle_text dropped its dead
+    group-chat branch) - both kept for their own direct test coverage."""
     keyword_result = analyze_text(text)
     fallback = await _grounded_fallback(reason, text, keyword_result, [], None)
     return {

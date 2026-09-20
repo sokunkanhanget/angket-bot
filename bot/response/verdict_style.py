@@ -100,14 +100,15 @@ def trusted_link_notice(host: str, lang: str = DEFAULT_LANG, style: str = "html"
     trace, doesn't need that full treatment, quota or no quota. Every
     real caller that produces a unified verdict must check for
     unified.get("trusted_link_notice_host") and call this instead of the
-    normal full-template renderer when it's set:
-    text_handler.py's handle_text and handle_check, url_handler.py's
-    handle_url (via its own trusted_and_safe check, computed directly
-    from a link verdict rather than a unified dict, on the group-chat
-    link-only path that never calls analyze_unified at all), AND
-    url_handler.py's handle_business_message - that last one was
-    genuinely missed in the first pass (found by code review,
-    2026-09-16) precisely because this docstring didn't name it either.
+    normal full-template renderer when it's set: text_handler.py's
+    handle_text and handle_check, AND url_handler.py's
+    handle_business_message - that last one was genuinely missed in the
+    first pass (found by code review, 2026-09-16) precisely because this
+    docstring didn't name it either. (A fourth caller, url_handler.py's
+    now-deleted handle_url, used to reach this too via its own local
+    trusted_and_safe check on the group-chat link-only path - removed
+    2026-09-19 along with the rest of that dead chain, see
+    url_handler.py's module docstring.)
 
     style matches defang_domains' own param - "html" for the HTML-parse-
     mode surfaces (private DM/business chat), "markdown" for the

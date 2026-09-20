@@ -8,15 +8,14 @@ named). Thin on purpose — the real detection logic lives in
 bot/detectors/url/ (see pipeline.py's module docstring for that
 package's layout).
 
-Two very different flows depending on where the link showed up:
-
-NORMAL chat/group/DM
----------------------
-  1. A link shows up.
-  2. We post a short "showcase" verdict right where it was sent
-     (edited in-place from a "Checking..." placeholder).
-  3. The showcase has a button that deep-links into the bot's own DM
-     (t.me/<bot_username>?start=<ticket>) for the full breakdown.
+This file is now entirely Business chat automation ("Live Detect").
+Plain private-DM and group-chat link checking live in text_handler.py's
+handle_text/handle_check instead (a real link is one of several signals
+those unify with Gemini, not a separate reply) - this module's own
+standalone group-chat link checker (handle_url, the old "showcase +
+deep-link button" flow the paragraph below used to describe) was removed
+2026-09-19 once bot.py stopped registering it (group chat has no live/
+unprompted scanning at all now, only /check) and nothing else called it.
 
 Telegram BUSINESS chat (secretary mode)
 ----------------------------------------
@@ -31,15 +30,12 @@ using `BusinessConnection.user_chat_id`. That field is exactly what
 Telegram provides for "tell the business owner something, off to the
 side, without the customer knowing."
 
-That private DM shows who sent the link (full name, id) and when, a
-compact verdict, and two buttons:
-  - "See full details" / "🔼 Show less detail" — toggles the SAME message
-    in place (edit_message_text) between the compact showcase and the
-    full breakdown. No /start round-trip needed since we're already in
-    the owner's DM.
-  - "Delete" — removes that notification message. It only ever existed
-    in the owner's own private chat with the bot, so deleting it is
-    only ever "for the user" — nobody else could see it to begin with.
+That private DM shows who sent it (full name, id, timestamp) and the
+same unified VERDICT/TYPE/KEY REASONS/WHAT TO DO breakdown every other
+surface uses - sent immediately as a "Checking..." status, then edited
+in place once the real check finishes. No buttons anywhere (direct user
+spec, 2026-09-11) - every surface just gets the full breakdown straight
+away.
 
 Key detail: we read `update.effective_message` instead of
 `update.message`, because business messages arrive on
@@ -60,23 +56,14 @@ from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
-from bot.detectors.url.pipeline import (
-    bare_trusted_link,
-    check_message_full,
-    format_verdict_full,
-)
+from bot.detectors.url.pipeline import check_message_full
 from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, format_local_datetime, risk_style, scan_type_label, summary_sentence, trusted_link_notice, verdict_style
 from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
-from bot.storage import subscription
+from bot.storage import health_alerts, subscription
 
 logger = logging.getLogger(__name__)
-
-def _full_breakdown_text(verdicts: list[dict], include_evidence: bool = True) -> str:
-    return "\n\n---\n\n".join(
-        format_verdict_full(v, include_evidence=include_evidence) for v in verdicts
-    )
 
 
 def _sender_header(sender, sent_at, lang: str = DEFAULT_LANG) -> str:
@@ -125,7 +112,18 @@ async def _owner_chat_id(context: ContextTypes.DEFAULT_TYPE, business_connection
         return cache[business_connection_id]
     try:
         conn = await context.bot.get_business_connection(business_connection_id)
-    except TelegramError:
+    except TelegramError as error:
+        # Real gap fixed 2026-09-19 (direct user spec: "don't make Live
+        # Detect fail silently") - this used to just `return None` with
+        # zero logging, meaning a customer's message could vanish with
+        # no trace anywhere if the connection lookup ever failed (e.g.
+        # transient Telegram API hiccup, or a revoked-but-not-yet-synced
+        # connection). Same record_failure/maybe_alert pattern already
+        # used for Gemini/VirusTotal/Supabase - surfaces to ADMIN_CHAT_ID
+        # after repeated failures instead of vanishing into the void.
+        logger.exception("Failed to resolve business connection %s to an owner chat id", business_connection_id)
+        health_alerts.record_failure("Business chat owner lookup", str(error))
+        await health_alerts.maybe_alert("Business chat owner lookup", str(error))
         return None
     cache[business_connection_id] = conn.user_chat_id
     return conn.user_chat_id
@@ -200,174 +198,6 @@ def extract_text_link_entities(message) -> list[tuple[str, str]]:
     except Exception:                          # noqa: BLE001 - never let entity parsing break a scan
         return []
     return [(display, entity.url) for entity, display in parsed.items() if entity.url]
-
-
-def _trusted_shape_check(message, text: str, hidden_links: list, is_business: bool) -> bool:
-    """Cheap, no-network shape check (bare_trusted_link) - only a message
-    that's NOTHING but one link to a verified PROTECTED_BRANDS domain
-    qualifies, so this can never be used to bypass quota on arbitrary
-    content. Confirmed once check_message_full's real verdict comes
-    back below (see trusted_and_safe) before the quota charge is
-    actually skipped - see text_handler.py's matching comment. Split
-    out of handle_url."""
-    return not is_business and bare_trusted_link(text, hidden_links) is not None
-
-
-async def _url_quota_gate(message, context: ContextTypes.DEFAULT_TYPE, sender, is_business: bool,
-                           trusted_shape: bool) -> bool:
-    """True if the sender is over today's limit and must be turned away
-    here. Business-chat scans are gated by the Live Detect trial instead
-    (see handle_business_message's own gate) - the sender there is a
-    CUSTOMER messaging the business, not the subscriber whose plan this
-    is, so this gate never applies to them. Split out of handle_url; a
-    local equivalent of text_handler._check_quota_gate (can't import that
-    directly - text_handler.py already imports extract_text_link_entities
-    FROM this module, so the reverse import would be circular)."""
-    if is_business or trusted_shape or sender is None or subscription.can_scan_link_or_message(sender.id):
-        return False
-    # Inlined rather than importing text_handler.get_user_lang - see the
-    # circular-import note above.
-    lang = str(context.user_data.get("lang", DEFAULT_LANG))
-    # Same notify-once contract, same shared counter, as
-    # handle_text/handle_check - see should_notify_link_limit's
-    # docstring.
-    if subscription.should_notify_link_limit(sender.id):
-        await message.reply_text(
-            t(lang, "daily_scan_limit_reached").format(
-                limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
-                reset_time=subscription.reset_time_display(),
-            ),
-            parse_mode="HTML",
-        )
-    return True
-
-
-async def _start_status_animation(message, is_business: bool):
-    """(status, animation_task) - group chat stays English-only
-    (DEFAULT_LANG), same established scope as format_analysis_response -
-    see bot.py's TEXT_FILTER notes. Business flow stays invisible here
-    (its own status message is sent separately, to the owner's DM, by
-    handle_business_message) - (None, None) for that case."""
-    if is_business:
-        return None, None
-    status = await message.reply_text(t(DEFAULT_LANG, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
-    animation_task = asyncio.create_task(animate_status(status, DEFAULT_LANG))
-    return status, animation_task
-
-
-async def _run_link_check(text: str, hidden_links: list, status, animation_task) -> list[dict] | None:
-    """check_message_full, or None on failure (after cleaning up the
-    status/animation) - split out of handle_url. try/except so
-    animation_task can never outlive this handler - an unhandled
-    exception here used to leave it running forever, editing the status
-    message every 1.5s with no way to reach it again. Same
-    defense-in-depth pattern file_handler.py's handle_file already uses."""
-    try:
-        return await check_message_full(text, hidden_links)
-    except Exception:                          # noqa: BLE001 - must still stop the animation and reply
-        logger.exception("check_message_full failed for a link-check message")
-        if animation_task is not None:
-            await stop_status_animation(animation_task)
-        if status is not None:
-            await status.edit_text(t(DEFAULT_LANG, "scan_failed"))
-        return None
-
-
-async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # effective_message covers normal messages AND business messages.
-    # A link can arrive as plain text or as a photo/document caption.
-    message = update.effective_message
-    if message is None:
-        return
-    text = message.text or message.caption
-    if text is None:
-        return
-
-    # Network tracing can take a few seconds — show progress first
-    # (normal chats only; business flow stays invisible).
-    is_business = bool(message.business_connection_id)
-    hidden_links = extract_text_link_entities(message)
-    trusted_shape = _trusted_shape_check(message, text, hidden_links, is_business)
-
-    # Checked BEFORE ensure_vectors_seeded() below - a real Supabase call
-    # - on purpose: no point triggering it for a sender who's about to be
-    # quota-blocked anyway. handle_file/handle_text already check their
-    # own quota first; this one used to seed first and check quota
-    # second, the one real inconsistency in an otherwise-consistent
-    # "quota gate is the first real work a handler does" pattern.
-    sender = update.effective_user
-    if await _url_quota_gate(message, context, sender, is_business, trusted_shape):
-        return
-
-    # Full pipeline: lexical + network trace + DNS/domain age + vector
-    # search + LSH. Brand/phish vectors are seeded once per process.
-    await ensure_vectors_seeded(context.bot_data)
-
-    status, animation_task = await _start_status_animation(message, is_business)
-    verdicts = await _run_link_check(text, hidden_links, status, animation_task)
-    if verdicts is None:
-        return
-
-    if animation_task is not None:
-        await stop_status_animation(animation_task)
-
-    if not verdicts:
-        if status is not None:
-            await status.delete()
-        return  # this handler only speaks up when there's actually a link
-
-    trusted_and_safe = (
-        trusted_shape and len(verdicts) == 1
-        and verdicts[0].get("trusted_brand") and verdicts[0].get("level") == "safe"
-    )
-    if not is_business and sender is not None and not trusted_and_safe:
-        subscription.record_link_or_message_scan(sender.id)
-
-    await _reply_with_verdicts(update, verdicts, status, trusted_and_safe)
-
-
-async def _reply_with_verdicts(update, verdicts: list[dict],
-                                status, trusted_and_safe: bool = False) -> None:
-    """Once you have a list of verdicts, edit the status message in
-    place with the full breakdown. No buttons anywhere (direct user
-    spec) - every surface just gets the full breakdown straight away
-    instead of a short showcase behind a "see more"/toggle button, which
-    is what the buttons existed for.
-
-    Business-chat delivery used to be handled here too (an `is_business`
-    branch DMing the owner directly), but that branch was dead code:
-    confirmed by tracing bot.py's routing - handle_url (this function's
-    only caller) is registered on `url_filter`, which excludes
-    `~filters.ChatType.PRIVATE`, and a Business-chat message's chat is
-    always type "private" (same as a plain private DM) - so handle_url
-    never actually receives a business message in production at all.
-    Business chat is handled exclusively by the separately-registered
-    handle_business_message. Removed (found by code review, 2026-09-16)."""
-    sender = update.effective_user
-    for v in verdicts:
-        # Synchronous SQLite write - off the event loop, so one scan's
-        # log write can't stall every other concurrent scan.
-        await asyncio.to_thread(
-            log_url_scan, sender.id if sender else None, v["host"], v["score"], v["level"]
-        )
-
-    if trusted_and_safe:
-        # Direct user spec (2026-09-16): a bare trusted-brand link gets
-        # this one-line notice instead of the full VERDICT/KEY REASONS/
-        # WHAT TO DO template.
-        full = trusted_link_notice(verdicts[0]["host"], DEFAULT_LANG, style="markdown")
-    else:
-        # No Technical Evidence section on any live reply - the spec'd
-        # template has no such section, unlike the old private-DM/group-detail
-        # split this replaced (private already hid it; group's old "See full
-        # details" button was the only place it ever showed).
-        full = _full_breakdown_text(verdicts, include_evidence=False)
-
-    await status.edit_text(
-        full,
-        parse_mode="Markdown",
-        disable_web_page_preview=True,  # don't preview a possibly-bad link
-    )
 
 
 def _format_business_reasons(reason_items: list, lang: str) -> list[str]:
@@ -499,8 +329,20 @@ async def _send_business_status(context: ContextTypes.DEFAULT_TYPE, owner_chat_i
             text=f"{header}{t(owner_lang, STATUS_STAGE_KEYS[0])}",
             parse_mode="Markdown",
         )
-    except TelegramError:
+    except TelegramError as error:
+        # 2026-09-19 (direct user spec: "don't make Live Detect fail
+        # silently"): logged already, but never surfaced past this
+        # handler's own log line - the most likely real cause is the
+        # owner never having started a private chat with the bot
+        # (Telegram refuses "bot can't initiate conversation" for a DM
+        # the user hasn't opened first), which would then fail this way
+        # for EVERY future customer message with nothing anywhere to
+        # notice it. Same record_failure/maybe_alert pattern as every
+        # other backend failure in this project - surfaces to
+        # ADMIN_CHAT_ID after repeated failures instead of vanishing.
         logger.exception("Business chat status notification failed to send")
+        health_alerts.record_failure("Business chat owner DM", str(error))
+        await health_alerts.maybe_alert("Business chat owner DM", str(error))
         return None, None, None  # can't even show progress right now - nothing safe to do
     animation_task = asyncio.create_task(animate_status(status, owner_lang, prefix=header))
     return status, animation_task, header

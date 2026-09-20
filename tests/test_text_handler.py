@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from telegram.error import TelegramError
 
 from bot.response.buttons import key_for_label, label, t
 from bot.response.translate import DEFAULT_LANG
@@ -200,28 +201,41 @@ async def test_handle_text_analyzes_a_caption_when_text_is_absent():
     # (the wording lives in .caption instead) - handle_text used to
     # bail out immediately in that case, so scam wording attached to a
     # file/photo was never scanned at all.
+    #
+    # Retargeted 2026-09-19: this used to patch analyze_text_with_llm
+    # because the fake update's bare AsyncMock effective_chat.type never
+    # equaled "private", so it fell into handle_text's old group-chat
+    # branch by accident - that branch is now deleted (dead code, since
+    # TEXT_FILTER excludes GROUPS too), so this must go through the real,
+    # only remaining path (analyze_unified) like every other private-DM
+    # test in this file, with effective_chat.type set explicitly.
     update = AsyncMock()
     update.message.text = None
     update.message.caption = "URGENT: verify your account now or it will be suspended"
+    update.message.document = None
+    update.message.business_connection_id = None
     update.message.reply_text = AsyncMock()
     update.effective_message = update.message
+    update.effective_chat.type = "private"
     update.effective_user.id = 42
-    context = AsyncMock()
-    context.user_data = {}  # plain dict in real python-telegram-bot, not AsyncMock's default child mock
+    context = _private_context()
 
-    with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), patch(
-        "bot.handlers.text_handler.analyze_text_with_llm",
+    with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch(
+        "bot.handlers.text_handler.analyze_unified",
         AsyncMock(return_value={
             "verdict": "Scam",
             "risk_percentage": 80,
-            "key_reasons": ["Urgent request"],
+            "key_reasons": [{"text": "Urgent request", "source": "message_text"}],
             "recommendations": ["Be careful"],
         }),
     ):
         await handle_text(update, context)
 
     update.message.reply_text.assert_awaited_once()
-    assert "VERDICT" in update.message.reply_text.call_args[0][0]
+    assert "🔍 Checking" in update.message.reply_text.call_args[0][0]
 
 
 def _private_update(text):
@@ -297,6 +311,35 @@ async def test_handle_command_dispatches_help_commands(command, expected):
 
     response = update.message.reply_text.call_args[0][0]
     assert expected in response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("/howto", "How to Use Angket Bot in a Group"),
+        ("/policy", "Angket Bot Policy"),
+    ],
+)
+async def test_handle_command_in_group_shows_group_variant_with_no_menu_keyboard(command, expected):
+    # Direct user spec, 2026-09-19: group chat only ever exposes /check,
+    # /howto, /policy - main_menu_keyboard (Switch Language/Usage/etc.)
+    # would show buttons that silently do nothing in a group now (button
+    # taps route through handle_text, which is private-only), so it must
+    # be suppressed there. /howto also gets a /check-focused variant
+    # instead of the private-chat "send content directly" text, which
+    # doesn't apply in a group at all.
+    update = _group_check_update(reply_to_text=None)[0]
+    update.effective_message.text = command
+    update.message = update.effective_message
+    context = _group_check_update()[1]
+
+    await handle_command(update, context)
+
+    response = update.effective_message.reply_text.call_args[0][0]
+    assert expected in response
+    _, kwargs = update.effective_message.reply_text.await_args
+    assert kwargs["reply_markup"] is None
 
 
 @pytest.mark.asyncio
@@ -552,30 +595,36 @@ async def test_handle_text_shows_status_and_edits_it_when_a_link_is_present():
 
 @pytest.mark.asyncio
 async def test_handle_text_analyzes_regular_messages():
+    # Retargeted 2026-09-19: see test_handle_text_analyzes_a_caption_when_
+    # text_is_absent's comment - the old group-chat branch this used to
+    # exercise via a bare AsyncMock (accidentally not "private") is now
+    # deleted dead code, so this goes through the real analyze_unified
+    # path instead, with effective_chat.type set explicitly.
     update = AsyncMock()
     update.message.text = "This is a test message"
+    update.message.document = None
+    update.message.business_connection_id = None
     update.message.reply_text = AsyncMock()
     update.effective_message = update.message
+    update.effective_chat.type = "private"
     update.effective_user.id = 42
-    context = type("Ctx", (), {"user_data": {}})()
+    context = _private_context()
 
-    with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": False, "matches": []}), patch(
-        "bot.handlers.text_handler.analyze_text_with_llm",
+    with patch("bot.handlers.text_handler.analyze_text", return_value={"suspicious": False, "matches": []}), \
+         patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch(
+        "bot.handlers.text_handler.analyze_unified",
         AsyncMock(return_value={
             "verdict": "Scam",
             "risk_percentage": 90,
-            "key_reasons": ["Urgent request"],
+            "key_reasons": [{"text": "Urgent request", "source": "message_text"}],
             "recommendations": ["Be careful"],
         }),
     ):
         await handle_text(update, context)
 
-    update.message.reply_text.assert_awaited_once()
-    call_args = update.message.reply_text.call_args[0]
-    assert "VERDICT" in call_args[0]
-    _, kwargs = update.message.reply_text.await_args
-    assert kwargs["reply_markup"] == MAIN_MENU_KEYBOARD
-    assert kwargs["reply_markup"].keyboard[0][0].text == "🌐 Switch Language"
+    update.message.reply_text.assert_awaited_once_with("🔍 Checking", parse_mode="Markdown")
 
 
 @pytest.mark.asyncio
@@ -661,9 +710,13 @@ async def test_handle_check_checks_quota_before_seeding_vectors():
 
 @pytest.mark.asyncio
 async def test_handle_check_full_flow_via_reply():
+    # Direct user spec, 2026-09-19: the verdict goes to the CALLER's own
+    # private chat with the bot (context.bot.send_message), not into the
+    # group at all - supersedes an earlier same-day fix that threaded it
+    # onto the original flagged message in-group instead.
     update, context = _group_check_update(reply_to_text="free bitcoin now, click nowhere")
     status_message = AsyncMock()
-    update.effective_message.reply_text = AsyncMock(return_value=status_message)
+    context.bot.send_message = AsyncMock(return_value=status_message)
 
     with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), patch(
         "bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])
@@ -679,6 +732,10 @@ async def test_handle_check_full_flow_via_reply():
         await handle_check(update, context)
 
     mock_unified.assert_awaited_once()
+    context.bot.send_message.assert_awaited_once()
+    assert context.bot.send_message.call_args.kwargs["chat_id"] == 42
+    update.effective_message.reply_text.assert_not_called()
+    update.effective_message.reply_to_message.reply_text.assert_not_called()
     status_message.edit_text.assert_awaited_once()
     reply = status_message.edit_text.call_args[0][0]
     assert "VERDICT: LIKELY A SCAM" in reply
@@ -686,10 +743,63 @@ async def test_handle_check_full_flow_via_reply():
 
 
 @pytest.mark.asyncio
-async def test_handle_check_standalone_with_args():
+async def test_handle_check_falls_back_to_group_when_dm_never_delivers():
+    # Direct user spec, 2026-09-19: if the caller has never started a
+    # private chat with the bot, Telegram refuses to let the bot DM them
+    # ("bot can't initiate conversation") - context.bot.send_message
+    # raises TelegramError both attempts (retried once), so this must
+    # fall back to replying in the group instead of losing the check
+    # entirely or failing silently. Reply mode falls back onto the
+    # ORIGINAL flagged message, same as the pre-DM-redirect behavior.
+    update, context = _group_check_update(reply_to_text="free bitcoin now, click nowhere")
+    context.bot.send_message = AsyncMock(side_effect=TelegramError("bot can't initiate conversation"))
+    fallback_status = AsyncMock()
+    update.effective_message.reply_to_message.reply_text = AsyncMock(return_value=fallback_status)
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch(
+        "bot.handlers.text_handler.analyze_unified",
+        AsyncMock(return_value={
+            "verdict": "Scam", "risk_percentage": 90,
+            "key_reasons": [{"text": "Promises free money", "source": "message_text"}],
+            "recommendations": ["Ignore it"],
+        }),
+    ):
+        await handle_check(update, context)
+
+    assert context.bot.send_message.await_count == 2  # one attempt + one retry
+    update.effective_message.reply_to_message.reply_text.assert_awaited_once()
+    fallback_status.edit_text.assert_awaited_once()
+    assert "VERDICT: LIKELY A SCAM" in fallback_status.edit_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_handle_check_dm_succeeds_on_retry_after_one_failure():
     update, context = _group_check_update(args=["http://bit.ly/scam-test"])
     status_message = AsyncMock()
-    update.effective_message.reply_text = AsyncMock(return_value=status_message)
+    context.bot.send_message = AsyncMock(side_effect=[TelegramError("temporary"), status_message])
+
+    with patch("bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])), patch(
+        "bot.handlers.text_handler.analyze_unified",
+        AsyncMock(return_value={
+            "verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": [],
+        }),
+    ):
+        await handle_check(update, context)
+
+    assert context.bot.send_message.await_count == 2
+    update.effective_message.reply_text.assert_not_called()
+    status_message.edit_text.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_check_standalone_with_args():
+    # Standalone-args mode also goes to DM, same as reply mode - see
+    # test_handle_check_full_flow_via_reply's comment.
+    update, context = _group_check_update(args=["http://bit.ly/scam-test"])
+    status_message = AsyncMock()
+    context.bot.send_message = AsyncMock(return_value=status_message)
 
     with patch("bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])) as mock_check, patch(
         "bot.handlers.text_handler.analyze_unified",
@@ -728,7 +838,7 @@ async def test_handle_check_bare_trusted_link_skips_quota_even_when_over_limit()
         subscription.record_link_or_message_scan(42)
     used_before = subscription.usage_summary(42)["links_messages_used"]
     status_message = AsyncMock()
-    update.effective_message.reply_text = AsyncMock(return_value=status_message)
+    context.bot.send_message = AsyncMock(return_value=status_message)
 
     with patch("bot.handlers.text_handler.check_message_full",
                AsyncMock(return_value=[_trusted_verdict()])), \

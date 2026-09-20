@@ -49,8 +49,8 @@ worth explaining clearly:
 
 | Where | What happens |
 |---|---|
-| **Private chat with the bot** | The bot reads your text AND any link (and any attached file — see the update below) together, in one combined check, and replies with one full answer directly in the chat. |
-| **Group / supergroup chat** | Text and links are still checked separately (this hasn't changed). A link gets a short preview reply with a button to see the full details in a private message with the bot. |
+| **Private chat with the bot** | The bot reads your text AND any link (and any attached file) together, in one combined check, and replies with one full answer directly in the chat. |
+| **Group / supergroup chat** | No automatic scanning at all as of 2026-09-19. The bot only checks a message when a group member explicitly runs **`/check`** — either as a reply to the message being checked (text, link, or file) or standalone (`/check <text or link>`). This is deliberate: an earlier version auto-scanned every group message, which a teammate reported as unwanted behavior once real teammates started testing the bot in their own groups. |
 | **Business chat** (via Telegram's Business feature) | A business owner can connect Angket to their own business account. Every customer message — text, link, and/or file, all together — is checked once and reported privately to the OWNER only. The customer never sees the bot at all, and nothing is ever posted in the business chat itself. |
 
 > **Why business chat is private-only:** anything the bot sends through a
@@ -58,6 +58,13 @@ worth explaining clearly:
 > the owner and the customer would see it. There's no way to reply "just to
 > the owner" inside that chat — so instead the bot DMs the owner separately,
 > in their own private chat with the bot, which the customer can't see.
+>
+> **Why group chat has no live scanning:** "Live Detect" (the Business chat
+> automation above) is architecturally private-only — Telegram's Business
+> Connection feature only ever connects to a single private account, never a
+> group. The plain always-on text/link auto-scan that used to also run in
+> groups (a separate mechanism, unrelated to Live Detect) has been removed
+> entirely; `/check` is the only way to scan anything in a group now.
 
 ## 3. Link Checker
 
@@ -201,10 +208,11 @@ A few details worth knowing:
   customer's** — the owner is the only one who reads that notification, so
   it looks up whatever language the owner has set for themselves (if they've
   ever used the bot directly), not the customer sending the message.
-- **Group chat is not covered yet.** Group-chat link replies don't go through
-  the AI at all today — they're built from fixed English text baked directly
-  into the code — so translating them is a separate, bigger piece of work,
-  intentionally left for later.
+- **Group chat is English-only, on purpose.** `/check` (the only way to scan
+  anything in a group, see Section 2) DOES reach the same AI pipeline as
+  private chat — but it always replies in English, deliberately, since a
+  group has no single "whose language" the way a private chat's per-user
+  setting gives one.
 - **The offline fallback** (when the AI is unavailable) still replies in
   English only, even if the user has switched to Khmer — it's already the
   degraded, less-accurate path, so this was left as a deliberate boundary
@@ -222,16 +230,24 @@ placed differently than the other two handler files.
 
 ```
 bot/
-├── bot.py                 - entry point: builds the bot, registers every
-│                             handler, decides which check runs where
-├── config.py               - all the settings (API keys, thresholds, etc.)
-├── context_engine.py        - the combined text+link+file AI reasoning (Section 4)
-├── i18n.py                  - English / Khmer text
+├── bot.py                          - entry point: builds the bot, registers
+│                                      every handler, decides which check
+│                                      runs where
+├── config/config.py                 - all the settings (API keys,
+│                                      thresholds, etc.)
+├── context_engine/context_engine.py  - the combined text+link+file AI
+│                                      reasoning (Section 4)
+├── response/
+│   ├── verdict_style.py              - shared verdict/reply formatting
+│   └── translate/                    - English / Khmer text (en.py / km.py)
 │
 ├── detectors/                - "what checks the content" - no Telegram code at all
 │   ├── text/
 │   │   ├── keyword.py           - simple keyword/phrase matching
-│   │   ├── llm.py                - Gemini-based text analysis (group chat only)
+│   │   ├── llm.py                - Gemini-based text analysis; as of
+│   │   │                           2026-09-19 this call site is dead code
+│   │   │                           (handle_text's old group-chat branch,
+│   │   │                           now unreachable - see Section 2)
 │   │   └── scam_patterns.py       - the known scam-script list (Section 4)
 │   ├── file/
 │   │   └── scanner.py             - hashes a file and checks it against VirusTotal
@@ -241,9 +257,9 @@ bot/
 │       └── online/                 - checks that do (domain age, VirusTotal, etc.)
 │
 ├── handlers/                 - "how the bot replies" - all Telegram wiring, one place
-│   ├── text_handler.py
-│   ├── file_handler.py
-│   └── url_handler.py            - link replies (private chat / group / business)
+│   ├── text_handler.py          - private DM (unified check) + /check (group, on demand)
+│   ├── file_handler.py          - private-chat file uploads only (not group)
+│   └── url_handler.py            - Business chat automation ("Live Detect") only
 │
 └── storage/                  - shared logging helpers every detector uses
     └── scan_log.py

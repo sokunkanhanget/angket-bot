@@ -2,11 +2,11 @@ import asyncio
 import logging
 from html import escape
 
-from telegram import ReplyKeyboardMarkup, Update
+from telegram import Chat, ReplyKeyboardMarkup, Update
+from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.scanner import download_and_hash, scan_file
-from bot.detectors.text.online.llm import analyze_text_with_llm
 from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
 from bot.response.translate import DEFAULT_LANG
@@ -107,14 +107,15 @@ def _format_list(items: list, prefix: str, lang: str = DEFAULT_LANG) -> str:
 
 
 def format_analysis_response(llm_result: dict, keyword_result: dict) -> str:
-    """Group-chat reply - deliberately always English (lang=DEFAULT_LANG),
-    unlike format_unified_response below. Group chat's language wiring
-    and Gemini call are both out of scope for translation for now (see
-    bot.py's TEXT_FILTER) - this function's signature is otherwise identical to
-    format_unified_response on purpose, so it stays that way on purpose,
-    not by oversight. TYPE is always "text" here - this path never
-    reasons over links/files itself (see handle_text's own docstring:
-    a group-chat link gets its own separate reply from handle_url)."""
+    """The old group-chat text-only reply - deliberately always English
+    (lang=DEFAULT_LANG). No production caller as of 2026-09-19: group
+    chat has no live/unprompted scanning at all anymore (only /check,
+    which reuses format_unified_response's shape via _run_full_check_and_reply,
+    not this function) - kept only for its own direct test coverage
+    (test_format_analysis_response_*). This function's signature is
+    otherwise identical to format_unified_response on purpose. TYPE is
+    always "text" here - this path never reasoned over links/files
+    itself even when it was live."""
     lang = DEFAULT_LANG
     verdict = llm_result.get("verdict")
     verdict_icon, verdict_label = verdict_style(verdict, lang)
@@ -267,10 +268,20 @@ async def _try_handle_menu_command(
         return True
 
     if canonical_key in _MENU_RESPONSE_KEYS:
+        # Group chat only ever reaches "how_to_use"/"policy" here (see
+        # bot.py's CommandHandler filter split, 2026-09-19) - switch_
+        # language/usage/back/menu buttons don't exist there, so
+        # main_menu_keyboard would show buttons that silently do nothing
+        # if tapped (handle_text, the button-tap dispatcher, is
+        # private-only now too). Suppress it entirely in groups, and swap
+        # how_to_use for its group-specific /check-focused variant.
+        chat = update.effective_chat
+        is_group = chat is not None and chat.type in (Chat.GROUP, Chat.SUPERGROUP)
+        key = "how_to_use_group" if (is_group and canonical_key == "how_to_use") else canonical_key
         await update.message.reply_text(
-            t(lang, canonical_key),
+            t(lang, key),
             parse_mode="HTML",
-            reply_markup=main_menu_keyboard,
+            reply_markup=None if is_group else main_menu_keyboard,
         )
         return True
 
@@ -344,8 +355,38 @@ def _build_reply_text(unified: dict, keyword_result: dict, lang: str, has_text_f
     return reply_text, trusted_host
 
 
+class _DMReplyTarget:
+    """Minimal message.reply_text-shaped shim so _send_check_status can
+    target an arbitrary chat_id - specifically, a group /check caller's
+    OWN private chat with the bot, rather than replying in the group it
+    was typed in (direct user spec, 2026-09-19: keep the group clean,
+    DM the invoker the verdict privately). Only reply_text is ever
+    called on this - the real telegram.Message that returns from
+    send_message already has its own genuine edit_text, which
+    _run_full_check_and_reply calls directly on THAT, never on this
+    shim itself."""
+    def __init__(self, bot, chat_id: int):
+        self._bot = bot
+        self._chat_id = chat_id
+
+    async def reply_text(self, text, **kwargs):
+        return await self._bot.send_message(chat_id=self._chat_id, text=text, **kwargs)
+
+
+async def _send_check_status(message, lang: str):
+    """(status, animation_task) - the "Checking..." status message + its
+    live animation. Split out of _run_full_check_and_reply so a caller
+    that needs retry/fallback delivery logic (handle_check's DM-first,
+    fall-back-to-group-on-failure) can retry just this cheap send, not
+    the real analysis work below it (Gemini/link trace - genuinely
+    expensive, must never run twice for one /check)."""
+    status = await message.reply_text(t(lang, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
+    animation_task = asyncio.create_task(animate_status(status, lang))
+    return status, animation_task
+
+
 async def _run_full_check_and_reply(
-    message, context: ContextTypes.DEFAULT_TYPE, text: str, hidden_links: list,
+    status, animation_task, context: ContextTypes.DEFAULT_TYPE, text: str, hidden_links: list,
     document, keyword_result: dict, lang: str, user_id: int | None, trusted_shape: bool,
     has_text_fn, log_context: str,
 ) -> None:
@@ -354,11 +395,13 @@ async def _run_full_check_and_reply(
     of handle_text's private-DM branch and handle_check - the two only
     differed in lang, how has_text is computed (has_text_fn - it needs
     link_verdicts, not known until after the real check runs), plus the
-    log message on failure."""
-    await ensure_vectors_seeded(context.bot_data)
+    log message on failure.
 
-    status = await message.reply_text(t(lang, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
-    animation_task = asyncio.create_task(animate_status(status, lang))
+    Takes an ALREADY-SENT status + its already-started animation_task
+    (see _send_check_status) rather than creating them itself, as of
+    2026-09-19 - this is what lets handle_check retry/redirect delivery
+    of that first message without re-running the real check twice."""
+    await ensure_vectors_seeded(context.bot_data)
 
     link_verdicts, file_verdict = await _gather_check_verdicts(text, hidden_links, document, context)
 
@@ -389,8 +432,12 @@ def _private_dm_scan_shape(update: Update, message, text: str):
     handle_text's real-scan path - split out to keep handle_text itself
     to orchestration only.
 
-    Business chat never reaches handle_text (route.py's TEXT_FILTER
-    excludes it) - fully owned by handlers/url_handler.handle_business_message.
+    Business/GROUP/CHANNEL chat never reach handle_text (bot.py's
+    TEXT_FILTER excludes all three as of 2026-09-19) - is_plain_private
+    is unconditionally True in every real call now, kept mainly as a
+    defensive guard rather than a live branch. Business chat is fully
+    owned by handlers/url_handler.handle_business_message; group chat's
+    only scanning entry point is /check (handle_check).
 
     trusted_shape is a cheap, no-network shape check (bare_trusted_link):
     only a message that's NOTHING but one link to a verified
@@ -441,29 +488,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     keyword_result = analyze_text(text)
 
-    if is_plain_private:
-        # Always checked now - a text-only message (no link, no file)
-        # still goes through the same analyze_unified() call (Gemini +
-        # bge-m3), which is just as slow as the link/file path; leaving
-        # it silent made the bot look unresponsive on exactly that path.
-        await _run_full_check_and_reply(
-            message, context, text, hidden_links, document, keyword_result, lang, user_id, trusted_shape,
-            has_text_fn=lambda link_verdicts: not _message_is_only_links(text, link_verdicts),
-            log_context="a private-DM message",
-        )
-        return
-
-    # Group/supergroup chat: unchanged text-only reasoning - any link in
-    # the message is still checked separately by url_checker's own
-    # handle_url flow.
-    llm_result = await analyze_text_with_llm(text, user_id)
-    if user_id is not None:
-        subscription.record_link_or_message_scan(user_id)
-
-    await message.reply_text(
-        format_analysis_response(llm_result, keyword_result),
-        parse_mode="HTML",
-        reply_markup=main_menu_keyboard,
+    # is_plain_private is unconditionally True here as of 2026-09-19:
+    # handle_text is registered only on bot.py's TEXT_FILTER, which now
+    # excludes GROUPS (plus the pre-existing CHANNEL/BUSINESS_MESSAGE
+    # exclusions) - group chat has no live/unprompted scanning at all
+    # anymore, only /check. This dropped the old group-chat "unchanged
+    # text-only reasoning via analyze_text_with_llm" branch, which was
+    # dead code the moment that filter changed (confirmed by /code-review,
+    # 2026-09-19) - format_analysis_response/analyze_text_with_llm are
+    # kept (both still have their own direct unit test coverage), just no
+    # longer called from here.
+    status, animation_task = await _send_check_status(message, lang)
+    await _run_full_check_and_reply(
+        status, animation_task, context, text, hidden_links, document, keyword_result, lang, user_id, trusted_shape,
+        has_text_fn=lambda link_verdicts: not _message_is_only_links(text, link_verdicts),
+        log_context="a private-DM message",
     )
 
 
@@ -532,8 +571,41 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # After the quota gate, not before - an over-quota sender shouldn't
     # trigger a real Supabase call.
     keyword_result = analyze_text(target_text)
+
+    # Direct user spec, 2026-09-19: the verdict goes to the CALLER's own
+    # private chat with the bot, not into the group at all - keeps the
+    # group clean regardless of reply-vs-standalone /check usage. (Earlier
+    # in this same day, before this spec, it threaded onto the original
+    # flagged message in-group instead - superseded, not stacked with
+    # this.) If the DM can't be delivered (most likely: this user has
+    # never started a private chat with the bot, so Telegram refuses
+    # "bot can't initiate conversation") retry once, then fall back to
+    # replying in the group - direct user spec: never fail silently, and
+    # never lose the check entirely just because the DM didn't go through.
+    # Only the cheap status-send is retried/redirected here, never the
+    # real analysis (Gemini/link trace) - see _send_check_status's own
+    # docstring for why re-running that would be wrong.
+    fallback_target = replied if replied is not None else message
+    status = animation_task = None
+    if user_id is not None:
+        dm_target = _DMReplyTarget(context.bot, user_id)
+        for _attempt in range(2):
+            try:
+                status, animation_task = await _send_check_status(dm_target, DEFAULT_LANG)
+                break
+            except TelegramError:
+                continue
+        else:
+            logger.warning(
+                "Could not DM /check result to user %s (likely never started "
+                "a private chat with the bot) - falling back to a group reply",
+                user_id,
+            )
+    if status is None:
+        status, animation_task = await _send_check_status(fallback_target, DEFAULT_LANG)
+
     await _run_full_check_and_reply(
-        message, context, target_text, hidden_links, document, keyword_result, DEFAULT_LANG, user_id, trusted_shape,
+        status, animation_task, context, target_text, hidden_links, document, keyword_result, DEFAULT_LANG, user_id, trusted_shape,
         has_text_fn=lambda link_verdicts: bool(target_text.strip()),
         log_context="/check",
     )

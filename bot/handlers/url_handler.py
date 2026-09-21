@@ -485,18 +485,6 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
             sender_identity=sender_identity,
         )
 
-        # A link or file is always worth telling the owner about (matches
-        # handle_url/handle_file's "report every finding, even 'safe'"
-        # convention elsewhere in this project). Pure text with no link or
-        # file only bothers the owner if the FULL Gemini reasoning actually
-        # flags a concern - gating on the crude local keyword list instead
-        # (like this used to) is exactly what silently missed a real "Hi Mom,
-        # send $800 now, don't call" family-emergency scam during testing:
-        # no keyword match, no link, no file, yet obviously a scam.
-        if not link_verdicts and file_verdict is None and unified.get("verdict") == "Not a Scam":
-            await stop_status_animation(animation_task)
-            await status.delete()
-            return
     except Exception:                          # noqa: BLE001 - must still stop the animation and tell the owner something
         logger.exception("Business chat unified analysis failed")
         await stop_status_animation(animation_task)

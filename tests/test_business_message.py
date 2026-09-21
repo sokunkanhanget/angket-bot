@@ -140,10 +140,13 @@ async def test_stays_silent_when_there_is_truly_nothing_to_check():
 
 
 @pytest.mark.asyncio
-async def test_stays_silent_for_genuinely_benign_text():
-    # Text IS present, but the full Gemini reasoning (not a crude local
-    # keyword list) judges it not a scam - must not notify the owner
-    # for every mundane customer message.
+async def test_shows_reassurance_for_genuinely_benign_text():
+    # Text IS present, and the full Gemini reasoning (not a crude local
+    # keyword list) judges it not a scam - direct user spec (2026-09-21):
+    # the owner must still SEE a "this is safe" reassurance, not have the
+    # status message silently deleted with nothing to show for it. Link/
+    # file findings already always render (see the "safe link" case
+    # elsewhere in this file) - text-only checks must match that.
     update = _business_update(text="hey, are we still on for lunch?")
     context = _context()
 
@@ -162,8 +165,11 @@ async def test_stays_silent_for_genuinely_benign_text():
 
     context.bot.send_message.assert_awaited_once()
     status = context.bot.send_message.return_value
-    status.delete.assert_awaited_once()
-    status.edit_text.assert_not_awaited()
+    status.delete.assert_not_awaited()
+    status.edit_text.assert_awaited_once()
+    body = status.edit_text.await_args.args[0]
+    assert "Not a Scam" not in body  # rendered through verdict_style's translated label, not the raw string
+    assert "5%" in body
 
 
 @pytest.mark.asyncio
@@ -439,14 +445,14 @@ async def test_send_failure_falls_back_to_plain_text_instead_of_total_silence():
 
 
 @pytest.mark.asyncio
-async def test_stays_silent_for_benign_text_during_a_real_gemini_outage(fake_vector_store, monkeypatch):
+async def test_shows_reassurance_for_benign_text_during_a_real_gemini_outage(fake_vector_store, monkeypatch):
     # Regression for the exact bug the /code-review pass found: the
     # fallback verdict used to be able to return only "Scam" or
-    # "Uncertain", never "Not a Scam", so a Gemini outage meant the
-    # owner got notified on EVERY customer message, including mundane
-    # ones. This exercises the REAL analyze_unified -> _grounded_fallback
-    # path (not mocked), with the client forced to None to simulate an
-    # outage, through the full handler.
+    # "Uncertain", never "Not a Scam". This exercises the REAL
+    # analyze_unified -> _grounded_fallback path (not mocked), with the
+    # client forced to None to simulate an outage, through the full
+    # handler - a benign message during an outage must still show the
+    # owner a real "Not a Scam" reassurance, not silence (2026-09-21).
     monkeypatch.setattr(context_engine, "_client", None)
 
     update = _business_update(text="hey, are we still on for lunch tomorrow?")
@@ -459,8 +465,8 @@ async def test_stays_silent_for_benign_text_during_a_real_gemini_outage(fake_vec
         await handle_business_message(update, context)
 
     status = context.bot.send_message.return_value
-    status.delete.assert_awaited_once()
-    status.edit_text.assert_not_awaited()
+    status.delete.assert_not_awaited()
+    status.edit_text.assert_awaited_once()
 
 
 @pytest.mark.asyncio

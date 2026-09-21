@@ -1,7 +1,10 @@
 import asyncio
 import logging
+import os
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Captured before any other project import, so the logged import-time
 # phase (below, once logging is configured) covers the REAL cost of
@@ -181,10 +184,43 @@ async def close_shared_clients(application: Application) -> None:
     await network.aclose()
 
 
+class _HealthCheckHandler(BaseHTTPRequestHandler):
+    """Answers any GET with a bare 200 - Render's own health probe and an
+    external uptime pinger (UptimeRobot, cron-job.org) both just need a
+    response, not real content."""
+
+    def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler's own naming
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, format, *args):  # noqa: A002 - stdlib's own signature
+        pass  # don't spam Render's log with every keepalive ping
+
+
+def _maybe_start_keepalive_server() -> None:
+    """Render's free Web Service tier requires a bound HTTP port and spins
+    the process down after 15 minutes with no inbound HTTP traffic - which
+    would silently kill Telegram polling too, since it's the same process.
+    Binds $PORT (Render sets this; unset everywhere else - local dev, a
+    real VM - so this is a no-op there) and answers 200 on any GET so an
+    external uptime pinger can keep the process alive. Runs on a daemon
+    thread, independent of PTB's own asyncio event loop run_polling()
+    owns - simplest way to not fight over which one controls the loop."""
+    port = os.getenv("PORT")
+    if not port:
+        return
+    server = ThreadingHTTPServer(("0.0.0.0", int(port)), _HealthCheckHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    logger.info("[startup] keepalive HTTP server listening on port %s", port)
+
+
 def main():
     main_start = time.perf_counter()
     if not validate_config():
         return
+
+    _maybe_start_keepalive_server()
 
     step_start = time.perf_counter()
     init_db()

@@ -34,7 +34,7 @@ import re
 
 from google.genai import types
 
-from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
+from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD, GEMINI_EMBED_PATTERN_THRESHOLD
 from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, build_clients, generate_content_with_backup
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
@@ -834,24 +834,28 @@ async def _compute_pattern_match(text: str) -> tuple[float, str] | None:
     the evidence blob. Split out of analyze_unified."""
     if not text:
         return None
-    # The live path prefers bge-m3 (genuinely Khmer-capable) when
-    # enabled, with a safe, automatic fallback to the fast hashed
-    # scheme baked into nearest_scam_pattern_live itself - see
-    # scam_patterns.py. _grounded_fallback deliberately keeps calling
-    # the plain synchronous nearest_scam_pattern() instead: that path
-    # only runs once Gemini has ALREADY failed, and it exists
-    # specifically to answer fast without depending on anything else
-    # that could also be down (Ollama included) - adding a possible
-    # embedding-timeout wait to an "everything's already on fire"
-    # fallback would work against its own purpose.
-    pattern_hits, used_bge_m3 = await nearest_scam_pattern_live(text, k=1)
-    # bge-m3 runs measurably hotter than the hashed scheme (real
-    # benign text can score ~0.59) - reusing SCAM_PATTERN_THRESHOLD
-    # for it would false-positive on ordinary messages, so the
-    # threshold has to match whichever scheme actually ran, not
-    # just whether the feature flag is on (bge-m3 can still fall
-    # back to the hashed scheme mid-call if Ollama drops out).
-    threshold = BGE_M3_PATTERN_THRESHOLD if used_bge_m3 else SCAM_PATTERN_THRESHOLD
+    # The live path is a 3-tier chain: bge-m3 (Modal, primary, genuinely
+    # Khmer-capable) -> Gemini's own embedding API (secondary fallback,
+    # 2026-09-21) -> the fast hashed scheme, all baked into
+    # nearest_scam_pattern_live itself - see scam_patterns.py.
+    # _grounded_fallback deliberately keeps calling the plain synchronous
+    # nearest_scam_pattern() instead: that path only runs once Gemini has
+    # ALREADY failed, and it exists specifically to answer fast without
+    # depending on anything else that could also be down - adding a
+    # possible embedding-timeout wait (bge-m3 OR the Gemini fallback) to
+    # an "everything's already on fire" fallback would work against its
+    # own purpose.
+    pattern_hits, pattern_source = await nearest_scam_pattern_live(text, k=1)
+    # Each tier runs measurably hotter than the last (real benign text
+    # can score ~0.59 on bge-m3) - reusing one tier's threshold for
+    # another would false-positive on ordinary messages, so the
+    # threshold has to match whichever tier actually answered, not
+    # just which flag/key is configured (a call can fall through
+    # tiers mid-call if the preferred one drops out).
+    threshold = {
+        "bge_m3": BGE_M3_PATTERN_THRESHOLD,
+        "gemini": GEMINI_EMBED_PATTERN_THRESHOLD,
+    }.get(pattern_source, SCAM_PATTERN_THRESHOLD)
     if pattern_hits and pattern_hits[0][0] >= threshold:
         return pattern_hits[0][0], pattern_hits[0][3]
     return None

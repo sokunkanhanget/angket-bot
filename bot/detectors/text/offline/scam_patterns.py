@@ -181,16 +181,18 @@ def nearest_scam_pattern(text: str, k: int = 1) -> list[tuple[float, str, str, s
 
 _bge_m3_index: list[tuple[list[float], str, str]] | None = None
 _bge_m3_index_lock = asyncio.Lock()
+_gemini_index: list[tuple[list[float], str, str]] | None = None
+_gemini_index_lock = asyncio.Lock()
 
 
 async def _ensure_bge_m3_index() -> bool:
     """Builds the bge-m3 embedding index for the same SCAM_MESSAGE_PATTERNS
     corpus the hashed _LOCAL_INDEX already covers, once, lazily (unlike
-    the hashed index, this needs real Ollama round trips, so it's NOT
-    built at import time). Returns True once the index is ready to use,
-    False if it couldn't be built (Ollama unreachable) - a lock guards
-    against two concurrent callers both trying to build it at once on
-    the very first call."""
+    the hashed index, this needs real network round trips to Modal, so
+    it's NOT built at import time). Returns True once the index is ready
+    to use, False if it couldn't be built (Modal unreachable) - a lock
+    guards against two concurrent callers both trying to build it at
+    once on the very first call."""
     global _bge_m3_index
     if _bge_m3_index is not None:
         return True
@@ -204,8 +206,8 @@ async def _ensure_bge_m3_index() -> bool:
         rows = _seed_rows()
         embeddings = await asyncio.gather(*(embed_bge_m3(text) for _, _, text, _ in rows))
         if any(e is None for e in embeddings):
-            logger.warning("[bge-m3] index build failed (Ollama unreachable?) - "
-                            "falling back to the hashed scheme")
+            logger.warning("[bge-m3] index build failed (Modal unreachable?) - "
+                            "trying the Gemini fallback tier")
             return False
 
         _bge_m3_index = [(emb, key, category) for emb, (_, key, _, category) in zip(embeddings, rows)]
@@ -213,21 +215,58 @@ async def _ensure_bge_m3_index() -> bool:
         return True
 
 
-async def nearest_scam_pattern_live(text: str, k: int = 1) -> tuple[list[tuple[float, str, str, str]], bool]:
-    """The real entry point for context_engine.py - prefers bge-m3 when
-    enabled and reachable (genuinely Khmer-capable, unlike the hashed
-    scheme - see bot/detectors/text/online/bge_m3_embed.py's module
-    docstring for the measured gap), transparently falls back to the
-    existing synchronous nearest_scam_pattern() otherwise.
+async def _ensure_gemini_index() -> bool:
+    """Second-tier fallback index, mirroring _ensure_bge_m3_index() exactly
+    but built from Gemini's own embedding API (bot/detectors/text/online/
+    gemini_embed.py) - only ever attempted once bge-m3 itself couldn't
+    answer this call (see nearest_scam_pattern_live). Same lazy,
+    lock-guarded, build-once shape; returns False (falls through to the
+    hashed scheme) if GEMINI_API_KEY_EMBEDDING isn't set or the API call
+    fails for any reason - embed_gemini() already degrades to None
+    either way, this just propagates that."""
+    global _gemini_index
+    if _gemini_index is not None:
+        return True
 
-    Returns (hits, used_bge_m3) - the second value matters because
-    bge-m3 and the hashed scheme have DIFFERENT natural similarity
-    scales (bge-m3 runs measurably hotter - confirmed live, genuinely
-    benign text can score 0.59 - so the caller must compare against
-    BGE_M3_PATTERN_THRESHOLD, not SCAM_PATTERN_THRESHOLD, when this is
-    True). Found the hard way: an early version of this wiring reused
-    the hashed scheme's threshold for both paths, which would have
-    false-positived on ordinary benign messages once bge-m3 was live."""
+    from bot.detectors.text.online.gemini_embed import embed_gemini
+
+    async with _gemini_index_lock:
+        if _gemini_index is not None:
+            return True
+
+        rows = _seed_rows()
+        embeddings = await asyncio.gather(*(embed_gemini(text) for _, _, text, _ in rows))
+        if any(e is None for e in embeddings):
+            logger.warning("[gemini-embed] index build failed (no key, or API "
+                            "unreachable) - falling back to the hashed scheme")
+            return False
+
+        _gemini_index = [(emb, key, category) for emb, (_, key, _, category) in zip(embeddings, rows)]
+        logger.info("[gemini-embed] index built: %d scam-pattern examples", len(_gemini_index))
+        return True
+
+
+async def nearest_scam_pattern_live(text: str, k: int = 1) -> tuple[list[tuple[float, str, str, str]], str]:
+    """The real entry point for context_engine.py - a 3-tier chain, each
+    tier only attempted once the one before it couldn't answer:
+    bge-m3 (Modal, primary, better-validated) -> Gemini's own embedding
+    API (secondary fallback, added 2026-09-21) -> the existing
+    synchronous nearest_scam_pattern() (hashed scheme, final fallback,
+    always available). Both live tiers are genuinely Khmer-capable,
+    unlike the hashed scheme - see bge_m3_embed.py's module docstring
+    for the measured gap.
+
+    Returns (hits, source) where source is "bge_m3", "gemini", or
+    "hashed" - the three tiers have DIFFERENT natural similarity scales
+    (bge-m3 and Gemini both run measurably hotter than the hashed
+    scheme's - confirmed live for bge-m3, genuinely benign text can
+    score 0.59), so the caller must compare against the matching
+    threshold (BGE_M3_PATTERN_THRESHOLD / GEMINI_EMBED_PATTERN_THRESHOLD
+    / SCAM_PATTERN_THRESHOLD respectively) - never reuse one tier's
+    threshold for another. Found the hard way once already: an early
+    version of this wiring reused the hashed scheme's threshold for
+    bge-m3 too, which would have false-positived on ordinary benign
+    messages once bge-m3 went live."""
     from bot.config.config import USE_BGE_M3_EMBEDDINGS
     from bot.detectors.text.online.bge_m3_embed import cosine_similarity, embed_bge_m3
 
@@ -239,7 +278,20 @@ async def nearest_scam_pattern_live(text: str, k: int = 1) -> tuple[list[tuple[f
                 for emb, key, category in _bge_m3_index
             ]
             scored.sort(key=lambda row: row[0], reverse=True)
-            return scored[:k], True
-        logger.warning("[bge-m3] query embedding failed - falling back to the hashed scheme for this call")
+            return scored[:k], "bge_m3"
+        logger.warning("[bge-m3] query embedding failed - trying the Gemini fallback tier for this call")
 
-    return nearest_scam_pattern(text, k), False
+    from bot.detectors.text.online.gemini_embed import embed_gemini
+
+    if await _ensure_gemini_index():
+        query_embedding = await embed_gemini(text)
+        if query_embedding is not None:
+            scored = [
+                (cosine_similarity(query_embedding, emb), "scam_pattern", key, category)
+                for emb, key, category in _gemini_index
+            ]
+            scored.sort(key=lambda row: row[0], reverse=True)
+            return scored[:k], "gemini"
+        logger.warning("[gemini-embed] query embedding failed - falling back to the hashed scheme for this call")
+
+    return nearest_scam_pattern(text, k), "hashed"

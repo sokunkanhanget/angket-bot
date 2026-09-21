@@ -80,6 +80,68 @@ async def test_other_api_error_is_checked_false_not_confirmed_not_found():
 
 
 @pytest.mark.asyncio
+async def test_quota_error_retries_with_backup_key_and_succeeds(monkeypatch):
+    # 2026-09-21: a quota-exhausted primary key must retry once against
+    # VIRUSTOTAL_API_KEY_BACKUP before degrading - the second vt.Client
+    # call must actually be made with the backup key, and its real
+    # result used, not just the primary's degraded checked=False.
+    monkeypatch.setattr("bot.detectors.file.online.virustotal.VIRUSTOTAL_API_KEY_BACKUP", "backup-key")
+    monkeypatch.setattr("bot.detectors.file.online.virustotal.VIRUSTOTAL_API_KEY", "primary-key")
+
+    file_obj = MagicMock()
+    file_obj.last_analysis_stats = {"malicious": 0, "suspicious": 0, "harmless": 70, "undetected": 5}
+    file_obj.last_analysis_results = {}
+    quota_error = vt.APIError("QuotaExceededError", "quota exceeded")
+
+    seen_keys = []
+
+    def client_factory(api_key):
+        seen_keys.append(api_key)
+        if api_key == "primary-key":
+            return _fake_client(raise_error=quota_error)
+        return _fake_client(file_obj=file_obj)
+
+    with patch("bot.detectors.file.online.virustotal.vt.Client", side_effect=client_factory):
+        result = await scan_vt_hash("i" * 64)
+
+    assert seen_keys == ["primary-key", "backup-key"]
+    assert result["checked"] is True
+    assert result["found"] is True
+
+
+@pytest.mark.asyncio
+async def test_quota_error_with_no_backup_key_configured_degrades_immediately(monkeypatch):
+    # No backup key set (the current real .env state until one is
+    # added) - must behave exactly as before this change: one attempt,
+    # immediate degrade, no retry loop.
+    monkeypatch.setattr("bot.detectors.file.online.virustotal.VIRUSTOTAL_API_KEY_BACKUP", None)
+    quota_error = vt.APIError("QuotaExceededError", "quota exceeded")
+    client_factory = MagicMock(return_value=_fake_client(raise_error=quota_error))
+
+    with patch("bot.detectors.file.online.virustotal.vt.Client", client_factory):
+        result = await scan_vt_hash("j" * 64)
+
+    assert client_factory.call_count == 1
+    assert result["checked"] is False
+
+
+@pytest.mark.asyncio
+async def test_non_quota_error_never_tries_the_backup_key(monkeypatch):
+    # A real NotFoundError (or any other non-quota APIError) means a
+    # different key wouldn't change the answer - the backup key must
+    # never be tried for these, even when configured.
+    monkeypatch.setattr("bot.detectors.file.online.virustotal.VIRUSTOTAL_API_KEY_BACKUP", "backup-key")
+    other_error = vt.APIError("SomeOtherError", "something else broke")
+    client_factory = MagicMock(return_value=_fake_client(raise_error=other_error))
+
+    with patch("bot.detectors.file.online.virustotal.vt.Client", client_factory):
+        result = await scan_vt_hash("k" * 64)
+
+    assert client_factory.call_count == 1
+    assert result["checked"] is False
+
+
+@pytest.mark.asyncio
 async def test_raw_connection_failure_is_checked_false_not_an_uncaught_crash():
     # Real bug this fixes: a connection-level failure (network down, DNS,
     # timeout - anything below vt.APIError) used to propagate straight

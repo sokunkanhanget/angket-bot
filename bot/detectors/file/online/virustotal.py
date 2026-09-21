@@ -22,7 +22,7 @@ import time
 
 import vt
 
-from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
+from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP
 
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -77,6 +77,43 @@ def _cache_put(file_hash: str, result: dict) -> None:
         conn.close()
 
 
+async def _fetch_from_vt(file_hash: str, api_key: str) -> dict:
+    """One real lookup attempt against a specific key. Returns the
+    "malicious found" shape on success; raises vt.APIError (NotFoundError
+    included) or a raw connection exception straight through - scan_vt_hash
+    decides what each of those means (a real "not found" answer, a
+    quota error worth retrying on the backup key, or any other failure)."""
+    async with vt.Client(api_key) as client:
+        file_obj = await client.get_object_async(f"/files/{file_hash}")
+        stats = file_obj.last_analysis_stats
+        results = getattr(file_obj, "last_analysis_results", {})
+
+        def get_engine_status(engine_name: str) -> str:
+            engine_data = results.get(engine_name, {})
+            category = engine_data.get("category", "undetected")
+            result = engine_data.get("result")
+            if category == "malicious":
+                return f"Detected ({result})"
+            if category == "suspicious":
+                return f"Suspicious ({result})"
+            return "Clean"
+
+        return {
+            "checked": True,
+            "found": True,
+            "malicious": stats.get("malicious", 0),
+            "suspicious": stats.get("suspicious", 0),
+            "harmless": stats.get("harmless", 0),
+            "undetected": stats.get("undetected", 0),
+            "total": sum(stats.values()),
+            "top_engines": {
+                "Microsoft": get_engine_status("Microsoft"),
+                "Kaspersky": get_engine_status("Kaspersky"),
+                "BitDefender": get_engine_status("BitDefender"),
+            },
+        }
+
+
 async def scan_vt_hash(file_hash: str) -> dict:
     """`checked` is the important field callers need that didn't exist
     before: `found: False` used to mean ONE thing - "VirusTotal has never
@@ -95,50 +132,39 @@ async def scan_vt_hash(file_hash: str) -> dict:
     real, cacheable answer - `checked=False` means VT itself couldn't be
     reached, which is never cached (same "don't cache a non-answer"
     policy threat_intel.py's URL cache uses for its own error/429 path).
+
+    VIRUSTOTAL_API_KEY_BACKUP (2026-09-21): a one-shot retry against a
+    second key, but ONLY on a quota-exhaustion error specifically - any
+    other APIError (a real NotFoundError, or some other real API
+    problem) means retrying with a different key wouldn't change the
+    outcome, so it isn't attempted. Mirrors gemini_retry.py's own
+    "retry once, quota-errors only" shape for the primary/backup key
+    pattern, adapted to the vt SDK's exception shape instead of a raw
+    HTTP status code.
     """
     cached = cached_result(file_hash)
     if cached is not None:
         return cached
 
-    try:
-        async with vt.Client(VIRUSTOTAL_API_KEY) as client:
-            file_obj = await client.get_object_async(f"/files/{file_hash}")
-            stats = file_obj.last_analysis_stats
-            results = getattr(file_obj, "last_analysis_results", {})
-
-            def get_engine_status(engine_name: str) -> str:
-                engine_data = results.get(engine_name, {})
-                category = engine_data.get("category", "undetected")
-                result = engine_data.get("result")
-                if category == "malicious":
-                    return f"Detected ({result})"
-                if category == "suspicious":
-                    return f"Suspicious ({result})"
-                return "Clean"
-
-            result = {
-                "checked": True,
-                "found": True,
-                "malicious": stats.get("malicious", 0),
-                "suspicious": stats.get("suspicious", 0),
-                "harmless": stats.get("harmless", 0),
-                "undetected": stats.get("undetected", 0),
-                "total": sum(stats.values()),
-                "top_engines": {
-                    "Microsoft": get_engine_status("Microsoft"),
-                    "Kaspersky": get_engine_status("Kaspersky"),
-                    "BitDefender": get_engine_status("BitDefender"),
-                },
-            }
+    last_error: Exception | None = None
+    for api_key in filter(None, (VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP)):
+        try:
+            result = await _fetch_from_vt(file_hash, api_key)
             _cache_put(file_hash, result)
             return result
-    except vt.APIError as error:
-        if error.code == "NotFoundError":
-            result = {"checked": True, "found": False}
-            _cache_put(file_hash, result)
-            return result
-        return {"checked": False, "found": False, "error": str(error)}
-    except Exception as error:  # noqa: BLE001 - a connection-level failure (network down,
-        # DNS, timeout - anything below the vt.APIError layer) must still
-        # come back as "VT couldn't be checked", not crash the caller.
-        return {"checked": False, "found": False, "error": str(error)}
+        except vt.APIError as error:
+            if error.code == "NotFoundError":
+                result = {"checked": True, "found": False}
+                _cache_put(file_hash, result)
+                return result
+            last_error = error
+            if error.code != "QuotaExceededError":
+                break  # not a quota error - a different key won't help, don't waste the retry
+        except Exception as error:  # noqa: BLE001 - a connection-level failure (network down,
+            # DNS, timeout - anything below the vt.APIError layer) must still
+            # come back as "VT couldn't be checked", not crash the caller.
+            # Not quota-shaped either, so don't retry with the backup key.
+            last_error = error
+            break
+
+    return {"checked": False, "found": False, "error": str(last_error)}

@@ -76,7 +76,7 @@ from bot.detectors.url.offline.lexical import (
     has_malformed_protocol,
     registered_domain,
 )
-from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY
+from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP
 from bot.storage import health_alerts
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
@@ -533,6 +533,7 @@ async def analyze_url(
             vt_stats = await threat_intel.lookup(
                 vt_target, VIRUSTOTAL_API_KEY,
                 live=(score > 0),
+                backup_api_key=VIRUSTOTAL_API_KEY_BACKUP,
             )
             if vt_stats:
                 vt_scored = threat_intel.score(vt_stats)

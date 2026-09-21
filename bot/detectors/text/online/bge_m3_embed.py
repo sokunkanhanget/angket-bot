@@ -1,11 +1,19 @@
 """
 bot/detectors/text/online/bge_m3_embed.py
 =============================================
-Real bge-m3 embeddings via a local Ollama instance - PREPARED, not
-wired into the live query path yet (see USE_BGE_M3_EMBEDDINGS in
-bot/config/config.py, default off). Production hosting (Daun Penh Data Center
-or equivalent always-on Ollama) hasn't been arranged - this points at
-a local dev Ollama by default, which is not a production dependency.
+Real bge-m3 embeddings - live in production as of 2026-09-21, wired into
+bot/detectors/text/offline/scam_patterns.py's nearest_scam_pattern_live()
+(gated by USE_BGE_M3_EMBEDDINGS in bot/config/config.py). Hosting was the
+real blocker for a long time (no free-tier VM with enough RAM could be
+provisioned - Oracle/GCP signup both hit real, unresolved account-
+verification walls) - resolved by hosting on Modal (serverless, free
+tier, no card required) instead of a local/self-managed Ollama instance.
+See next-gen-test/concepts/modal-bge-m3/modal_bge_m3.py for the actual
+deployment - it mirrors Ollama's own POST /api/embeddings request/
+response shape exactly, so this file needed zero code changes beyond
+OLLAMA_URL pointing at the Modal deployment's URL instead of a local
+Ollama instance, and TIMEOUT_SECONDS raised (see below) to tolerate real
+Modal cold-start latency.
 
 Why this exists: the current offline scam-pattern matching
 (bot/detectors/text/offline/scam_patterns.py) uses hashed sparse
@@ -16,18 +24,10 @@ until a partial fix). bge-m3 is a real multilingual embedding model
 that handles Khmer natively; a sandbox comparison
 (next-gen-test/concepts/bge-m3-embedding/) validated it across 54
 test cases with a stable 0.049 similarity gap between scam and
-benign messages, including hard Khmer-only and money+urgency cases.
-
-What's genuinely done here: a real, tested function that calls a real
-Ollama instance and gets a real embedding back, plus real cosine
-similarity math. What's NOT done: swapping scam_patterns.py's
-nearest_scam_pattern() over to use this live - that function is
-currently synchronous and called synchronously from several places
-(context_engine.py's analyze_unified/_grounded_fallback); making it
-call this async function would mean making nearest_scam_pattern
-itself async and updating every call site, a real activation step
-appropriately deferred until production hosting actually exists, not
-a "preparation" change.
+benign messages, including hard Khmer-only and money+urgency cases -
+that validation, and BGE_M3_PATTERN_THRESHOLD's calibration, both stay
+valid after this hosting change since the model itself is unchanged,
+only where it runs.
 """
 
 from __future__ import annotations
@@ -39,7 +39,12 @@ import httpx
 from bot.config.config import OLLAMA_URL
 
 EMBED_MODEL = "bge-m3"
-TIMEOUT_SECONDS = 10.0
+# 30s, not 10s (2026-09-21): now hosted on Modal (see next-gen-test/
+# concepts/modal-bge-m3/), not local Ollama - a cold-starting container
+# loading bge-m3 for the first time can genuinely take longer than a
+# local-loopback call ever would, especially under _ensure_bge_m3_index's
+# concurrent asyncio.gather burst of ~20 simultaneous calls on first use.
+TIMEOUT_SECONDS = 30.0
 
 
 async def embed_bge_m3(text: str) -> list[float] | None:

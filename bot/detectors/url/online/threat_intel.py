@@ -125,13 +125,50 @@ def _url_identifier(url: str) -> str:
     return base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
 
 
-async def lookup(url: str, api_key: str | None, live: bool = True) -> dict | None:
+async def _fetch_stats(url: str, url_id: str, api_key: str) -> httpx.Response:
+    """One full attempt (GET, then submit+settle+re-GET on a fresh 404)
+    against a specific key. Raises on any connection-level failure -
+    lookup() decides what that means. Split out of lookup() so a 429 can
+    retry this WHOLE sequence against a different key, not just the
+    final GET."""
+    async with httpx.AsyncClient(timeout=LOOKUP_TIMEOUT) as client:
+        response = await client.get(
+            f"{API_BASE}/urls/{url_id}",
+            headers={"x-apikey": api_key},
+        )
+
+        # 404 = VT has never seen this URL. Submit it for analysis
+        # (this also spends quota, so only on the miss path), give
+        # the engines a few seconds, then fetch stats once.
+        if response.status_code == 404:
+            sub = await client.post(
+                f"{API_BASE}/urls",
+                data={"url": url},
+                headers={"x-apikey": api_key},
+            )
+            if sub.status_code == 200:
+                await asyncio.sleep(SUBMIT_SETTLE_SECONDS)
+                response = await client.get(
+                    f"{API_BASE}/urls/{url_id}",
+                    headers={"x-apikey": api_key},
+                )
+        return response
+
+
+async def lookup(url: str, api_key: str | None, live: bool = True,
+                  backup_api_key: str | None = None) -> dict | None:
     """Stats dict {malicious, suspicious, total} for a URL, or None.
 
     Order of operations:
       1. fresh cache hit?          -> return it (costs nothing)
       2. live allowed + API key?   -> query VT, cache, return
       3. otherwise                 -> None (no opinion)
+
+    backup_api_key (2026-09-21): on a 429 (quota exhausted) with a backup
+    key configured, retries the WHOLE fetch once against it before giving
+    up - the admin alert only fires once every available key has hit 429,
+    not on the primary's 429 alone, so a successful backup retry never
+    trips a false "quota exhausted" alert.
     """
     if not api_key or not url:
         return None
@@ -148,41 +185,26 @@ async def lookup(url: str, api_key: str | None, live: bool = True) -> dict | Non
     if not live:
         return None
 
-    try:
-        async with httpx.AsyncClient(timeout=LOOKUP_TIMEOUT) as client:
-            response = await client.get(
-                f"{API_BASE}/urls/{url_id}",
-                headers={"x-apikey": api_key},
-            )
-
-            # 404 = VT has never seen this URL. Submit it for analysis
-            # (this also spends quota, so only on the miss path), give
-            # the engines a few seconds, then fetch stats once.
-            if response.status_code == 404:
-                sub = await client.post(
-                    f"{API_BASE}/urls",
-                    data={"url": url},
-                    headers={"x-apikey": api_key},
-                )
-                if sub.status_code == 200:
-                    await asyncio.sleep(SUBMIT_SETTLE_SECONDS)
-                    response = await client.get(
-                        f"{API_BASE}/urls/{url_id}",
-                        headers={"x-apikey": api_key},
-                    )
-    except Exception as error:                 # noqa: BLE001 - network is best-effort
-        health_alerts.record_failure("VirusTotal", str(error))
-        await health_alerts.maybe_alert("VirusTotal", str(error))
-        return None
+    response = None
+    for key in filter(None, (api_key, backup_api_key)):
+        try:
+            response = await _fetch_stats(url, url_id, key)
+        except Exception as error:                 # noqa: BLE001 - network is best-effort
+            health_alerts.record_failure("VirusTotal", str(error))
+            await health_alerts.maybe_alert("VirusTotal", str(error))
+            return None
+        if response.status_code != 429:
+            break
 
     if response.status_code != 200:
-        # 404 = VT never saw this URL; 401 = bad key; 429 = rate limit.
-        # All mean "no data right now"; do NOT cache misses so a retry
-        # can happen after the rate-limit window. 429 specifically is
-        # worth tracking as a real failure pattern (not 404, which is
-        # just "unknown URL", a routine/expected result) - a run of 429s
-        # means the quota is actually exhausted, exactly the "nobody
-        # notices for days" scenario this alerting exists to catch.
+        # 404 = VT never saw this URL; 401 = bad key; 429 = rate limit
+        # on every available key. All mean "no data right now"; do NOT
+        # cache misses so a retry can happen after the rate-limit
+        # window. 429 specifically is worth tracking as a real failure
+        # pattern (not 404, which is just "unknown URL", a routine/
+        # expected result) - a run of 429s means the quota is actually
+        # exhausted, exactly the "nobody notices for days" scenario
+        # this alerting exists to catch.
         if response.status_code == 429:
             health_alerts.record_failure("VirusTotal", "rate limited (429) - quota likely exhausted")
             await health_alerts.maybe_alert("VirusTotal", "rate limited (429) - quota likely exhausted")

@@ -8,6 +8,7 @@ fakes so the merged-verdict logic can be verified deterministically.
 
 import asyncio
 import datetime
+from unittest.mock import AsyncMock
 
 import pytest
 from telegram import Chat, Message, MessageEntity
@@ -632,7 +633,7 @@ def test_analyze_url_does_not_mark_evidence_degraded_when_verdict_is_confident(s
     async def failing_nearest(text, k=4, kinds=None):
         raise ConnectionError("Supabase pool exhausted")
 
-    async def fake_lookup(url, api_key, live=True):
+    async def fake_lookup(url, api_key, live=True, **kwargs):
         return {"malicious": 5, "suspicious": 0, "harmless": 10, "total": 15}
 
     _stub_out_network(monkeypatch, tls_valid=True)
@@ -996,7 +997,7 @@ def test_analyze_url_skips_live_vt_lookup_for_a_lexically_clean_url(seeded_vecto
     # docstring claims, not just "VT gets skipped for official brands."
     seen_live = {}
 
-    async def spy_lookup(url, key, live=True):
+    async def spy_lookup(url, key, live=True, **kwargs):
         seen_live["value"] = live
         return None
 
@@ -1738,9 +1739,98 @@ def test_vt_lookup_prefers_cache_and_needs_key(tmp_path, monkeypatch):
     assert asyncio.run(threat_intel.lookup("x", api_key=None)) is None
 
 
+def test_lookup_retries_with_backup_key_on_429_and_succeeds(tmp_path, monkeypatch):
+    # 2026-09-21: a 429 (quota exhausted) on the primary key must retry
+    # the WHOLE fetch once against backup_api_key before giving up - and
+    # never double-alert once the backup succeeds.
+    db = str(tmp_path / "vt3.db")
+    monkeypatch.setattr(threat_intel, "SCAN_LOG_DB", db)
+
+    class _FakeResponse:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    seen_keys = []
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            key = headers["x-apikey"]
+            seen_keys.append(key)
+            if key == "primary-key":
+                return _FakeResponse(429)
+            return _FakeResponse(200, {"data": {"attributes": {"last_analysis_stats": {
+                "malicious": 3, "suspicious": 0, "harmless": 90, "undetected": 1, "timeout": 0,
+            }}}})
+
+        async def post(self, url, data=None, headers=None):
+            raise AssertionError("must not submit a new URL on a 429 - only on a fresh 404")
+
+    monkeypatch.setattr(threat_intel.httpx, "AsyncClient", _FakeAsyncClient)
+    alert_calls = []
+    monkeypatch.setattr(threat_intel.health_alerts, "maybe_alert",
+                         AsyncMock(side_effect=lambda *a: alert_calls.append(a)))
+
+    stats = asyncio.run(threat_intel.lookup(
+        "http://example.com/scam", api_key="primary-key", live=True, backup_api_key="backup-key",
+    ))
+
+    assert seen_keys == ["primary-key", "backup-key"]
+    assert stats["malicious"] == 3
+    assert alert_calls == []  # backup succeeded - never a real "quota exhausted" event
+
+
+def test_lookup_429_with_no_backup_key_alerts_and_degrades_as_before(tmp_path, monkeypatch):
+    # No backup key configured - must behave exactly as before this
+    # change: one attempt, immediate None, one real alert.
+    db = str(tmp_path / "vt4.db")
+    monkeypatch.setattr(threat_intel, "SCAN_LOG_DB", db)
+
+    class _FakeResponse:
+        status_code = 429
+
+        def json(self):
+            return {}
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(threat_intel.httpx, "AsyncClient", _FakeAsyncClient)
+    alert_calls = []
+    monkeypatch.setattr(threat_intel.health_alerts, "maybe_alert",
+                         AsyncMock(side_effect=lambda *a: alert_calls.append(a)))
+
+    stats = asyncio.run(threat_intel.lookup("http://example.com/scam", api_key="primary-key", live=True))
+
+    assert stats is None
+    assert len(alert_calls) == 1
+
+
 def test_analyze_url_uses_vt_verdict(seeded_vectors, monkeypatch):
     """VT flagging a URL must add points + reason in the merged verdict."""
-    async def fake_lookup(url, key, live=True):
+    async def fake_lookup(url, key, live=True, **kwargs):
         return {"malicious": 10, "suspicious": 1, "total": 94}
 
     async def clean_trace(url):
@@ -1770,7 +1860,7 @@ def test_vt_skipped_for_official_brands(seeded_vectors, monkeypatch):
     """Quota guard: official brand domains must never trigger a lookup."""
     called = {"n": 0}
 
-    async def spy_lookup(url, key, live=True):
+    async def spy_lookup(url, key, live=True, **kwargs):
         called["n"] += 1
         return None
 

@@ -160,6 +160,46 @@ def _subscription_reset_conn(isolated_scan_log_db):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_bge_m3_network_calls(monkeypatch):
+    """CONFIRMED REAL BUG, not a hypothetical (2026-09-21): the real .env
+    now has USE_BGE_M3_EMBEDDINGS=true (bge-m3 is genuinely live in
+    production, hosted on Modal - see bge_m3_embed.py's module
+    docstring). scam_patterns.py's nearest_scam_pattern_live() does a
+    FRESH `from bot.config.config import USE_BGE_M3_EMBEDDINGS` inside
+    its own function body on every call (not a one-time module-level
+    bind), so it reads the real .env value live, even inside "unit"
+    tests. test_context_engine.py calls analyze_unified() directly
+    (multiple tests) with nothing mocking the pattern-match path - full
+    suite runtime measurably jumped (~65s -> ~108s) once the real flag
+    flipped on, confirming those tests started making real network calls
+    to the Modal endpoint. Same bug class as _no_real_admin_alerts above:
+    a global env-derived flag silently causing real side effects inside
+    tests that never intended to touch it. Patches the SOURCE module's
+    attribute (not scam_patterns.py's own binding, since there isn't
+    one - it re-imports fresh every call), so this works regardless of
+    which module ends up reading it.
+
+    Also neutralizes the Gemini-embedding SECOND-TIER fallback added the
+    same day (gemini_embed.py) - nearest_scam_pattern_live() tries that
+    tier unconditionally whenever bge-m3's tier doesn't answer (flag off
+    counts as "didn't answer" too), so forcing USE_BGE_M3_EMBEDDINGS off
+    alone isn't enough to keep tests offline anymore; without this,
+    disabling bge-m3 for tests would just redirect the same real-network-
+    call bug onto Gemini's embedding API instead. Different fix shape
+    though: gemini_embed.py builds its client ONCE at module import time
+    (`_client = build_client(GEMINI_API_KEY_EMBEDDING)`, not a fresh
+    per-call import like USE_BGE_M3_EMBEDDINGS above), so patching the
+    config attribute after import wouldn't touch the already-built
+    client - this patches gemini_embed's own already-bound `_client`
+    directly, which embed_gemini()'s own `if _client is None: return
+    None` early-return already treats as "unavailable"."""
+    from bot.config import config
+    from bot.detectors.text.online import gemini_embed
+    monkeypatch.setattr(config, "USE_BGE_M3_EMBEDDINGS", False)
+    monkeypatch.setattr(gemini_embed, "_client", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_admin_alerts(monkeypatch):
     """CONFIRMED REAL BUG, not a hypothetical (2026-09-11): several tests
     (test_link_checker.py's Supabase-outage tests, e.g.

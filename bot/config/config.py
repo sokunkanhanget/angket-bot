@@ -7,11 +7,23 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
+# Optional, same shape as GEMINI_API_KEY_BACKUP below - a one-shot retry
+# when the primary key hits a quota-exhaustion error specifically, not
+# any other VT failure. See bot/detectors/file/online/virustotal.py's
+# scan_vt_hash and bot/detectors/url/online/threat_intel.py's lookup.
+VIRUSTOTAL_API_KEY_BACKUP = os.getenv("VIRUSTOTAL_API_KEY_BACKUP")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # Optional, like GEMINI_API_KEY itself - see bot/detectors/text/online/
 # gemini_retry.py. Only ever used as a one-shot retry when the primary
 # key hits a 429 (quota/rate-limit) specifically, not on other failures.
 GEMINI_API_KEY_BACKUP = os.getenv("GEMINI_API_KEY_BACKUP")
+# Dedicated key for bge-m3's second-tier fallback embedding calls (see
+# bot/detectors/text/online/gemini_embed.py) - separate from GEMINI_API_KEY
+# above (the main reasoning calls) so embedding call volume/rate limits
+# never compete with the primary Gemini quota this project already has
+# recurring pain with. Already set in the real .env, unused until this
+# fallback tier was wired in 2026-09-21.
+GEMINI_API_KEY_EMBEDDING = os.getenv("GEMINI_API_KEY_EMBEDDING")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 SCAN_LOG_DB = os.getenv("SCAN_LOG_DB", "scan_logs.db")
 
@@ -40,11 +52,13 @@ SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL")
 # pattern (e.g. VIRUSTOTAL_API_KEY/GEMINI_API_KEY being optional).
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-# bge-m3 (Khmer-capable scam-pattern embeddings) - prepared, NOT wired
-# into the live query path yet. Production hosting (Daun Penh Data
-# Center or equivalent always-on Ollama) hasn't been arranged; this
-# defaults to a local dev endpoint and stays OFF unless explicitly
-# enabled. See bot/detectors/text/online/bge_m3_embed.py.
+# bge-m3 (Khmer-capable scam-pattern embeddings) - live as of 2026-09-21,
+# hosted on Modal (free tier, no card - see next-gen-test/concepts/
+# modal-bge-m3/) instead of a local/self-managed Ollama instance, after
+# Oracle/GCP free-tier hosting both hit real account-verification walls.
+# The real .env sets OLLAMA_URL to the Modal deployment's URL; this
+# localhost default is only ever hit for local dev against a real local
+# Ollama, not production. See bot/detectors/text/online/bge_m3_embed.py.
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 USE_BGE_M3_EMBEDDINGS = os.getenv("USE_BGE_M3_EMBEDDINGS", "false").lower() == "true"
 
@@ -72,6 +86,26 @@ USE_BGE_M3_EMBEDDINGS = os.getenv("USE_BGE_M3_EMBEDDINGS", "false").lower() == "
 # Khmer alone separates more cleanly than the mixed set: scam
 # 0.8592-0.9616 against benign 0.4578-0.6846.
 BGE_M3_PATTERN_THRESHOLD = float(os.getenv("BGE_M3_PATTERN_THRESHOLD", "0.74"))
+
+# Second-tier fallback (2026-09-21): Gemini's own embedding API, used
+# only when bge-m3 (Modal) itself is unreachable - see
+# bot/detectors/text/online/gemini_embed.py and scam_patterns.py's
+# nearest_scam_pattern_live(). "gemini-embedding-001" per Google's own
+# docs (Sept 2026): 3072-dim by default, 100+ languages, tops the MTEB
+# multilingual leaderboard - genuinely Khmer-capable like bge-m3, not
+# validated against THIS project's own scam corpus yet though.
+GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
+# PLACEHOLDER, NOT calibrated against real data yet - unlike
+# BGE_M3_PATTERN_THRESHOLD/SCAM_PATTERN_THRESHOLD above, which were both
+# measured against real scam/benign corpora before being trusted (see
+# their own comments). Gemini's embedding scale is its own thing, not
+# interchangeable with either existing threshold - this project already
+# learned that lesson twice (hashed scheme's 0.5 vs bge-m3's 0.74 needed
+# separate calibration). Acceptable to ship with a rough starting value
+# since this tier only ever fires when bge-m3/Modal itself is down (a
+# rare fallback, not the primary path) - but treat this number as
+# unproven until it's actually measured the same way the other two were.
+GEMINI_EMBED_PATTERN_THRESHOLD = float(os.getenv("GEMINI_EMBED_PATTERN_THRESHOLD", "0.7"))
 
 # Offline scam-message pattern similarity threshold (bot/context_engine/
 # context_engine.py's no-Gemini fallback) - calibrated live against real

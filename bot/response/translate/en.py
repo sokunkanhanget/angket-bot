@@ -82,6 +82,8 @@ TEXT = {
         "Choose a plan that fits your needs and continue checking suspicious links, messages, and files with fewer limitations.\n\n"
         "👉 <b>[ View Premium Plans ]</b>"
     ),
+    "website_prompt": "🌐 <b>Angket Website</b>\n\nTap below to visit our website.",
+    "website_button": "🌐 Open Website",
     "file_scan_failed": (
         "⚠️ We couldn't finish scanning this file right now. "
         "Please try again in a moment."

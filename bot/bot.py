@@ -33,7 +33,7 @@ from telegram.ext import (
 from bot.config.config import GEMINI_API_KEY, SUPABASE_DB_URL, TELEGRAM_BOT_TOKEN, VIRUSTOTAL_API_KEY
 from bot.detectors.url.online import network
 from bot.handlers.file_handler import handle_file
-from bot.handlers.text_handler import COMMAND_KEYS, handle_check, handle_command, handle_text, start
+from bot.handlers.text_handler import COMMAND_KEYS, handle_check, handle_command, handle_text, handle_website, start
 from bot.handlers.url_handler import (
     handle_business_message,
     on_business_connection,
@@ -153,6 +153,7 @@ async def set_bot_commands(application: Application) -> None:
             ("usage", "Check your daily scan"),
             ("policy", "View Angket's policy"),
             ("subscription", "View Premium plans"),
+            ("website", "Visit the Angket website"),
         )]
     )
     # Group scope is deliberately a SHORT, DIFFERENT list, not the default
@@ -233,6 +234,13 @@ def main():
     for command in COMMAND_KEYS:
         filt = ~filters.ChatType.CHANNEL if command in _GROUP_ALLOWED_COMMANDS else _PRIVATE_CHAT_ONLY
         app.add_handler(CommandHandler(command, handle_command, filters=filt))
+
+    # /website: single external-link button to the real Angket website,
+    # direct user spec (2026-09-21). Private-chat only, like /language/
+    # usage/subscription - not COMMAND_KEYS/handle_command's static-text
+    # dispatch, since its reply is an inline URL button, a different
+    # shape from every other menu item's plain translated text.
+    app.add_handler(CommandHandler("website", handle_website, filters=_PRIVATE_CHAT_ONLY))
 
     # /check: on-demand group/supergroup scan, researched and scoped
     # 2026-09-11 (memory: project_group_channel_plan.md), live-tested as

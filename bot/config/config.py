@@ -15,6 +15,12 @@ GEMINI_API_KEY_BACKUP = os.getenv("GEMINI_API_KEY_BACKUP")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 SCAN_LOG_DB = os.getenv("SCAN_LOG_DB", "scan_logs.db")
 
+# /website's link-out button target - the real Angket marketing/dashboard
+# site, direct user spec (2026-09-21). Env-overridable, not hardcoded
+# inline in text_handler.py, matching this file's own pattern for every
+# other externally-facing constant.
+WEBSITE_URL = os.getenv("WEBSITE_URL", "https://angket-website.vercel.app")
+
 # Supabase Postgres (pgvector) - backs bot/detectors/url/offline/vectors.py's
 # brand/phish/seen/scam_pattern similarity store only. Everything else
 # (scan logs, domain/cert/VT caches, MinHash page dedup) stays on SQLite.

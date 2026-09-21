@@ -2,10 +2,11 @@ import asyncio
 import logging
 from html import escape
 
-from telegram import Chat, ReplyKeyboardMarkup, Update
+from telegram import Chat, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
+from bot.config.config import WEBSITE_URL
 from bot.detectors.file.scanner import download_and_hash, scan_file
 from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
@@ -94,6 +95,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD),
     )
     context.user_data["lang"] = lang
+
+
+async def handle_website(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/website - private chat only (registered with _PRIVATE_CHAT_ONLY in
+    bot.py). Direct user spec (2026-09-21): a single external-link button
+    to the real Angket website (WEBSITE_URL, config.py). A plain URL
+    button (InlineKeyboardButton(url=...)), not a Telegram Mini App/
+    WebAppInfo - the site is a full marketing/dashboard page, not built
+    for Telegram's constrained webview, so it opens in the user's own
+    browser instead. Tapping a URL button never round-trips back to the
+    bot at all (unlike a callback-data button), so no callback handler
+    is needed for this."""
+    message = update.effective_message
+    if message is None:
+        return
+    lang = get_user_lang(context)
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "website_button"), url=WEBSITE_URL)]])
+    await message.reply_text(t(lang, "website_prompt"), parse_mode="HTML", reply_markup=keyboard)
 
 
 def _format_list(items: list, prefix: str, lang: str = DEFAULT_LANG) -> str:

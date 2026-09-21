@@ -14,6 +14,7 @@ from bot.handlers.text_handler import (
     handle_check,
     handle_command,
     handle_text,
+    handle_website,
 )
 from bot.storage import subscription
 
@@ -311,6 +312,24 @@ async def test_handle_command_dispatches_help_commands(command, expected):
 
     response = update.message.reply_text.call_args[0][0]
     assert expected in response
+
+
+@pytest.mark.asyncio
+async def test_handle_website_sends_an_external_link_button():
+    # Direct user spec, 2026-09-21: a plain URL button, not a Telegram
+    # Mini App/WebAppInfo - tapping it opens the real site in the user's
+    # own browser, no round trip back to the bot at all.
+    update = _private_update("/website")
+    context = _private_context()
+
+    await handle_website(update, context)
+
+    update.message.reply_text.assert_awaited_once()
+    _, kwargs = update.message.reply_text.await_args
+    keyboard = kwargs["reply_markup"]
+    button = keyboard.inline_keyboard[0][0]
+    assert button.url == "https://angket-website.vercel.app"
+    assert button.callback_data is None  # a URL button never round-trips to the bot
 
 
 @pytest.mark.asyncio

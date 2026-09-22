@@ -373,6 +373,14 @@ def _reset_gemini_circuit_breaker():
     gemini_retry._consecutive_failures = 0
     gemini_retry._circuit_open_until = 0.0
 
+    # Same gap, same fix, for gemini_embed.py's OWN independent breaker
+    # (2026-09-22) - separate module-level globals, separate state, same
+    # cross-test-leakage risk (test_scam_patterns_gemini.py and
+    # test_gemini_embed.py both exercise real failures against it).
+    import bot.detectors.text.online.gemini_embed as gemini_embed
+    gemini_embed._consecutive_failures = 0
+    gemini_embed._circuit_open_until = 0.0
+
 
 @pytest.fixture(autouse=True)
 def _reset_dns_resolution_cache():

@@ -64,3 +64,46 @@ def test_embed_gemini_returns_none_on_any_api_failure():
         result = asyncio.run(gemini_embed.embed_gemini("test"))
 
     assert result is None
+
+
+# --- Own circuit breaker (2026-09-22, found via networking review) -----
+# Separate state from gemini_retry.py's breaker (different key/quota) -
+# see tests/conftest.py's _reset_gemini_circuit_breaker fixture for why
+# this needs its own reset between tests too.
+
+def test_circuit_opens_after_threshold_consecutive_failures():
+    fake_client = _fake_client(raise_error=RuntimeError("outage"))
+
+    with patch.object(gemini_embed, "_client", fake_client):
+        for _ in range(gemini_embed._CIRCUIT_FAILURE_THRESHOLD):
+            asyncio.run(gemini_embed.embed_gemini("test"))
+
+    assert gemini_embed._circuit_is_open() is True
+
+
+def test_open_circuit_skips_the_real_call_entirely():
+    fake_client = _fake_client(raise_error=RuntimeError("outage"))
+
+    with patch.object(gemini_embed, "_client", fake_client):
+        for _ in range(gemini_embed._CIRCUIT_FAILURE_THRESHOLD):
+            asyncio.run(gemini_embed.embed_gemini("test"))
+        fake_client.aio.models.embed_content.reset_mock()
+
+        result = asyncio.run(gemini_embed.embed_gemini("test"))
+
+    assert result is None
+    fake_client.aio.models.embed_content.assert_not_awaited()
+
+
+def test_a_real_success_resets_the_breaker():
+    failing_client = _fake_client(raise_error=RuntimeError("outage"))
+    with patch.object(gemini_embed, "_client", failing_client):
+        for _ in range(gemini_embed._CIRCUIT_FAILURE_THRESHOLD - 1):
+            asyncio.run(gemini_embed.embed_gemini("test"))
+
+    succeeding_client = _fake_client(values=[0.1, 0.2])
+    with patch.object(gemini_embed, "_client", succeeding_client):
+        asyncio.run(gemini_embed.embed_gemini("test"))
+
+    assert gemini_embed._circuit_is_open() is False
+    assert gemini_embed._consecutive_failures == 0

@@ -77,13 +77,22 @@ def _cache_put(file_hash: str, result: dict) -> None:
         conn.close()
 
 
+FETCH_TIMEOUT_SECONDS = 15  # vt.Client's own default is 300s (unbounded in
+# practice) - every other outbound call in this codebase is explicitly
+# bounded (network 10s, RDAP/TLS 8s, Gemini 25s); this was the one real
+# gap (found via security/networking review, 2026-09-22). Without this,
+# a single hung VT connection could block one file scan for up to 5
+# minutes, or ~10 with the backup-key retry below - unacceptable under
+# real concurrent load.
+
+
 async def _fetch_from_vt(file_hash: str, api_key: str) -> dict:
     """One real lookup attempt against a specific key. Returns the
     "malicious found" shape on success; raises vt.APIError (NotFoundError
     included) or a raw connection exception straight through - scan_vt_hash
     decides what each of those means (a real "not found" answer, a
     quota error worth retrying on the backup key, or any other failure)."""
-    async with vt.Client(api_key) as client:
+    async with vt.Client(api_key, timeout=FETCH_TIMEOUT_SECONDS) as client:
         file_obj = await client.get_object_async(f"/files/{file_hash}")
         stats = file_obj.last_analysis_stats
         results = getattr(file_obj, "last_analysis_results", {})

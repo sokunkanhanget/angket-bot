@@ -95,7 +95,7 @@ async def test_quota_error_retries_with_backup_key_and_succeeds(monkeypatch):
 
     seen_keys = []
 
-    def client_factory(api_key):
+    def client_factory(api_key, **kwargs):
         seen_keys.append(api_key)
         if api_key == "primary-key":
             return _fake_client(raise_error=quota_error)

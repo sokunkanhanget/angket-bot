@@ -36,7 +36,7 @@ async def test_returns_primary_result_on_success():
     backup = AsyncMock()
     backup.aio.models.generate_content = AsyncMock(return_value="backup result")
 
-    result = await generate_content_with_backup(primary, backup, model="x", contents="y")
+    result = await generate_content_with_backup([primary], backup, model="x", contents="y")
 
     assert result == "primary result"
     backup.aio.models.generate_content.assert_not_awaited()
@@ -49,7 +49,7 @@ async def test_retries_with_backup_on_a_429_when_backup_is_configured():
     backup = AsyncMock()
     backup.aio.models.generate_content = AsyncMock(return_value="backup result")
 
-    result = await generate_content_with_backup(primary, backup, model="x", contents="y")
+    result = await generate_content_with_backup([primary], backup, model="x", contents="y")
 
     assert result == "backup result"
     # Same call shape/kwargs went to both - a caller shouldn't need to
@@ -59,12 +59,40 @@ async def test_retries_with_backup_on_a_429_when_backup_is_configured():
 
 
 @pytest.mark.asyncio
+async def test_round_robins_between_pool_clients():
+    # 2026-09-22 load-balancer: GEMINI_API_KEY and GEMINI_API_KEY_TEST
+    # are co-primaries now, not a single client - each call should
+    # alternate through the pool instead of always hitting the first one.
+    client_a = AsyncMock()
+    client_a.aio.models.generate_content = AsyncMock(return_value="from a")
+    client_b = AsyncMock()
+    client_b.aio.models.generate_content = AsyncMock(return_value="from b")
+    pool = [client_a, client_b]
+
+    first = await generate_content_with_backup(pool, None)
+    second = await generate_content_with_backup(pool, None)
+    third = await generate_content_with_backup(pool, None)
+
+    assert (first, second, third) == ("from a", "from b", "from a")
+
+
+@pytest.mark.asyncio
+async def test_an_empty_pool_raises_same_as_the_old_unconfigured_client():
+    # build_clients() returns [] (not None) when no primary key is
+    # configured at all - callers' `if not _primary_pool:` guard already
+    # handles that before ever reaching here, but this call itself must
+    # still fail loudly (not silently no-op) if it's ever reached anyway.
+    with pytest.raises(AttributeError):
+        await generate_content_with_backup([], None)
+
+
+@pytest.mark.asyncio
 async def test_a_429_propagates_when_no_backup_is_configured():
     primary = AsyncMock()
     primary.aio.models.generate_content = AsyncMock(side_effect=_fake_429())
 
     with pytest.raises(genai_errors.ClientError):
-        await generate_content_with_backup(primary, None, model="x", contents="y")
+        await generate_content_with_backup([primary], None, model="x", contents="y")
 
 
 @pytest.mark.asyncio
@@ -77,7 +105,7 @@ async def test_a_non_429_error_is_never_retried_even_with_a_backup_configured():
     backup.aio.models.generate_content = AsyncMock(return_value="backup result")
 
     with pytest.raises(genai_errors.ClientError):
-        await generate_content_with_backup(primary, backup, model="x", contents="y")
+        await generate_content_with_backup([primary], backup, model="x", contents="y")
 
     backup.aio.models.generate_content.assert_not_awaited()
 
@@ -106,6 +134,31 @@ def test_build_client_returns_none_for_no_key():
 
     assert build_client(None) is None
     assert build_client("") is None
+
+
+def test_build_client_tames_the_sdk_own_hidden_retry_layer():
+    # Real, confirmed root cause of a live 35s single-call latency spike
+    # (2026-09-22): genai.Client has its OWN retry layer underneath
+    # everything else in this file - by default up to 5 attempts with
+    # exponential backoff (up to 60s max delay) on 408/429/500/502/503,
+    # entirely separate from this file's own _call_with_429_retry/circuit
+    # breaker. GEMINI_TIMEOUT_MS only bounds ONE such attempt, not how
+    # many the SDK makes before finally raising.
+    #
+    # Explicitly tamed, not disabled (weighed both directly with the
+    # user, 2026-09-22): one bounded retry (attempts=2), tight delay
+    # (max 2s, never the SDK's own 60s default) - self-heals a genuine
+    # brief blip into a real verdict instead of an unnecessary degraded
+    # one, while staying far below the original pathological 35s spike.
+    from bot.detectors.text.online.gemini_retry import build_client
+
+    client = build_client("fake-key-for-this-test")
+
+    assert client is not None
+    retry_options = client._api_client._http_options.retry_options
+    assert retry_options.attempts == 2
+    assert retry_options.max_delay == 2.0
+    assert client._api_client._async_retry.stop.max_attempt_number == 2
 
 
 @pytest.mark.asyncio
@@ -173,7 +226,7 @@ async def test_circuit_stays_closed_below_the_threshold():
     client = _failing_client()
     for _ in range(CIRCUIT_FAILURE_THRESHOLD - 1):
         with pytest.raises(RuntimeError):
-            await generate_content_with_backup(client, None)
+            await generate_content_with_backup([client], None)
 
     assert circuit_is_open() is False
 
@@ -183,7 +236,7 @@ async def test_circuit_opens_after_threshold_consecutive_failures():
     client = _failing_client()
     for _ in range(CIRCUIT_FAILURE_THRESHOLD):
         with pytest.raises(RuntimeError):
-            await generate_content_with_backup(client, None)
+            await generate_content_with_backup([client], None)
 
     assert circuit_is_open() is True
 
@@ -193,12 +246,12 @@ async def test_open_circuit_skips_the_real_call_entirely():
     client = _failing_client()
     for _ in range(CIRCUIT_FAILURE_THRESHOLD):
         with pytest.raises(RuntimeError):
-            await generate_content_with_backup(client, None)
+            await generate_content_with_backup([client], None)
 
     client.aio.models.generate_content.reset_mock()
 
     with pytest.raises(GeminiCircuitOpenError):
-        await generate_content_with_backup(client, None)
+        await generate_content_with_backup([client], None)
 
     # The whole point: no real network call was made this time.
     client.aio.models.generate_content.assert_not_called()
@@ -209,16 +262,16 @@ async def test_a_success_resets_the_failure_count():
     client = _failing_client()
     for _ in range(CIRCUIT_FAILURE_THRESHOLD - 1):
         with pytest.raises(RuntimeError):
-            await generate_content_with_backup(client, None)
+            await generate_content_with_backup([client], None)
 
     working = _working_client()
-    result = await generate_content_with_backup(working, None)
+    result = await generate_content_with_backup([working], None)
     assert result == "ok"
 
     # One more failure now must NOT open the circuit - the success above
     # cleared the streak, so this is failure #1 again, not #3.
     with pytest.raises(RuntimeError):
-        await generate_content_with_backup(_failing_client(), None)
+        await generate_content_with_backup([_failing_client()], None)
 
     assert circuit_is_open() is False
 
@@ -228,7 +281,7 @@ async def test_circuit_closes_again_after_the_open_window_expires(monkeypatch):
     client = _failing_client()
     for _ in range(CIRCUIT_FAILURE_THRESHOLD):
         with pytest.raises(RuntimeError):
-            await generate_content_with_backup(client, None)
+            await generate_content_with_backup([client], None)
     assert circuit_is_open() is True
 
     # Simulate the open window having already elapsed, rather than a
@@ -237,7 +290,7 @@ async def test_circuit_closes_again_after_the_open_window_expires(monkeypatch):
     monkeypatch.setattr(gemini_retry, "_circuit_open_until", 0.0)
 
     assert circuit_is_open() is False
-    result = await generate_content_with_backup(_working_client("recovered"), None)
+    result = await generate_content_with_backup([_working_client("recovered")], None)
     assert result == "recovered"
 
 
@@ -251,7 +304,7 @@ async def test_429_retry_against_backup_key_still_works_with_the_breaker_present
     primary.aio.models.generate_content = AsyncMock(side_effect=_fake_429())
     backup = _working_client("from backup")
 
-    result = await generate_content_with_backup(primary, backup)
+    result = await generate_content_with_backup([primary], backup)
 
     assert result == "from backup"
     assert circuit_is_open() is False

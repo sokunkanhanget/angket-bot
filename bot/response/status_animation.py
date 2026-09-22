@@ -1,12 +1,28 @@
 """
 bot/response/status_animation.py
 =====================================
-Shared waiting status for scans. The message stays on the existing
-"Checking" label while the real async work runs, rather than cycling
-through guessed internal stages that are not synchronized with the
-actual work. The task is still launched via asyncio.create_task
-alongside the real work and cancelled once it is done, so all scan
-surfaces keep the same concurrency and cleanup behavior.
+Shared waiting status for scans. The message stays on ONE label per
+real phase while the corresponding real async work runs - never a
+guessed internal stage list unsynchronized from the actual work (an
+earlier multi-stage version was rejected for exactly that; its dead
+translation keys are gone as of 2026-09-22, see translate/en.py's
+status_checking/status_analyzing comment). The task is still launched
+via asyncio.create_task alongside the real work and cancelled once it
+is done, so all scan surfaces keep the same concurrency and cleanup
+behavior.
+
+Two-phase support (2026-09-22): the unified-check surfaces (private DM,
+group /check, Business chat) genuinely have two real, discrete phases -
+gathering link/file evidence (concurrent asyncio.gather), then one
+sequential Gemini call - confirmed via a real code-path trace, not
+guessed. The optional `phase` asyncio.Event lets a caller flip the
+label at the exact real moment that boundary is crossed (right after
+its own gather awaits return, right before calling analyze_unified) -
+see text_handler.py's _run_full_check_and_reply and url_handler.py's
+handle_business_message for the two real call sites. file_handler.py's
+own animation stays single-phase (plain VirusTotal lookup, no second
+real phase to surface) and passes no `phase` at all - `phase=None`
+behaves exactly as before this change, always showing the phase-A label.
 
 Confirmed this does NOT slow down the real work it runs alongside:
 this task spends ~100% of its time inside asyncio.sleep (yielding to
@@ -24,17 +40,21 @@ import asyncio
 
 from bot.response.buttons import t
 
-# Keep this list for the existing handler call sites. Only the checking
-# label is shown while a scan is waiting for its final response; the dots
-# below are the only animation.
-STATUS_STAGE_KEYS = [
-    "status_checking",
-]
+# The phase-A label, also used directly by every handler for the FIRST
+# status message it sends (before the animation task even starts, so
+# phase can't be set yet - always the checking label at that point).
+STATUS_CHECKING_KEY = "status_checking"
 CHECKING_DOTS = ("", ".", "..", "...")
-STATUS_STAGE_INTERVAL_SECONDS = 1.5
+# 1.5 -> 0.8 (2026-09-22, direct user spec: "faster loading animation") -
+# safe to drop this far: every edit below already swallows a failed
+# edit_text silently (e.g. a real Telegram rate-limit response), so a
+# faster cycle degrades gracefully - worst case is a skipped frame, not
+# an error surfaced to the user.
+STATUS_STAGE_INTERVAL_SECONDS = 0.8
 
 
-async def animate_status(status_message, lang: str, suffix: str = "", prefix: str = "") -> None:
+async def animate_status(status_message, lang: str, suffix: str = "", prefix: str = "",
+                          phase: asyncio.Event | None = None) -> None:
     """Launch via `asyncio.create_task(animate_status(...))` alongside
     the real work, then stop it with `await stop_status_animation(task)`
     (NOT a bare `task.cancel(); await task`) once that work is done -
@@ -48,15 +68,23 @@ async def animate_status(status_message, lang: str, suffix: str = "", prefix: st
     handle_business_message passes the "New Activity Detected" +
     sender header so the owner sees WHO the incoming message is from
     immediately, not just a bare "Checking" with no context, while the
-    real unified check is still running)."""
+    real unified check is still running).
+
+    `phase`: optional asyncio.Event a caller flips once evidence-
+    gathering is done and the real Gemini call has started - unset
+    (or omitted entirely) shows "status_checking", set shows
+    "status_analyzing". Checked once per frame, not once at task start,
+    so the label can genuinely change mid-animation the moment the
+    real code crosses that boundary."""
     dot_index = 0
     try:
         while True:
             await asyncio.sleep(STATUS_STAGE_INTERVAL_SECONDS)
             dot_index = (dot_index + 1) % len(CHECKING_DOTS)
+            label_key = "status_analyzing" if (phase is not None and phase.is_set()) else STATUS_CHECKING_KEY
             try:
                 await status_message.edit_text(
-                    f"{prefix}{t(lang, STATUS_STAGE_KEYS[0])}{CHECKING_DOTS[dot_index]}{suffix}",
+                    f"{prefix}{t(lang, label_key)}{CHECKING_DOTS[dot_index]}{suffix}",
                     parse_mode="Markdown",
                 )
             except Exception:

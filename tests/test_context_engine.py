@@ -236,7 +236,7 @@ async def test_analyze_unified_degrades_without_api_key(fake_vector_store, monke
     # raise and never return a bare "not configured" verdict with no
     # local evidence attached.
     import bot.context_engine.context_engine as ce
-    monkeypatch.setattr(ce, "_client", None)
+    monkeypatch.setattr(ce, "_primary_pool", [])
 
     keyword_result = {"suspicious": True, "matches": ["free bitcoin"]}
     link_verdicts = []
@@ -269,7 +269,7 @@ async def test_grounded_fallback_survives_pathological_text():
     assert result["verdict"] == "Not a Scam"
 
 
-# --- live-Gemini path (mocked _client) -------------------------------
+# --- live-Gemini path (mocked _primary_pool) --------------------------
 
 @pytest.mark.asyncio
 async def test_analyze_unified_returns_parsed_response_on_success(monkeypatch):
@@ -282,7 +282,7 @@ async def test_analyze_unified_returns_parsed_response_on_success(monkeypatch):
         "key_reasons": [{"text": "Urgent request for money.", "source": "message_text"}],
         "recommendations": ["Do not send money."],
     }
-    monkeypatch.setattr(ce, "_client", _FakeClient(response_text=json.dumps(fake_response)))
+    monkeypatch.setattr(ce, "_primary_pool", [_FakeClient(response_text=json.dumps(fake_response))])
 
     result = await analyze_unified("send money now", {"suspicious": False, "matches": []}, [])
 
@@ -300,7 +300,7 @@ async def test_analyze_unified_includes_scam_pattern_evidence_in_the_live_call(m
     # discarded.
     fake_response = {"verdict": "Scam", "risk_percentage": 90, "key_reasons": [], "recommendations": []}
     fake_client = _FakeClient(response_text=json.dumps(fake_response))
-    monkeypatch.setattr(ce, "_client", fake_client)
+    monkeypatch.setattr(ce, "_primary_pool", [fake_client])
 
     text = ("Mom, this is urgent, I lost my phone and I'm texting from a friend's. "
             "I need you to send $800 right now to help me, don't call, just trust me "
@@ -319,12 +319,101 @@ async def test_analyze_unified_omits_scam_pattern_evidence_below_threshold(monke
     # calibrated SCAM_PATTERN_THRESHOLD the fallback already trusts.
     fake_response = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
     fake_client = _FakeClient(response_text=json.dumps(fake_response))
-    monkeypatch.setattr(ce, "_client", fake_client)
+    monkeypatch.setattr(ce, "_primary_pool", [fake_client])
 
     await analyze_unified("hey, are we still on for lunch tomorrow?", {"suspicious": False, "matches": []}, [])
 
     contents = fake_client.aio.models.last_kwargs["contents"]
     assert "scam_pattern_similarity" not in contents
+
+
+@pytest.mark.asyncio
+async def test_compute_pattern_match_skips_a_bare_link_regardless_of_similarity(monkeypatch):
+    # Real production false positive (2026-09-22): a genuinely safe
+    # Google developer-docs URL scored 0.78 similarity to the
+    # 'account_verification' scam script on the Gemini-embedding
+    # fallback tier - an embedding model asked to compare non-language
+    # input (a bare URL) against a corpus of scam SENTENCES can score
+    # uniformly "hot" across every category rather than discriminating,
+    # not a real semantic match to any one of them. A scam script is a
+    # message-TEXT pattern - matching one against a bare link was never
+    # semantically sound, so this now skips entirely for that shape,
+    # same guard the two deterministic short-circuits already use.
+    async def _fake_high_similarity(text, k=1):
+        return [(0.99, "scam_pattern", "account_verification:0", "account_verification")], "gemini"
+
+    monkeypatch.setattr(ce, "nearest_scam_pattern_live", _fake_high_similarity)
+
+    link_verdicts = [{"raw": "https://developers.google.com/machine-learning/crash-course",
+                       "host": "developers.google.com", "score": 0, "level": "safe"}]
+    result = await ce._compute_pattern_match(
+        "https://developers.google.com/machine-learning/crash-course", link_verdicts,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_unified_does_not_override_a_bare_link_on_pattern_similarity_alone(monkeypatch):
+    # Integration-level version of the test above: even with a
+    # deliberately maximal (fake) pattern-match similarity, a bare-link
+    # message must not trigger _override_for_flagged_evidence and
+    # escalate Gemini's own correct "Not a Scam" reading.
+    async def _fake_high_similarity(text, k=1):
+        return [(0.99, "scam_pattern", "account_verification:0", "account_verification")], "gemini"
+
+    monkeypatch.setattr(ce, "nearest_scam_pattern_live", _fake_high_similarity)
+
+    fake_response = {"verdict": "Not a Scam", "risk_percentage": 10, "key_reasons": [], "recommendations": []}
+    fake_client = _FakeClient(response_text=json.dumps(fake_response))
+    monkeypatch.setattr(ce, "_primary_pool", [fake_client])
+
+    link_verdicts = [{"raw": "https://developers.google.com/machine-learning/crash-course",
+                       "host": "developers.google.com", "score": 0, "level": "safe"}]
+    result = await analyze_unified(
+        "https://developers.google.com/machine-learning/crash-course",
+        {"suspicious": False, "matches": []}, link_verdicts,
+    )
+
+    assert result["verdict"] == "Not a Scam"
+    assert result["risk_percentage"] == 10
+
+
+@pytest.mark.asyncio
+async def test_compute_pattern_match_never_trusts_the_gemini_tier(monkeypatch):
+    # Second real production false positive, same day (2026-09-22): the
+    # plain English text "I'm gay" scored 0.73 similarity to the
+    # 'romance' scam script on the Gemini-embedding tier - genuine text,
+    # not a bare link, so the bare-link guard above doesn't cover this
+    # case. GEMINI_EMBED_PATTERN_THRESHOLD is still an unvalidated
+    # placeholder (unlike bge-m3's 0.74, calibrated against 37 real
+    # held-out cases) - until it gets the same real calibration, the
+    # gemini tier is never trusted for evidence/override purposes at
+    # all, regardless of message shape or how high the score is.
+    async def _fake_high_similarity(text, k=1):
+        return [(0.99, "scam_pattern", "romance:0", "romance")], "gemini"
+
+    monkeypatch.setattr(ce, "nearest_scam_pattern_live", _fake_high_similarity)
+
+    result = await ce._compute_pattern_match("I'm gay", [])
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_compute_pattern_match_still_trusts_bge_m3_above_its_threshold(monkeypatch):
+    # The other half of the fix: only the UNCALIBRATED gemini tier is
+    # distrusted - bge-m3 (real, 37-case-calibrated threshold) must
+    # still surface and still be usable for the hard override, same as
+    # before this change.
+    async def _fake_bge_m3_match(text, k=1):
+        return [(0.95, "scam_pattern", "family_emergency:0", "family_emergency")], "bge_m3"
+
+    monkeypatch.setattr(ce, "nearest_scam_pattern_live", _fake_bge_m3_match)
+
+    result = await ce._compute_pattern_match("some real message text", [])
+
+    assert result == (0.95, "family_emergency")
 
 
 @pytest.mark.asyncio
@@ -337,7 +426,7 @@ async def test_analyze_unified_clamps_out_of_range_risk_percentage(monkeypatch):
         "verdict": "Scam", "risk_percentage": 150,
         "key_reasons": [], "recommendations": [],
     }
-    monkeypatch.setattr(ce, "_client", _FakeClient(response_text=json.dumps(fake_response)))
+    monkeypatch.setattr(ce, "_primary_pool", [_FakeClient(response_text=json.dumps(fake_response))])
     link_verdicts = [{"host": "evil.tk", "level": "dangerous", "score": 90,
                        "reasons": ["2 security engines on VirusTotal flag this link as malicious."]}]
 
@@ -351,7 +440,7 @@ async def test_analyze_unified_falls_back_on_malformed_json(fake_vector_store, m
     # response_mime_type + response_schema are supposed to guarantee
     # valid JSON, but nothing guarantees the SDK/model never violates
     # that - must degrade gracefully, not crash the reply path.
-    monkeypatch.setattr(ce, "_client", _FakeClient(response_text="not valid json"))
+    monkeypatch.setattr(ce, "_primary_pool", [_FakeClient(response_text="not valid json")])
 
     result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
 
@@ -363,7 +452,7 @@ async def test_analyze_unified_falls_back_on_malformed_json(fake_vector_store, m
 
 @pytest.mark.asyncio
 async def test_analyze_unified_falls_back_when_api_raises(fake_vector_store, monkeypatch):
-    monkeypatch.setattr(ce, "_client", _FakeClient(raises=RuntimeError("Gemini API unavailable")))
+    monkeypatch.setattr(ce, "_primary_pool", [_FakeClient(raises=RuntimeError("Gemini API unavailable"))])
 
     result = await analyze_unified("x", {"suspicious": False, "matches": []}, [])
 
@@ -386,7 +475,7 @@ async def test_analyze_unified_falls_back_without_a_real_call_once_circuit_is_op
     monkeypatch.setattr(gemini_retry, "_circuit_open_until", __import__("time").time() + 30)
 
     fake_client = _FakeClient(response_text="should never be reached")
-    monkeypatch.setattr(ce, "_client", fake_client)
+    monkeypatch.setattr(ce, "_primary_pool", [fake_client])
 
     record_calls = []
     monkeypatch.setattr(ce.health_alerts, "record_failure", lambda *a: record_calls.append(a))
@@ -598,7 +687,7 @@ async def test_analyze_unified_applies_reconciliation_end_to_end(monkeypatch):
         "verdict": "Not a Scam", "risk_percentage": 5,
         "key_reasons": [], "recommendations": [],
     }
-    monkeypatch.setattr(ce, "_client", _FakeClient(response_text=json.dumps(fake_response)))
+    monkeypatch.setattr(ce, "_primary_pool", [_FakeClient(response_text=json.dumps(fake_response))])
     file_verdict = {"found": True, "malicious": 5, "suspicious": 0, "total": 70}
 
     result = await analyze_unified("here's the invoice you asked for", {"suspicious": False, "matches": []}, [], file_verdict)
@@ -628,7 +717,7 @@ def test_system_prompt_adds_a_khmer_instruction():
 async def test_analyze_unified_sends_the_khmer_instruction_to_gemini(monkeypatch):
     fake_response = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
     fake_client = _FakeClient(response_text=json.dumps(fake_response))
-    monkeypatch.setattr(ce, "_client", fake_client)
+    monkeypatch.setattr(ce, "_primary_pool", [fake_client])
 
     await analyze_unified("x", {"suspicious": False, "matches": []}, [], lang="km")
 
@@ -640,7 +729,7 @@ async def test_analyze_unified_sends_the_khmer_instruction_to_gemini(monkeypatch
 async def test_analyze_unified_defaults_to_english_system_prompt(monkeypatch):
     fake_response = {"verdict": "Not a Scam", "risk_percentage": 5, "key_reasons": [], "recommendations": []}
     fake_client = _FakeClient(response_text=json.dumps(fake_response))
-    monkeypatch.setattr(ce, "_client", fake_client)
+    monkeypatch.setattr(ce, "_primary_pool", [fake_client])
 
     await analyze_unified("x", {"suspicious": False, "matches": []}, [])  # no lang passed
 
@@ -828,7 +917,7 @@ async def test_analyze_unified_skips_gemini_for_trusted_bare_link(monkeypatch, f
     # short-circuit WITHOUT ever touching the (fake) Gemini client.
     fake_client = _FakeClient(response_text=json.dumps({"verdict": "Scam", "risk_percentage": 90,
                                                           "key_reasons": [], "recommendations": []}))
-    monkeypatch.setattr(ce, "_client", fake_client)
+    monkeypatch.setattr(ce, "_primary_pool", [fake_client])
 
     result = await analyze_unified(
         "https://facebook.com", {"suspicious": False, "matches": []}, [_trusted_link()],

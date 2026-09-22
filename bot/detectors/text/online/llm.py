@@ -93,7 +93,7 @@ _RESPONSE_SCHEMA = {
     ],
 }
 
-_client, _backup_client = build_clients()
+_primary_pool, _backup_client = build_clients()
 
 
 def _risk_label(risk_percentage: int | None) -> str:
@@ -146,7 +146,7 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
     and records real usage afterward - see context_engine.py's
     analyze_unified for the same pattern applied to the private-DM/
     business-chat path. None skips both, same reasoning as there."""
-    if not _client:
+    if not _primary_pool:
         return await _fallback("LLM analysis is not configured.", "missing_api_key", text)
 
     if user_id is not None and not await subscription.has_token_budget(user_id):
@@ -154,7 +154,7 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
 
     try:
         response = await generate_content_with_backup(
-            _client, _backup_client,
+            _primary_pool, _backup_client,
             model=GEMINI_MODEL,
             contents=text,
             config=types.GenerateContentConfig(

@@ -9,7 +9,7 @@ def test_analyze_text_with_llm_without_api_key():
     # fallback (keyword + scam-pattern similarity) instead of a blank
     # "Uncertain, N/A risk" - a neutral message with no red flags should
     # come back "Not a Scam", not "we have no idea".
-    with patch.object(llm_analyzer, "_client", None):
+    with patch.object(llm_analyzer, "_primary_pool", []):
         result = asyncio.run(llm_analyzer.analyze_text_with_llm("hello"))
 
     assert result["verdict"] == "Not a Scam"
@@ -17,7 +17,7 @@ def test_analyze_text_with_llm_without_api_key():
 
 
 def test_analyze_text_with_llm_without_api_key_still_flags_a_real_keyword_match():
-    with patch.object(llm_analyzer, "_client", None):
+    with patch.object(llm_analyzer, "_primary_pool", []):
         result = asyncio.run(
             llm_analyzer.analyze_text_with_llm("congrats! claim reward now before it expires")
         )
@@ -46,7 +46,7 @@ def test_analyze_text_with_llm_returns_parsed_verdict():
         })()})()},
     )()
 
-    with patch.object(llm_analyzer, "_client", fake_client):
+    with patch.object(llm_analyzer, "_primary_pool", [fake_client]):
         result = asyncio.run(llm_analyzer.analyze_text_with_llm("free bitcoin!"))
 
     assert result == {
@@ -75,7 +75,7 @@ def test_analyze_text_with_llm_falls_back_without_a_real_call_once_circuit_is_op
         })()})()},
     )()
 
-    with patch.object(llm_analyzer, "_client", fake_client), \
+    with patch.object(llm_analyzer, "_primary_pool", [fake_client]), \
          patch.object(gemini_retry, "_consecutive_failures", gemini_retry.CIRCUIT_FAILURE_THRESHOLD), \
          patch.object(gemini_retry, "_circuit_open_until", time.time() + 30), \
          patch.object(llm_analyzer.health_alerts, "record_failure") as mock_record:

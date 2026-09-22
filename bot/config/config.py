@@ -13,9 +13,20 @@ VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY")
 # scan_vt_hash and bot/detectors/url/online/threat_intel.py's lookup.
 VIRUSTOTAL_API_KEY_BACKUP = os.getenv("VIRUSTOTAL_API_KEY_BACKUP")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Optional. Originally a test-only key kept isolated from production
+# (so benchmark scripts wouldn't compete with live bot traffic for
+# quota) - repurposed 2026-09-22 as a real second co-primary key,
+# round-robined with GEMINI_API_KEY in gemini_retry.py's primary pool
+# to roughly double the free-tier throughput before either one 429s.
+# Still usable for isolated benchmark runs by overriding GEMINI_API_KEY
+# to this value and unsetting GEMINI_API_KEY_BACKUP in-process (see
+# next-gen-test/concepts/honest-210-run/rerun_texts_links_with_test_key.py) -
+# that just no longer means "never touched by production," since it now is.
+GEMINI_API_KEY_TEST = os.getenv("GEMINI_API_KEY_TEST")
 # Optional, like GEMINI_API_KEY itself - see bot/detectors/text/online/
-# gemini_retry.py. Only ever used as a one-shot retry when the primary
-# key hits a 429 (quota/rate-limit) specifically, not on other failures.
+# gemini_retry.py. Only ever used as a one-shot retry when whichever
+# primary-pool key handled a call hits a 429 (quota/rate-limit)
+# specifically, not on other failures.
 GEMINI_API_KEY_BACKUP = os.getenv("GEMINI_API_KEY_BACKUP")
 # Dedicated key for bge-m3's second-tier fallback embedding calls (see
 # bot/detectors/text/online/gemini_embed.py) - separate from GEMINI_API_KEY

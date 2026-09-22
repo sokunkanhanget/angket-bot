@@ -372,6 +372,12 @@ def _reset_gemini_circuit_breaker():
     import bot.detectors.text.online.gemini_retry as gemini_retry
     gemini_retry._consecutive_failures = 0
     gemini_retry._circuit_open_until = 0.0
+    # Same cross-test-leakage class again: the primary-pool round-robin
+    # index (2026-09-22) is also a module-level global shared across the
+    # whole run - reset so which pool slot a test's single-client list
+    # lands on never depends on how many prior tests already called
+    # generate_content_with_backup().
+    gemini_retry._rr_index = 0
 
     # Same gap, same fix, for gemini_embed.py's OWN independent breaker
     # (2026-09-22) - separate module-level globals, separate state, same

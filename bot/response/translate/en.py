@@ -120,15 +120,15 @@ TEXT = {
         "Nothing to check there - reply to a message with text or a link, "
         "or use /check <url or text>."
     ),
-    # Multi-stage status animation (bot/response/status_animation.py) -
-    # a timed fake sequence, not synced to real internal steps. Used by
-    # text/link/file scans; group chat only ever shows these (never
-    # translated content) too, per bot.py's TEXT_FILTER scope.
+    # Two-phase status animation (bot/response/status_animation.py,
+    # 2026-09-22) - status_checking during evidence-gathering (link/file
+    # pipeline), status_analyzing once the real Gemini call has started.
+    # Both are real, code-synchronized phases, not a guessed sequence -
+    # see that file's own docstring. Used by text/link/file/business
+    # scans; group chat only ever shows these (never translated content)
+    # too, per bot.py's TEXT_FILTER scope.
     "status_checking": "🔍 Checking",
-    "status_searching": "🔎 Searching",
-    "status_constructing": "⚙️ Constructing",
-    "status_formatting": "🗂️ Formatting",
-    "status_generating": "✨ Generating",
+    "status_analyzing": "🧠 Analyzing",
     "verdict_label": "VERDICT",
     "type_label": "TYPE",
     "key_reasons_header": "KEY REASONS",

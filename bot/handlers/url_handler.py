@@ -58,7 +58,7 @@ from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
 from bot.detectors.url.pipeline import check_message_full
 from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, format_local_datetime, risk_style, scan_type_label, summary_sentence, trusted_link_notice, verdict_style
-from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
+from bot.response.status_animation import STATUS_CHECKING_KEY, animate_status, stop_status_animation
 from bot.storage.scan_log import log_url_scan
 from bot.detectors.url.offline.vectors import ensure_seeded as ensure_vectors_seeded
 from bot.storage import health_alerts, subscription
@@ -319,22 +319,27 @@ async def _gate_live_detect(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: i
 
 async def _send_business_status(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: int, sender,
                                  message_date, owner_lang: str):
-    """(status, animation_task, header), or (None, None, None) on send
-    failure. Immediate two-stage notification (2026-09-14, direct user
-    spec): the full unified check (link trace + file scan + Gemini) can
-    take several real seconds, and the owner used to get NOTHING at all
-    until it finished - no idea a message even arrived, let alone from
-    whom. Send the "New Activity Detected" + sender header (WHO it's
+    """(status, animation_task, header, phase), or (None, None, None, None)
+    on send failure. Immediate two-stage notification (2026-09-14, direct
+    user spec): the full unified check (link trace + file scan + Gemini)
+    can take several real seconds, and the owner used to get NOTHING at
+    all until it finished - no idea a message even arrived, let alone
+    from whom. Send the "New Activity Detected" + sender header (WHO it's
     from) immediately with a status animation ("Checking...") right
     where the verdict will land, then edit this SAME message into the
     final verdict once ready - same animate_status/stop_status_animation
     pattern every other scan surface (text/link/file) already uses, just
-    with the header as a `prefix` instead of starting bare."""
+    with the header as a `prefix` instead of starting bare.
+
+    `phase`: a fresh asyncio.Event, unset - the caller flips it once
+    evidence-gathering is done and the real Gemini call is starting, so
+    the label can switch from "Checking" to "Analyzing" at that real
+    moment (see status_animation.py's own docstring)."""
     header = _business_header(sender, message_date, owner_lang)
     try:
         status = await context.bot.send_message(
             chat_id=owner_chat_id,
-            text=f"{header}{t(owner_lang, STATUS_STAGE_KEYS[0])}",
+            text=f"{header}{t(owner_lang, STATUS_CHECKING_KEY)}",
             parse_mode="Markdown",
         )
     except TelegramError as error:
@@ -351,9 +356,10 @@ async def _send_business_status(context: ContextTypes.DEFAULT_TYPE, owner_chat_i
         logger.exception("Business chat status notification failed to send")
         health_alerts.record_failure("Business chat owner DM", str(error))
         await health_alerts.maybe_alert("Business chat owner DM", str(error))
-        return None, None, None  # can't even show progress right now - nothing safe to do
-    animation_task = asyncio.create_task(animate_status(status, owner_lang, prefix=header))
-    return status, animation_task, header
+        return None, None, None, None  # can't even show progress right now - nothing safe to do
+    phase = asyncio.Event()
+    animation_task = asyncio.create_task(animate_status(status, owner_lang, prefix=header, phase=phase))
+    return status, animation_task, header, phase
 
 
 async def _gather_business_check_verdicts(text: str, hidden_links: list, document,
@@ -459,7 +465,9 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     # customer's (see _owner_lang's docstring for why those can differ).
     owner_lang = await _owner_lang(context, owner_chat_id)
 
-    status, animation_task, header = await _send_business_status(context, owner_chat_id, sender, message.date, owner_lang)
+    status, animation_task, header, phase = await _send_business_status(
+        context, owner_chat_id, sender, message.date, owner_lang,
+    )
     if status is None:
         return
 
@@ -472,6 +480,7 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         link_verdicts, file_verdict = await _gather_business_check_verdicts(
             text, hidden_links, document, context, sender,
         )
+        phase.set()
 
         if not text and not link_verdicts and file_verdict is None:
             # Truly nothing to check at all - stay silent, same as
@@ -503,6 +512,14 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         return
 
     await stop_status_animation(animation_task)
+
+    if not link_verdicts and document is None and unified.get("verdict") == "Not a Scam":
+        # Product decision (2026-09-22, matches the pitch deck's Live Scan
+        # flowchart): a safe TEXT-ONLY message stays quiet - no owner
+        # notification at all. Links/files always notify regardless of
+        # verdict; this silent path is text-only-specific.
+        await status.delete()
+        return
 
     trusted_host = unified.get("trusted_link_notice_host")
     if trusted_host:

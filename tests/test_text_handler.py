@@ -426,6 +426,40 @@ async def test_handle_text_stops_animation_and_replies_on_unexpected_error():
 
 
 @pytest.mark.asyncio
+async def test_handle_text_flips_the_status_phase_before_the_gemini_call():
+    # 2026-09-22 (direct user spec: "show the real detail" instead of one
+    # static status line) - the status animation switches from "Checking"
+    # to "Analyzing" at the exact real moment evidence-gathering finishes
+    # and analyze_unified is about to run, a real code event, not a
+    # guessed timer (see status_animation.py's own docstring). Confirms
+    # the phase Event handed to animate_status is genuinely .set() by
+    # the time analyze_unified fires, not before and not left unset.
+    update = _private_update("free bitcoin now, click nowhere")
+    context = _private_context()
+
+    status_message = AsyncMock()
+    update.message.reply_text = AsyncMock(return_value=status_message)
+
+    captured = {}
+
+    async def _fake_animate_status(status, lang, suffix="", prefix="", phase=None):
+        captured["phase"] = phase
+
+    async def _fake_analyze_unified(*args, **kwargs):
+        captured["phase_set_during_gemini_call"] = captured["phase"].is_set()
+        return {"verdict": "Not a Scam", "risk_percentage": 0, "key_reasons": [], "recommendations": []}
+
+    with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.text_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.text_handler.animate_status", _fake_animate_status), \
+         patch("bot.handlers.text_handler.analyze_unified", _fake_analyze_unified):
+        await handle_text(update, context)
+
+    assert captured["phase"] is not None
+    assert captured["phase_set_during_gemini_call"] is True
+
+
+@pytest.mark.asyncio
 async def test_usage_menu_button_shows_real_recorded_counts():
     # "usage" replaced "live_scan" as a main-menu item - unlike every
     # other menu item, its reply is dynamic (real numbers from

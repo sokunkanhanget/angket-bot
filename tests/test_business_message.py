@@ -117,6 +117,38 @@ async def test_final_verdict_edits_the_same_status_message():
 
 
 @pytest.mark.asyncio
+async def test_flips_the_status_phase_before_the_gemini_call():
+    # 2026-09-22 (direct user spec: "show the real detail" instead of one
+    # static status line) - same real two-phase animation as the private-
+    # DM/group /check path (see test_text_handler.py's equivalent test):
+    # the phase Event handed to animate_status must be genuinely .set()
+    # by the time analyze_unified runs, a real code event (evidence-
+    # gathering finished), not a guessed timer.
+    update = _business_update(text="URGENT: send $800 now, don't call, just trust me")
+    context = _context()
+
+    captured = {}
+
+    async def _fake_animate_status(status, lang, suffix="", prefix="", phase=None):
+        captured["phase"] = phase
+
+    async def _fake_analyze_unified(*args, **kwargs):
+        captured["phase_set_during_gemini_call"] = captured["phase"].is_set()
+        return {"verdict": "Scam", "risk_percentage": 95, "key_reasons": [], "recommendations": []}
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": ["urgent"]}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", _fake_animate_status), \
+         patch("bot.handlers.url_handler.analyze_unified", _fake_analyze_unified):
+        await handle_business_message(update, context)
+
+    assert captured["phase"] is not None
+    assert captured["phase_set_during_gemini_call"] is True
+
+
+@pytest.mark.asyncio
 async def test_stays_silent_when_there_is_truly_nothing_to_check():
     # No text, no caption, no link, no file - genuinely nothing to
     # reason about (e.g. a plain photo with no caption at all - there is
@@ -140,13 +172,13 @@ async def test_stays_silent_when_there_is_truly_nothing_to_check():
 
 
 @pytest.mark.asyncio
-async def test_shows_reassurance_for_genuinely_benign_text():
+async def test_stays_silent_for_genuinely_benign_text():
     # Text IS present, and the full Gemini reasoning (not a crude local
-    # keyword list) judges it not a scam - direct user spec (2026-09-21):
-    # the owner must still SEE a "this is safe" reassurance, not have the
-    # status message silently deleted with nothing to show for it. Link/
-    # file findings already always render (see the "safe link" case
-    # elsewhere in this file) - text-only checks must match that.
+    # keyword list) judges it not a scam - product decision (2026-09-22,
+    # matches the pitch deck's Live Scan flowchart): a safe TEXT-ONLY
+    # message stays quiet, status deleted, no owner notification at all.
+    # Link/file findings still always render regardless of verdict - this
+    # silent path is text-only-specific.
     update = _business_update(text="hey, are we still on for lunch?")
     context = _context()
 
@@ -165,11 +197,8 @@ async def test_shows_reassurance_for_genuinely_benign_text():
 
     context.bot.send_message.assert_awaited_once()
     status = context.bot.send_message.return_value
-    status.delete.assert_not_awaited()
-    status.edit_text.assert_awaited_once()
-    body = status.edit_text.await_args.args[0]
-    assert "Not a Scam" not in body  # rendered through verdict_style's translated label, not the raw string
-    assert "5%" in body
+    status.delete.assert_awaited_once()
+    status.edit_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -445,15 +474,15 @@ async def test_send_failure_falls_back_to_plain_text_instead_of_total_silence():
 
 
 @pytest.mark.asyncio
-async def test_shows_reassurance_for_benign_text_during_a_real_gemini_outage(fake_vector_store, monkeypatch):
+async def test_stays_silent_for_benign_text_during_a_real_gemini_outage(fake_vector_store, monkeypatch):
     # Regression for the exact bug the /code-review pass found: the
     # fallback verdict used to be able to return only "Scam" or
     # "Uncertain", never "Not a Scam". This exercises the REAL
     # analyze_unified -> _grounded_fallback path (not mocked), with the
     # client forced to None to simulate an outage, through the full
-    # handler - a benign message during an outage must still show the
-    # owner a real "Not a Scam" reassurance, not silence (2026-09-21).
-    monkeypatch.setattr(context_engine, "_client", None)
+    # handler - a benign text-only message during an outage stays silent
+    # (status deleted), same text-only-safe rule as the non-outage path.
+    monkeypatch.setattr(context_engine, "_primary_pool", [])
 
     update = _business_update(text="hey, are we still on for lunch tomorrow?")
     context = _context()
@@ -465,15 +494,15 @@ async def test_shows_reassurance_for_benign_text_during_a_real_gemini_outage(fak
         await handle_business_message(update, context)
 
     status = context.bot.send_message.return_value
-    status.delete.assert_not_awaited()
-    status.edit_text.assert_awaited_once()
+    status.delete.assert_awaited_once()
+    status.edit_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_notifies_owner_for_near_exact_scam_script_during_a_real_gemini_outage(fake_vector_store, monkeypatch):
     # The other half of the same regression: a near-verbatim repeat of a
     # known scam script must still notify even in degraded (no-LLM) mode.
-    monkeypatch.setattr(context_engine, "_client", None)
+    monkeypatch.setattr(context_engine, "_primary_pool", [])
     await fake_vector_store.seed()
 
     update = _business_update(

@@ -98,10 +98,7 @@ TEXT = {
         "ឬវាយ /check <URL ឬអត្ថបទ>។"
     ),
     "status_checking": "🔍 កំពុងពិនិត្យ",
-    "status_searching": "🔎 កំពុងស្វែងរក",
-    "status_constructing": "⚙️ កំពុងបង្កើត",
-    "status_formatting": "🗂️ កំពុងរៀបចំទម្រង់",
-    "status_generating": "✨ កំពុងបង្កើតលទ្ធផល",
+    "status_analyzing": "🧠 កំពុងវិភាគ",
     "verdict_label": "លទ្ធផល",
     "type_label": "ប្រភេទ",
     "key_reasons_header": "មូលហេតុសំខាន់ៗ",

@@ -17,7 +17,7 @@ from bot.handlers.url_handler import extract_text_link_entities
 from bot.storage import subscription
 from bot.detectors.url.pipeline import bare_trusted_link, check_message_full
 from bot.response.verdict_style import DISCLAIMER_SPACER, SOURCE_TAGS, defang_domains, risk_style, scan_type_label, summary_sentence, trusted_link_notice, verdict_style
-from bot.response.status_animation import STATUS_STAGE_KEYS, animate_status, stop_status_animation
+from bot.response.status_animation import STATUS_CHECKING_KEY, animate_status, stop_status_animation
 
 logger = logging.getLogger(__name__)
 
@@ -419,20 +419,27 @@ class _DMReplyTarget:
 
 
 async def _send_check_status(message, lang: str):
-    """(status, animation_task) - the "Checking..." status message + its
-    live animation. Split out of _run_full_check_and_reply so a caller
+    """(status, animation_task, phase) - the "Checking..." status message +
+    its live animation. Split out of _run_full_check_and_reply so a caller
     that needs retry/fallback delivery logic (handle_check's DM-first,
     fall-back-to-group-on-failure) can retry just this cheap send, not
     the real analysis work below it (Gemini/link trace - genuinely
-    expensive, must never run twice for one /check)."""
-    status = await message.reply_text(t(lang, STATUS_STAGE_KEYS[0]), parse_mode="Markdown")
-    animation_task = asyncio.create_task(animate_status(status, lang))
-    return status, animation_task
+    expensive, must never run twice for one /check).
+
+    `phase`: a fresh asyncio.Event, unset - _run_full_check_and_reply
+    flips it once evidence-gathering is done and the real Gemini call
+    is starting, so animate_status's label can switch from "Checking"
+    to "Analyzing" at that real moment (see status_animation.py's own
+    docstring for why this is safe/honest, not a guessed stage)."""
+    status = await message.reply_text(t(lang, STATUS_CHECKING_KEY), parse_mode="Markdown")
+    phase = asyncio.Event()
+    animation_task = asyncio.create_task(animate_status(status, lang, phase=phase))
+    return status, animation_task, phase
 
 
 async def _run_full_check_and_reply(
-    status, animation_task, context: ContextTypes.DEFAULT_TYPE, text: str, hidden_links: list,
-    document, keyword_result: dict, lang: str, user_id: int | None, trusted_shape: bool,
+    status, animation_task, phase: asyncio.Event | None, context: ContextTypes.DEFAULT_TYPE, text: str,
+    hidden_links: list, document, keyword_result: dict, lang: str, user_id: int | None, trusted_shape: bool,
     has_text_fn, log_context: str,
 ) -> None:
     """check_message_full (+ file scan if attached) -> analyze_unified ->
@@ -445,10 +452,18 @@ async def _run_full_check_and_reply(
     Takes an ALREADY-SENT status + its already-started animation_task
     (see _send_check_status) rather than creating them itself, as of
     2026-09-19 - this is what lets handle_check retry/redirect delivery
-    of that first message without re-running the real check twice."""
+    of that first message without re-running the real check twice.
+
+    `phase`: flipped right after evidence-gathering finishes and before
+    the real Gemini call starts (2026-09-22) - see animate_status's own
+    docstring. None-safe (handle_check's DM-then-fallback retry loop can
+    in principle leave this None if _send_check_status's own return
+    changes shape later) - .set() is skipped rather than crashing."""
     await ensure_vectors_seeded(context.bot_data)
 
     link_verdicts, file_verdict = await _gather_check_verdicts(text, hidden_links, document, context)
+    if phase is not None:
+        phase.set()
 
     # try/finally-equivalent (except/re-stop) so the animation task can
     # never outlive this handler.
@@ -542,9 +557,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # 2026-09-19) - format_analysis_response/analyze_text_with_llm are
     # kept (both still have their own direct unit test coverage), just no
     # longer called from here.
-    status, animation_task = await _send_check_status(message, lang)
+    status, animation_task, phase = await _send_check_status(message, lang)
     await _run_full_check_and_reply(
-        status, animation_task, context, text, hidden_links, document, keyword_result, lang, user_id, trusted_shape,
+        status, animation_task, phase, context, text, hidden_links, document, keyword_result, lang, user_id, trusted_shape,
         has_text_fn=lambda link_verdicts: not _message_is_only_links(text, link_verdicts),
         log_context="a private-DM message",
     )
@@ -630,12 +645,12 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # real analysis (Gemini/link trace) - see _send_check_status's own
     # docstring for why re-running that would be wrong.
     fallback_target = replied if replied is not None else message
-    status = animation_task = None
+    status = animation_task = phase = None
     if user_id is not None:
         dm_target = _DMReplyTarget(context.bot, user_id)
         for _attempt in range(2):
             try:
-                status, animation_task = await _send_check_status(dm_target, DEFAULT_LANG)
+                status, animation_task, phase = await _send_check_status(dm_target, DEFAULT_LANG)
                 break
             except TelegramError:
                 continue
@@ -646,10 +661,10 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 user_id,
             )
     if status is None:
-        status, animation_task = await _send_check_status(fallback_target, DEFAULT_LANG)
+        status, animation_task, phase = await _send_check_status(fallback_target, DEFAULT_LANG)
 
     await _run_full_check_and_reply(
-        status, animation_task, context, target_text, hidden_links, document, keyword_result, DEFAULT_LANG, user_id, trusted_shape,
+        status, animation_task, phase, context, target_text, hidden_links, document, keyword_result, DEFAULT_LANG, user_id, trusted_shape,
         has_text_fn=lambda link_verdicts: bool(target_text.strip()),
         log_context="/check",
     )

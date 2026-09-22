@@ -34,7 +34,7 @@ import re
 
 from google.genai import types
 
-from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD, GEMINI_EMBED_PATTERN_THRESHOLD
+from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
 from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, build_clients, generate_content_with_backup
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
@@ -168,7 +168,7 @@ _RESPONSE_SCHEMA = {
     "required": ["verdict", "risk_percentage", "key_reasons", "recommendations"],
 }
 
-_client, _backup_client = build_clients()
+_primary_pool, _backup_client = build_clients()
 
 # A risk_percentage this high reads to a user as near-certainty. That's
 # only defensible when backed by independently-confirmed evidence (a
@@ -827,12 +827,33 @@ def _reconcile_with_evidence(
     return data
 
 
-async def _compute_pattern_match(text: str) -> tuple[float, str] | None:
+async def _compute_pattern_match(text: str, link_verdicts: list[dict]) -> tuple[float, str] | None:
     """(similarity, category) once it clears the calibrated pattern
     threshold, else None - only surfaced to the model once confident, so
     a low, near-every-message similarity number doesn't become noise in
-    the evidence blob. Split out of analyze_unified."""
+    the evidence blob. Split out of analyze_unified.
+
+    Skips entirely for a bare-link-only message (2026-09-22, real
+    production false positive: a genuinely safe Google developer-docs
+    URL, https://developers.google.com/machine-learning/crash-course,
+    scored 0.78 similarity to the 'account_verification' scam script on
+    the Gemini-embedding fallback tier - well above its own 0.7
+    threshold - triggering _override_for_flagged_evidence to escalate
+    Gemini's own correct "Not a Scam" reading to "Suspicious"/78% risk).
+    A scam SCRIPT is a message-TEXT pattern ("Hi Mom, send money now") -
+    matching one against a bare URL, which has no natural-language
+    content at all, was never semantically sound to begin with, and an
+    embedding model asked to compare non-language input against a
+    corpus of sentences can score uniformly "hot" across EVERY category
+    rather than discriminating (confirmed live: this same URL scored
+    0.76-0.79 against account_verification, job_offer, lottery_prize,
+    AND investment_crypto alike - not a real semantic match to any one
+    of them, just noise). Same guard the two deterministic short-
+    circuits above already use for the same reason - see
+    _message_is_only_links's own docstring."""
     if not text:
+        return None
+    if _message_is_only_links(text, link_verdicts):
         return None
     # The live path is a 3-tier chain: bge-m3 (Modal, primary, genuinely
     # Khmer-capable) -> Gemini's own embedding API (secondary fallback,
@@ -846,16 +867,30 @@ async def _compute_pattern_match(text: str) -> tuple[float, str] | None:
     # an "everything's already on fire" fallback would work against its
     # own purpose.
     pattern_hits, pattern_source = await nearest_scam_pattern_live(text, k=1)
+    # The Gemini-embedding tier is deliberately never trusted here
+    # (2026-09-22): GEMINI_EMBED_PATTERN_THRESHOLD is still an
+    # unvalidated placeholder (bge-m3's own 0.74 took 37 real held-out
+    # cases to calibrate safely), and it has already produced two real
+    # false positives on the same production day - a safe Google
+    # developer-docs URL at 0.78 similarity to 'account_verification',
+    # and the plain English text "I'm gay" at 0.73 similarity to
+    # 'romance'. Both would have escalated a correct "Not a Scam" to a
+    # false "Uncertain/Suspicious" verdict via _override_for_flagged_
+    # evidence. Rather than pick another unvalidated number, this tier
+    # is treated as "no match" for evidence/override purposes entirely -
+    # for both the hard override AND the informational evidence handed
+    # to Gemini's own prompt, since a noisy signal can mislead Gemini's
+    # own reasoning too, not just the override - until it gets the same
+    # real calibration study bge-m3 got. bge-m3 and the hashed scheme
+    # both stay fully trusted; this only ever narrows what counts as a
+    # match, never widens it, so nothing that worked before is at risk.
+    if pattern_source == "gemini":
+        return None
     # Each tier runs measurably hotter than the last (real benign text
     # can score ~0.59 on bge-m3) - reusing one tier's threshold for
     # another would false-positive on ordinary messages, so the
-    # threshold has to match whichever tier actually answered, not
-    # just which flag/key is configured (a call can fall through
-    # tiers mid-call if the preferred one drops out).
-    threshold = {
-        "bge_m3": BGE_M3_PATTERN_THRESHOLD,
-        "gemini": GEMINI_EMBED_PATTERN_THRESHOLD,
-    }.get(pattern_source, SCAM_PATTERN_THRESHOLD)
+    # threshold has to match whichever tier actually answered.
+    threshold = BGE_M3_PATTERN_THRESHOLD if pattern_source == "bge_m3" else SCAM_PATTERN_THRESHOLD
     if pattern_hits and pattern_hits[0][0] >= threshold:
         return pattern_hits[0][0], pattern_hits[0][3]
     return None
@@ -881,7 +916,7 @@ async def _call_gemini(
     what generate_content_with_backup raises (GeminiCircuitOpenError or
     any other Exception); the caller's except clauses are unchanged."""
     response = await generate_content_with_backup(
-        _client, _backup_client,
+        _primary_pool, _backup_client,
         model=GEMINI_MODEL,
         contents=_build_contents(
             text, keyword_result, link_verdicts, file_verdict, pattern_match, sender_identity,
@@ -955,7 +990,7 @@ async def analyze_unified(
     this for private DM/group chat - a plain chat display name is
     trivially spoofable, unlike a Business connection's verified
     customer identity, so the same leniency there would be exploitable."""
-    pattern_match = await _compute_pattern_match(text)
+    pattern_match = await _compute_pattern_match(text, link_verdicts)
 
     # Deterministic short-circuit BEFORE the Gemini call (and before the
     # budget check - it costs no tokens): a bare, non-resolving/unreachable
@@ -976,7 +1011,7 @@ async def analyze_unified(
     if trusted is not None:
         return trusted
 
-    if not _client:
+    if not _primary_pool:
         return await _degrade("LLM analysis is not configured.",
                                text, keyword_result, link_verdicts, file_verdict, lang)
 

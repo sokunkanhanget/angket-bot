@@ -43,7 +43,19 @@ async def get_pool() -> AsyncConnectionPool:
         # after each restart, not during bot.py's main().
         start = time.perf_counter()
         _pool = AsyncConnectionPool(
-            SUPABASE_DB_URL, min_size=1, max_size=5, configure=_configure,
+            # max_size raised 5 -> 20 (2026-09-22, ahead of a pitch demo
+            # expecting real concurrent user load): this ONE pool now
+            # serves both vectors.py (nearly every link/text check) and
+            # subscription.py (nearly every message) - 5 was already
+            # thin for two independently-driven workloads sharing it,
+            # and a prior "Supabase pool exhausted" incident (see
+            # vectors.py's _seed_lock) showed exhaustion is a real, not
+            # theoretical, failure mode. 20 is still comfortably inside
+            # Supabase's free-tier (Nano compute) ceiling - confirmed
+            # 60 direct / 200 Supavisor pooler connections - so this
+            # process alone can't get anywhere near the real limit even
+            # at 4x its old size.
+            SUPABASE_DB_URL, min_size=1, max_size=20, configure=_configure,
             # Supabase's Session pooler closes idle connections server-side
             # well before this pool's own default max_idle (600s) - hit live
             # as "server closed the connection unexpectedly" when a stale

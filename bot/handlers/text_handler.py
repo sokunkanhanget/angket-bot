@@ -65,8 +65,35 @@ MAIN_MENU_KEYBOARDS = {locale: get_main_menu_keyboard(locale) for locale in BUTT
 MAIN_MENU_KEYBOARD = MAIN_MENU_KEYBOARDS[DEFAULT_LANG]
 
 
-def get_user_lang(context: ContextTypes.DEFAULT_TYPE) -> str:
-    return str(context.user_data.get("lang", DEFAULT_LANG))
+async def get_user_lang(context: ContextTypes.DEFAULT_TYPE, user_id: int | None) -> str:
+    """context.user_data first (cheap, correct for the rest of this
+    process's life) - only falls through to a Supabase read on a cache
+    miss, i.e. the first message from this user since the last restart
+    (context.user_data itself is pure in-memory, see set_user_lang's
+    docstring). Writes the DB result back into context.user_data so this
+    is a one-time-per-restart cost, not a query on every message.
+    user_id=None (no effective_user - shouldn't normally happen for a
+    real user message, but some callers guard defensively) skips the
+    Supabase lookup entirely and falls back to DEFAULT_LANG, same as a
+    genuine cache miss with nothing stored."""
+    cached = context.user_data.get("lang")
+    if cached is not None:
+        return str(cached)
+    stored = await subscription.get_stored_lang(user_id) if user_id is not None else None
+    lang = stored or DEFAULT_LANG
+    context.user_data["lang"] = lang
+    return lang
+
+
+async def set_user_lang(context: ContextTypes.DEFAULT_TYPE, user_id: int, lang: str) -> None:
+    """Writes both the in-process cache (context.user_data - still pure
+    in-memory, dies on every restart on its own) and the durable Supabase
+    copy (user_state.lang), replacing the two inline
+    context.user_data["lang"] = lang assignments this used to be
+    (2026-09-22) - language preference used to be lost on every restart,
+    not just a Render redeploy's filesystem wipe."""
+    context.user_data["lang"] = lang
+    await subscription.set_stored_lang(user_id, lang)
 
 
 def get_language_keyboard(lang: str) -> ReplyKeyboardMarkup:
@@ -81,7 +108,7 @@ def get_language_keyboard(lang: str) -> ReplyKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = get_user_lang(context)
+    lang = await get_user_lang(context, update.effective_user.id)
     await update.message.reply_text(
         "🛡️ <b>Welcome to Angket Bot</b>\n"
         "Your security assistant for checking suspicious content.\n\n"
@@ -94,7 +121,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="HTML",
         reply_markup=MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD),
     )
-    context.user_data["lang"] = lang
 
 
 async def handle_website(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -110,7 +136,7 @@ async def handle_website(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = update.effective_message
     if message is None:
         return
-    lang = get_user_lang(context)
+    lang = await get_user_lang(context, update.effective_user.id)
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "website_button"), url=WEBSITE_URL)]])
     await message.reply_text(t(lang, "website_prompt"), parse_mode="HTML", reply_markup=keyboard)
 
@@ -233,7 +259,7 @@ async def _reply_usage_summary(update: Update, lang: str, main_menu_keyboard: Re
     usage_user_id = update.effective_user.id if update.effective_user else None
     if usage_user_id is None:
         return
-    summary = subscription.usage_summary(usage_user_id)
+    summary = await subscription.usage_summary(usage_user_id)
     await update.message.reply_text(
         t(lang, "usage").format(
             files_used=summary["files_used"], files_limit=summary["files_limit"],
@@ -266,7 +292,7 @@ async def _try_handle_menu_command(
 
     if canonical_key in {"lang_en", "lang_km"}:
         lang = "en" if canonical_key == "lang_en" else "km"
-        context.user_data["lang"] = lang
+        await set_user_lang(context, update.effective_user.id, lang)
         await update.message.reply_text(
             t(lang, "language_set"),
             parse_mode="HTML",
@@ -314,12 +340,12 @@ async def _check_quota_gate(message, lang: str, user_id: int | None, trusted_sha
     handle_text's private-DM branch and handle_check - those two only
     ever differed in lang, plus whether a main-menu keyboard is attached
     to the notice."""
-    if user_id is None or trusted_shape or subscription.can_scan_link_or_message(user_id):
+    if user_id is None or trusted_shape or await subscription.can_scan_link_or_message(user_id):
         return False
     # Direct user spec (2026-09-15): tell them once, not on every
     # message they send while still over today's limit - see
     # should_notify_link_limit's own docstring.
-    if subscription.should_notify_link_limit(user_id):
+    if await subscription.should_notify_link_limit(user_id):
         await message.reply_text(
             t(lang, "daily_scan_limit_reached").format(
                 limit=subscription.FREEMIUM_DAILY_LINKS_MESSAGES,
@@ -435,7 +461,7 @@ async def _run_full_check_and_reply(
         # Charging only when both agree keeps the charge from ever
         # diverging from what the pre-check gate already committed to.
         if user_id is not None and not (trusted_shape and trusted_host):
-            subscription.record_link_or_message_scan(user_id)
+            await subscription.record_link_or_message_scan(user_id)
     except Exception:                          # noqa: BLE001 - must still stop the animation and reply
         logger.exception("Unified analysis failed for %s", log_context)
         await stop_status_animation(animation_task)
@@ -485,14 +511,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = message.text or message.caption
     if text is None:
         return
-    lang = get_user_lang(context)
+    user_id = update.effective_user.id if update.effective_user else None
+    lang = await get_user_lang(context, user_id)
     canonical_key = key_for_label(text)
     main_menu_keyboard = MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD)
 
     if await _try_handle_menu_command(update, context, message, text, lang, canonical_key, main_menu_keyboard):
         return
-
-    user_id = update.effective_user.id if update.effective_user else None
 
     # Plain private DM: reason over text AND any link together in one
     # Gemini call, instead of the link-only verdict a private-chat link
@@ -539,7 +564,7 @@ async def handle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if canonical_key is None:
         return
 
-    lang = get_user_lang(context)
+    lang = await get_user_lang(context, update.effective_user.id if update.effective_user else None)
     main_menu_keyboard = MAIN_MENU_KEYBOARDS.get(lang, MAIN_MENU_KEYBOARD)
     await _try_handle_menu_command(update, context, message, message.text, lang, canonical_key, main_menu_keyboard)
 

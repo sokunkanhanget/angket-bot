@@ -19,6 +19,8 @@ way, from the same real PROTECTED_BRANDS/PHISH_PATTERNS/SCAM_MESSAGE_PATTERNS
 seed data the real seed() uses.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 import pytest_asyncio
 
@@ -133,9 +135,10 @@ def isolated_scan_log_db(tmp_path_factory):
     scan_log.SCAN_LOG_DB = db
     scan_log.init_db()
     scan_log.init_url_db()
-    # subscription.py binds SCAN_LOG_DB the same separate way - same
-    # isolation gap this fixture already exists to close for scan_log.py.
-    subscription.SCAN_LOG_DB = db
+    # subscription.py no longer has a SCAN_LOG_DB attribute at all -
+    # daily_usage/trial_status moved to Supabase Postgres (2026-09-22,
+    # see fake_subscription_store above). This isolation gap doesn't
+    # apply to it anymore.
     # virustotal.py's own file_vt_cache table (added alongside the
     # link-checker's bare-trusted-link fast path) binds SCAN_LOG_DB the
     # same separate `from bot.config.config import SCAN_LOG_DB` way - same
@@ -146,17 +149,139 @@ def isolated_scan_log_db(tmp_path_factory):
     return db
 
 
-@pytest.fixture(scope="session")
-def _subscription_reset_conn(isolated_scan_log_db):
-    """One connection, opened once and reused for the whole session -
-    a fresh sqlite3.connect() per test (231 of them) measurably regressed
-    suite time (~5s -> ~12s) the same way a per-test scan_log connection
-    already did once this session, fixed the same way: keep one
-    connection alive and reuse it, since the actual isolation only needs
-    the cheap DELETEs below, not a fresh connection each time."""
-    conn = subscription._connect()
-    yield conn
-    conn.close()
+class _FakeSubscriptionStore:
+    """In-memory stand-in for Supabase's daily_usage/user_state tables
+    (bot/storage/subscription.py moved off SQLite onto Postgres,
+    2026-09-22 - Render's free tier wipes local SQLite on every deploy,
+    which used to silently reset every quota counter and Business
+    owner's trial clock). Limit/tier logic (FREEMIUM_*, _limits_for,
+    is_paid_user, _today) is NOT reimplemented here - every method calls
+    straight through to the real subscription module functions, so this
+    can't silently drift from production behavior and a test's
+    `monkeypatch.setattr(subscription, "is_paid_user", ...)` still takes
+    effect exactly as it did against the old SQLite-backed functions."""
+
+    def __init__(self):
+        self.daily_usage: dict[tuple[int, object], dict] = {}
+        self.user_state: dict[int, dict] = {}
+
+    def _row(self, user_id: int) -> dict:
+        return self.daily_usage.setdefault(
+            (user_id, subscription._today()),
+            {"files_used": 0, "links_messages_used": 0, "tokens_used": 0,
+             "file_limit_notified": False, "links_messages_limit_notified": False},
+        )
+
+    def _state(self, user_id: int) -> dict:
+        return self.user_state.setdefault(
+            user_id, {"trial_started_at": None, "notified_trial_ended": False, "lang": None},
+        )
+
+    async def can_scan_file(self, user_id: int) -> bool:
+        max_files, _, _ = await subscription._limits_for(user_id)
+        return self._row(user_id)["files_used"] < max_files
+
+    async def record_file_scan(self, user_id: int) -> None:
+        self._row(user_id)["files_used"] += 1
+
+    async def can_scan_link_or_message(self, user_id: int) -> bool:
+        _, max_links, _ = await subscription._limits_for(user_id)
+        return self._row(user_id)["links_messages_used"] < max_links
+
+    async def record_link_or_message_scan(self, user_id: int) -> None:
+        self._row(user_id)["links_messages_used"] += 1
+
+    async def has_token_budget(self, user_id: int) -> bool:
+        _, _, max_tokens = await subscription._limits_for(user_id)
+        return self._row(user_id)["tokens_used"] < max_tokens
+
+    async def record_token_usage(self, user_id: int, tokens: int) -> None:
+        if tokens > 0:
+            self._row(user_id)["tokens_used"] += tokens
+
+    async def should_notify_file_limit(self, user_id: int) -> bool:
+        row = self._row(user_id)
+        if row["file_limit_notified"]:
+            return False
+        row["file_limit_notified"] = True
+        return True
+
+    async def should_notify_link_limit(self, user_id: int) -> bool:
+        row = self._row(user_id)
+        if row["links_messages_limit_notified"]:
+            return False
+        row["links_messages_limit_notified"] = True
+        return True
+
+    async def usage_summary(self, user_id: int) -> dict:
+        max_files, max_links, max_tokens = await subscription._limits_for(user_id)
+        row = self._row(user_id)
+        return {
+            "files_used": row["files_used"], "files_limit": max_files,
+            "links_messages_used": row["links_messages_used"], "links_messages_limit": max_links,
+            "tokens_used": row["tokens_used"], "tokens_limit": max_tokens,
+        }
+
+    async def ensure_trial_started(self, user_id: int) -> None:
+        state = self._state(user_id)
+        if state["trial_started_at"] is None:
+            state["trial_started_at"] = datetime.now(timezone.utc)
+
+    async def live_detect_trial_days_left(self, user_id: int) -> int:
+        started = self.user_state.get(user_id, {}).get("trial_started_at")
+        if started is None:
+            return subscription.FREEMIUM_TRIAL_DAYS
+        elapsed_days = (datetime.now(timezone.utc) - started).days
+        return max(subscription.FREEMIUM_TRIAL_DAYS - elapsed_days, 0)
+
+    async def live_detect_allowed(self, user_id: int) -> bool:
+        if await subscription.is_paid_user(user_id):
+            return True
+        return await self.live_detect_trial_days_left(user_id) > 0
+
+    async def should_notify_live_detect_ended(self, user_id: int) -> bool:
+        state = self.user_state.get(user_id)
+        if state is None or state["notified_trial_ended"]:
+            return False
+        state["notified_trial_ended"] = True
+        return True
+
+    async def get_stored_lang(self, user_id: int) -> str | None:
+        return self.user_state.get(user_id, {}).get("lang")
+
+    async def set_stored_lang(self, user_id: int, lang: str) -> None:
+        self._state(user_id)["lang"] = lang
+
+
+@pytest.fixture(autouse=True)
+def fake_subscription_store(monkeypatch):
+    """Autouse (unlike fake_vector_store, which is opt-in): quota/budget
+    checks gate nearly every real handler path this suite exercises
+    (handle_file, handle_text, analyze_unified, analyze_text_with_llm,
+    handle_business_message all call into subscription.py, often
+    incidentally to what a given test is actually checking) - the old
+    SQLite-backed _reset_subscription_usage fixture was autouse for the
+    exact same reason. Without this, most of the suite would either hit
+    the real Supabase pool (slow, and daily_usage/user_state may not
+    even exist there yet) or silently rely on subscription.py's own
+    fail-open error handling on every call - technically harmless
+    (never blocks a test), but a real, unnecessary network round trip
+    per call, on nearly every test in the suite.
+
+    Returns the store itself for tests that want to seed/inspect state
+    directly (e.g. simulating a trial started 8 days ago) instead of
+    the old raw `sub._connect()` SQL inserts."""
+    store = _FakeSubscriptionStore()
+    for name in (
+        "can_scan_file", "record_file_scan", "can_scan_link_or_message",
+        "record_link_or_message_scan", "has_token_budget", "record_token_usage",
+        "should_notify_file_limit", "should_notify_link_limit",
+        "should_notify_live_detect_ended", "usage_summary", "ensure_trial_started",
+        "live_detect_trial_days_left", "live_detect_allowed",
+        "get_stored_lang", "set_stored_lang",
+    ):
+        monkeypatch.setattr(subscription, name, getattr(store, name))
+    return store
 
 
 @pytest.fixture(autouse=True)
@@ -226,20 +351,6 @@ def _no_real_admin_alerts(monkeypatch):
     for every OTHER test that doesn't expect to touch alerting at all."""
     from bot.storage import health_alerts
     monkeypatch.setattr(health_alerts, "ADMIN_CHAT_ID", None)
-
-
-@pytest.fixture(autouse=True)
-def _reset_subscription_usage(_subscription_reset_conn):
-    """Per-test (unlike the session-scoped fixture above): many existing
-    handler tests reuse the same hardcoded fake user id (e.g.
-    test_file_handler.py's _file_update() always defaults to id=7)
-    across several tests in the same file. Since daily_usage/trial_status
-    live in the same session-scoped db, an earlier test's real recorded
-    usage (record_file_scan, etc.) would otherwise carry over and trip a
-    later, unrelated test's rate-limit check unexpectedly."""
-    _subscription_reset_conn.execute("delete from daily_usage")
-    _subscription_reset_conn.execute("delete from trial_status")
-    _subscription_reset_conn.commit()
 
 
 @pytest.fixture(autouse=True)

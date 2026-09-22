@@ -157,7 +157,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     document = update.message.document
     file_name = document.file_name or "unknown_file"
     user_id = update.effective_user.id
-    lang = get_user_lang(context)
+    lang = await get_user_lang(context, user_id)
 
     status_suffix = f" `{file_name}`..."
     message = await update.message.reply_text(
@@ -181,13 +181,13 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # file is never blocked or charged - only a genuinely new hash pays
     # quota.
     already_cached = cached_result(sha256) is not None
-    if not already_cached and not subscription.can_scan_file(user_id):
+    if not already_cached and not await subscription.can_scan_file(user_id):
         await stop_status_animation(animation_task)
         # Direct user spec (2026-09-15): tell them once, not on every
         # file they try to send while still over today's limit - see
         # should_notify_file_limit's own docstring. The scan itself is
         # blocked either way; only whether we SAY so is conditional.
-        if subscription.should_notify_file_limit(user_id):
+        if await subscription.should_notify_file_limit(user_id):
             await message.edit_text(
                 t(lang, "daily_file_limit_reached").format(
                     limit=subscription.FREEMIUM_DAILY_FILES,
@@ -210,7 +210,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await stop_status_animation(animation_task)
 
     if not already_cached:
-        subscription.record_file_scan(user_id)
+        await subscription.record_file_scan(user_id)
 
     level, risk_percentage, reasons = _classify_file_result(result, lang)
     reply = _format_file_verdict(level, risk_percentage, reasons, lang)

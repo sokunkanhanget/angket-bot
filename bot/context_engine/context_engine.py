@@ -905,7 +905,7 @@ async def _call_gemini(
         ),
     )
     if user_id is not None and response.usage_metadata is not None:
-        subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
+        await subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
     data = json.loads(response.text)
     if data.get("risk_percentage") is not None:
         data["risk_percentage"] = max(0, min(100, int(data["risk_percentage"])))
@@ -980,7 +980,7 @@ async def analyze_unified(
         return await _degrade("LLM analysis is not configured.",
                                text, keyword_result, link_verdicts, file_verdict, lang)
 
-    if user_id is not None and not subscription.has_token_budget(user_id):
+    if user_id is not None and not await subscription.has_token_budget(user_id):
         # Same graceful-degradation path as "Gemini isn't configured" -
         # the offline signals (keyword/link/file verdicts, scam-pattern
         # similarity) still produce a real answer, just without live AI

@@ -220,7 +220,7 @@ async def test_daily_file_limit_blocks_scanning_once_reached():
     update, context, sent = _file_update()
     uid = update.effective_user.id
     for _ in range(subscription.FREEMIUM_DAILY_FILES):
-        subscription.record_file_scan(uid)
+        await subscription.record_file_scan(uid)
 
     # download_and_hash now runs BEFORE the quota gate (unavoidable - the
     # gate itself needs the hash, to check file_vt_cache for a free
@@ -257,8 +257,8 @@ async def test_cached_hash_skips_quota_even_when_over_limit():
     update, context, sent = _file_update()
     uid = update.effective_user.id
     for _ in range(subscription.FREEMIUM_DAILY_FILES):
-        subscription.record_file_scan(uid)
-    used_before = subscription.usage_summary(uid)["files_used"]
+        await subscription.record_file_scan(uid)
+    used_before = (await subscription.usage_summary(uid))["files_used"]
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="a" * 64)), \
          patch("bot.handlers.file_handler.cached_result", return_value={
@@ -276,7 +276,7 @@ async def test_cached_hash_skips_quota_even_when_over_limit():
         await handle_file(update, context)
 
     assert "SAFE / LEGITIMATE" in sent.edit_text.call_args.args[0]
-    assert subscription.usage_summary(uid)["files_used"] == used_before
+    assert (await subscription.usage_summary(uid))["files_used"] == used_before
 
 
 @pytest.mark.asyncio
@@ -291,8 +291,8 @@ async def test_a_failed_scan_does_not_consume_the_daily_quota():
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
 
-    assert subscription.can_scan_file(uid)  # quota untouched by the failure
-    summary = subscription.usage_summary(uid)
+    assert await subscription.can_scan_file(uid)  # quota untouched by the failure
+    summary = await subscription.usage_summary(uid)
     assert summary["files_used"] == 0
 
 
@@ -397,7 +397,7 @@ async def test_daily_file_limit_only_notifies_once():
     sent.delete = AsyncMock()
     uid = update.effective_user.id
     for _ in range(subscription.FREEMIUM_DAILY_FILES):
-        subscription.record_file_scan(uid)
+        await subscription.record_file_scan(uid)
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="a" * 64)), \
          patch("bot.handlers.file_handler.cached_result", return_value=None), \

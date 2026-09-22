@@ -150,12 +150,13 @@ def test_key_for_label_and_language_keyboard_are_available():
     assert keyboard.keyboard[1][0].text == label("km", "back")
 
 
-def test_get_user_lang_defaults_and_persists_context():
+@pytest.mark.asyncio
+async def test_get_user_lang_defaults_and_persists_context():
     context = type("Ctx", (), {"user_data": {}})()
-    assert get_user_lang(context) == "en"
+    assert await get_user_lang(context, 1) == "en"
 
     context.user_data["lang"] = "km"
-    assert get_user_lang(context) == "km"
+    assert await get_user_lang(context, 1) == "km"
 
 
 @pytest.mark.asyncio
@@ -435,9 +436,9 @@ async def test_usage_menu_button_shows_real_recorded_counts():
     update = _private_update(label("en", "usage"))
     context = _private_context()
 
-    subscription.record_link_or_message_scan(update.effective_user.id)
-    subscription.record_link_or_message_scan(update.effective_user.id)
-    subscription.record_file_scan(update.effective_user.id)
+    await subscription.record_link_or_message_scan(update.effective_user.id)
+    await subscription.record_link_or_message_scan(update.effective_user.id)
+    await subscription.record_file_scan(update.effective_user.id)
 
     await handle_text(update, context)
 
@@ -452,7 +453,7 @@ async def test_daily_scan_limit_blocks_before_any_real_work():
     update = _private_update("free bitcoin now, click nowhere")
     context = _private_context()
     for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
-        subscription.record_link_or_message_scan(update.effective_user.id)
+        await subscription.record_link_or_message_scan(update.effective_user.id)
 
     # extract_text_link_entities now runs BEFORE the quota gate too
     # (unavoidable - the gate needs it for the bare_trusted_link shape
@@ -483,7 +484,7 @@ async def test_daily_scan_limit_only_notifies_once_in_private_dm():
     update = _private_update("free bitcoin now, click nowhere")
     context = _private_context()
     for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
-        subscription.record_link_or_message_scan(update.effective_user.id)
+        await subscription.record_link_or_message_scan(update.effective_user.id)
 
     with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.text_handler.analyze_unified") as mock_unified, \
@@ -669,7 +670,7 @@ async def test_handle_check_shows_nothing_to_check_when_reply_has_no_text_or_doc
 async def test_handle_check_blocked_by_daily_quota():
     update, context = _group_check_update(args=["http://example.com"])
     for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
-        subscription.record_link_or_message_scan(42)
+        await subscription.record_link_or_message_scan(42)
 
     with patch("bot.handlers.text_handler.ensure_vectors_seeded", AsyncMock()) as mock_seed, \
          patch("bot.handlers.text_handler.check_message_full", AsyncMock()) as mock_check:
@@ -697,7 +698,7 @@ async def test_handle_check_only_notifies_once():
     update = _private_update("free bitcoin now, click nowhere")
     private_context = _private_context()
     for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
-        subscription.record_link_or_message_scan(42)
+        await subscription.record_link_or_message_scan(42)
     with patch("bot.handlers.text_handler.extract_text_link_entities", return_value=[]), \
          patch("bot.handlers.text_handler.analyze_unified"), \
          patch("bot.handlers.text_handler.check_message_full"):
@@ -719,7 +720,7 @@ async def test_handle_check_checks_quota_before_seeding_vectors():
     # happen for an already-over-quota sender.
     update, context = _group_check_update(args=["free prize claim now"])
     for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
-        subscription.record_link_or_message_scan(42)
+        await subscription.record_link_or_message_scan(42)
 
     with patch("bot.handlers.text_handler.ensure_vectors_seeded", AsyncMock()) as mock_seed:
         await handle_check(update, context)
@@ -854,8 +855,8 @@ _TRUSTED_NOTICE = {**_NOT_A_SCAM, "trusted_link_notice_host": "facebook.com"}
 async def test_handle_check_bare_trusted_link_skips_quota_even_when_over_limit():
     update, context = _group_check_update(args=["https://facebook.com"])
     for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
-        subscription.record_link_or_message_scan(42)
-    used_before = subscription.usage_summary(42)["links_messages_used"]
+        await subscription.record_link_or_message_scan(42)
+    used_before = (await subscription.usage_summary(42))["links_messages_used"]
     status_message = AsyncMock()
     context.bot.send_message = AsyncMock(return_value=status_message)
 
@@ -869,7 +870,7 @@ async def test_handle_check_bare_trusted_link_skips_quota_even_when_over_limit()
     reply = status_message.edit_text.call_args[0][0]
     assert "facebook.com" in reply
     assert "VERDICT" not in reply  # the lightweight notice, not the full template
-    assert subscription.usage_summary(42)["links_messages_used"] == used_before
+    assert (await subscription.usage_summary(42))["links_messages_used"] == used_before
 
 
 @pytest.mark.asyncio
@@ -883,7 +884,7 @@ async def test_handle_check_shape_match_but_unsafe_verdict_still_charges_quota()
          patch("bot.handlers.text_handler.analyze_unified", AsyncMock(return_value=_NOT_A_SCAM)):
         await handle_check(update, context)
 
-    assert subscription.usage_summary(42)["links_messages_used"] == 1
+    assert (await subscription.usage_summary(42))["links_messages_used"] == 1
 
 
 @pytest.mark.asyncio
@@ -891,8 +892,8 @@ async def test_handle_text_private_bare_trusted_link_skips_quota_even_when_over_
     update = _private_update("https://facebook.com")
     context = _private_context()
     for _ in range(subscription.FREEMIUM_DAILY_LINKS_MESSAGES):
-        subscription.record_link_or_message_scan(42)
-    used_before = subscription.usage_summary(42)["links_messages_used"]
+        await subscription.record_link_or_message_scan(42)
+    used_before = (await subscription.usage_summary(42))["links_messages_used"]
     status_message = AsyncMock()
     update.message.reply_text = AsyncMock(return_value=status_message)
 
@@ -907,4 +908,4 @@ async def test_handle_text_private_bare_trusted_link_skips_quota_even_when_over_
     reply = status_message.edit_text.call_args[0][0]
     assert "facebook.com" in reply
     assert "VERDICT" not in reply  # the lightweight notice, not the full template
-    assert subscription.usage_summary(42)["links_messages_used"] == used_before
+    assert (await subscription.usage_summary(42))["links_messages_used"] == used_before

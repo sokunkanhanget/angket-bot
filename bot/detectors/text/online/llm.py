@@ -149,7 +149,7 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
     if not _client:
         return await _fallback("LLM analysis is not configured.", "missing_api_key", text)
 
-    if user_id is not None and not subscription.has_token_budget(user_id):
+    if user_id is not None and not await subscription.has_token_budget(user_id):
         return await _fallback("Daily AI token budget exhausted.", "token_budget_exhausted", text)
 
     try:
@@ -164,7 +164,7 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
             ),
         )
         if user_id is not None and response.usage_metadata is not None:
-            subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
+            await subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
         data = json.loads(response.text)
         risk_percentage = max(0, min(100, int(data.get("risk_percentage", 0))))
         return {

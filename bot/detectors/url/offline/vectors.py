@@ -48,11 +48,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
-from pgvector.psycopg import register_vector_async
-from psycopg_pool import AsyncConnectionPool
-
-from bot.config.config import SCAN_LOG_DB, SUPABASE_DB_URL
+from bot.config.config import SCAN_LOG_DB
 from bot.storage import sqlite_pool
+from bot.storage.postgres_pool import get_pool as _get_pool
 
 DIM = 256          # vector dimensionality
 NGRAM = 4          # character n-gram size
@@ -122,37 +120,11 @@ def _densify(vec: dict[int, float]) -> list[float]:
 
 
 # --- Postgres-backed k-NN (Supabase + pgvector) -------------------------
-
-_pool: AsyncConnectionPool | None = None
-
-
-async def _configure(conn) -> None:
-    await register_vector_async(conn)
-
-
-async def _get_pool() -> AsyncConnectionPool:
-    global _pool
-    if _pool is None:
-        # Lazy, first-message cost, NOT a startup cost - this only runs
-        # once a handler first calls upsert_vector/nearest, which only
-        # happens on the first qualifying Telegram message the bot
-        # receives after each restart, not during bot.py's main().
-        start = time.perf_counter()
-        _pool = AsyncConnectionPool(
-            SUPABASE_DB_URL, min_size=1, max_size=5, configure=_configure,
-            # Supabase's Session pooler closes idle connections server-side
-            # well before this pool's own default max_idle (600s) - hit live
-            # as "server closed the connection unexpectedly" when a stale
-            # pooled connection got handed out unchecked. check_connection
-            # verifies a connection is actually alive on checkout and
-            # transparently reconnects if it isn't, instead of handing out
-            # a dead one and letting the query fail.
-            check=AsyncConnectionPool.check_connection,
-            open=False,
-        )
-        await _pool.open()
-        logger.info("[first-message] Supabase pool opened in %.3fs", time.perf_counter() - start)
-    return _pool
+# Pool itself now lives in bot/storage/postgres_pool.py (2026-09-22) -
+# shared with subscription.py's daily_usage/user_state tables instead of
+# each module opening its own pool against Supabase's limited connection
+# ceiling. _get_pool alias kept so every call site below (upsert_vector,
+# nearest, seed, etc.) is untouched.
 
 
 async def upsert_vector(kind: str, key: str, text: str, label: str | None = None) -> None:

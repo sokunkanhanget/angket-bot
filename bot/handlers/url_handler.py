@@ -129,7 +129,7 @@ async def _owner_chat_id(context: ContextTypes.DEFAULT_TYPE, business_connection
     return conn.user_chat_id
 
 
-def _owner_lang(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: int) -> str:
+async def _owner_lang(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: int) -> str:
     """The business-owner-DM notification is read only by the OWNER, never
     the customer - so it must translate based on the OWNER's language
     preference, not whatever context.user_data the current (customer's)
@@ -137,12 +137,20 @@ def _owner_lang(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: int) -> str:
     user_id in Telegram, and PTB keeps one shared user_data store keyed
     by user_id across every chat that user touches (Application.user_data,
     a read-only Mapping - not context.user_data, which is scoped to the
-    CURRENT update's effective_user). If the owner has ever run /start
-    and switched language in their own private chat with the bot, it's
-    already sitting under this same key - no new state needed. Falls back
-    to English if they never have."""
+    CURRENT update's effective_user). If the owner has run /start or
+    switched language in their own private chat with the bot SINCE this
+    process started, it's already sitting under this same key - cheap,
+    no DB hit. Falls through to the same durable Supabase lookup
+    text_handler.get_user_lang uses (2026-09-22) on a cache miss - e.g.
+    right after a Render restart, before the owner's own next private
+    message would otherwise have repopulated this in-memory-only store -
+    same bug class that migration fixed, just a second call site."""
     owner_data = context.application.user_data.get(owner_chat_id) or {}
-    return owner_data.get("lang", DEFAULT_LANG)
+    cached = owner_data.get("lang")
+    if cached is not None:
+        return cached
+    stored = await subscription.get_stored_lang(owner_chat_id)
+    return stored or DEFAULT_LANG
 
 
 async def on_business_connection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -298,12 +306,12 @@ async def _gate_live_detect(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: i
     re-sent the same notice, which would get spammy for a business
     receiving many messages. See should_notify_live_detect_ended's own
     docstring for why nothing resets this flag today."""
-    subscription.ensure_trial_started(owner_chat_id)
-    if subscription.live_detect_allowed(owner_chat_id):
+    await subscription.ensure_trial_started(owner_chat_id)
+    if await subscription.live_detect_allowed(owner_chat_id):
         return False
-    if subscription.should_notify_live_detect_ended(owner_chat_id):
+    if await subscription.should_notify_live_detect_ended(owner_chat_id):
         await context.bot.send_message(
-            chat_id=owner_chat_id, text=t(_owner_lang(context, owner_chat_id), "live_detect_trial_ended"),
+            chat_id=owner_chat_id, text=t(await _owner_lang(context, owner_chat_id), "live_detect_trial_ended"),
             parse_mode="HTML",
         )
     return True
@@ -449,7 +457,7 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     # The OWNER reads this notification, not the customer who sent the
     # message - translate based on their language preference, not the
     # customer's (see _owner_lang's docstring for why those can differ).
-    owner_lang = _owner_lang(context, owner_chat_id)
+    owner_lang = await _owner_lang(context, owner_chat_id)
 
     status, animation_task, header = await _send_business_status(context, owner_chat_id, sender, message.date, owner_lang)
     if status is None:

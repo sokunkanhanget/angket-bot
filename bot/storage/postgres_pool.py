@@ -56,6 +56,28 @@ async def get_pool() -> AsyncConnectionPool:
             # process alone can't get anywhere near the real limit even
             # at 4x its old size.
             SUPABASE_DB_URL, min_size=1, max_size=20, configure=_configure,
+            # Bounded waits (2026-09-24, found by a networking review).
+            # Both of these were previously unset, meaning psycopg_pool's
+            # own 30s default for getconn and NO connect timeout at all.
+            # That mattered because a single private-DM message makes
+            # SEVERAL sequential calls through this pool (trial check,
+            # quota check, token budget, usage recording, language
+            # lookup, plus vectors.py's own similarity queries) - during
+            # a real Supabase outage each one waited out its own full
+            # 30s before the caller's fail-open path could run, so one
+            # message could sit for minutes before the user got any
+            # reply at all. Every quota/paywall gate above already fails
+            # OPEN on a Supabase error, so timing out sooner costs a
+            # legitimate user nothing except a much faster answer.
+            #
+            # Deliberately NOT setting a statement_timeout here: this
+            # same pool runs vectors.py's seeding batches (144+ row
+            # upserts), which legitimately take longer than a normal
+            # query, and capping those without measuring them first
+            # would trade a rare outage stall for a real, routine
+            # breakage.
+            timeout=5.0,
+            kwargs={"connect_timeout": 5},
             # Supabase's Session pooler closes idle connections server-side
             # well before this pool's own default max_idle (600s) - hit live
             # as "server closed the connection unexpectedly" when a stale

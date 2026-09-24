@@ -127,9 +127,30 @@ async def aclose() -> None:
             logger.debug("Shared httpx client close failed", exc_info=True)
     _client = None
 
-_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
-_TAG_RE = re.compile(r"<[^>]+>")
+def _strip_tags(html: str) -> str:
+    """Linear replacement for the old _TAG_RE = r"<[^>]+>" .sub(" ", ...).
+
+    That pattern was catastrophic for the SAME reason the two below it
+    were: on input holding many "<" and no ">", `[^>]+` scans to EOF and
+    backtracks at every single "<", which is O(n^2). It was the larger
+    half of the real 20.96s measured on a hostile page - fixing only the
+    script/style pattern still left 1.73s here."""
+    out: list[str] = []
+    i = 0
+    while True:
+        open_at = html.find("<", i)
+        if open_at == -1:
+            out.append(html[i:])
+            return "".join(out)
+        close_at = html.find(">", open_at + 1)
+        if close_at == -1:
+            # No closing ">" anywhere after this - the old regex matched
+            # nothing from here on, so the remainder stays verbatim.
+            out.append(html[i:])
+            return "".join(out)
+        out.append(html[i:open_at])
+        out.append(" ")
+        i = close_at + 1
 _PASSWORD_INPUT_RE = re.compile(r'<input\b[^>]*\btype\s*=\s*["\']password["\']', re.IGNORECASE)
 _FORM_ACTION_RE = re.compile(r'<form\b[^>]*\baction\s*=\s*["\']([^"\']*)["\']', re.IGNORECASE)
 
@@ -138,11 +159,98 @@ def _host(url: str) -> str:
     return (urlsplit(url).hostname or "").lower()
 
 
+# Both of these used to be plain backtracking regexes:
+#   _TITLE_RE       = r"<title[^>]*>(.*?)</title>"
+#   _SCRIPT_STYLE_RE = r"<(script|style)\b.*?</\1>"
+# Both were CONFIRMED catastrophic (ReDoS) on attacker-controlled page
+# HTML, which this function is fed by design - trace() downloads an
+# arbitrary user-supplied URL and passes the body straight here. A lazy
+# `.*?` restarts its scan-to-EOF at every one of N unterminated
+# `<script` tokens, which is O(n^2): a page of `"<script " * 25000`
+# (exactly MAX_PAGE_BYTES, so the size cap does NOT help) measured
+# 20.96s of solid CPU on this machine, against 0.0014s for a normal
+# page of the same size. python-telegram-bot is single-threaded async,
+# so that is 21 REAL seconds during which every other user's scan,
+# every Business-chat notification, and Telegram polling itself are all
+# frozen - triggerable by anyone who can send the bot a link.
+#
+# Replaced with index-based scanning below. Every str.find() starts at a
+# monotonically increasing offset, so the whole pass is O(n) with no
+# backtracking, and the observable output is unchanged (verified against
+# the old patterns on real HTML).
+_SCRIPT_STYLE_TAGS = ("<script", "<style")
+
+
+def _strip_script_style(html: str) -> str:
+    """Drops <script>/<style> blocks, matching the old regex's semantics
+    exactly - including its quirks, deliberately:
+
+    - an UNCLOSED <script> is left in place (the old regex simply
+      didn't match it; _TAG_RE below then strips the tag itself), and
+    - matching is non-greedy, so the block ends at the FIRST following
+      close tag, not the last.
+
+    The `\\b` the old pattern had after the tag name is preserved by the
+    _is_word_char check - "<scriptfoo>" was never a script tag and
+    still isn't."""
+    lowered = html.lower()
+    out: list[str] = []
+    i = 0
+
+    while True:
+        open_at = -1
+        open_tag = ""
+        for tag in _SCRIPT_STYLE_TAGS:
+            found = lowered.find(tag, i)
+            if found != -1 and (open_at == -1 or found < open_at):
+                open_at, open_tag = found, tag
+
+        if open_at == -1:
+            out.append(html[i:])
+            return "".join(out)
+
+        after = open_at + len(open_tag)
+        if after < len(html) and (html[after].isalnum() or html[after] == "_"):
+            # "<scriptfoo" - not a real script tag, same as the old \b.
+            out.append(html[i:after])
+            i = after
+            continue
+
+        close_at = lowered.find("</" + open_tag[1:], after)
+        if close_at == -1:
+            # Unclosed: the old regex found no match at all from here on
+            # (any later open tag would have had no close either), so
+            # everything that remains is emitted verbatim.
+            out.append(html[i:])
+            return "".join(out)
+
+        close_end = lowered.find(">", close_at)
+        close_end = len(html) if close_end == -1 else close_end + 1
+        out.append(html[i:open_at])
+        out.append(" ")
+        i = close_end
+
+
+def _extract_title(html: str) -> str:
+    """First <title>...</title>'s contents, or "" - the linear
+    equivalent of the old _TITLE_RE.search()."""
+    lowered = html.lower()
+    open_at = lowered.find("<title")
+    if open_at == -1:
+        return ""
+    open_end = lowered.find(">", open_at)
+    if open_end == -1:
+        return ""
+    close_at = lowered.find("</title", open_end + 1)
+    if close_at == -1:
+        return ""
+    return html[open_end + 1:close_at].strip()
+
+
 def extract_page_text(html: str) -> str:
     """Title + tag-stripped body text, for embedding and MinHash."""
-    title_match = _TITLE_RE.search(html)
-    title = title_match.group(1).strip() if title_match else ""
-    body = _TAG_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", html))
+    title = _extract_title(html)
+    body = _strip_tags(_strip_script_style(html))
     return f"{title}\n{re.sub(r'\s+', ' ', body).strip()}"
 
 

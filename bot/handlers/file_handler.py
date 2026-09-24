@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.scanner import cached_result, download_and_hash, scan_file
@@ -160,9 +161,23 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     lang = await get_user_lang(context, user_id)
 
     status_suffix = f" `{file_name}`..."
-    message = await update.message.reply_text(
-        f"{t(lang, STATUS_CHECKING_KEY)}{status_suffix}", parse_mode="Markdown",
-    )
+    status_text = f"{t(lang, STATUS_CHECKING_KEY)}{status_suffix}"
+    try:
+        message = await update.message.reply_text(status_text, parse_mode="Markdown")
+    except BadRequest:
+        # A FILENAME is attacker-controlled too, and this send had no
+        # error handling at all (2026-09-24 security review): a document
+        # named "inv`oice.pdf" raised BadRequest here and killed the
+        # handler outright, before the file was even hashed - the user
+        # just got nothing, with only _on_error's log line to show for
+        # it. Same failure mode, and same plain-text retry, as
+        # url_handler's own two Markdown sends; this was the third and
+        # last unguarded one.
+        logger.warning(
+            "File status send failed to parse as Markdown (likely Markdown "
+            "syntax in the filename) - retrying as plain text"
+        )
+        message = await update.message.reply_text(status_text)
     animation_task = asyncio.create_task(animate_status(message, lang, status_suffix))
 
     try:

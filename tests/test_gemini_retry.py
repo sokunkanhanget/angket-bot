@@ -308,3 +308,56 @@ async def test_429_retry_against_backup_key_still_works_with_the_breaker_present
 
     assert result == "from backup"
     assert circuit_is_open() is False
+
+
+# --- shared SSL context (2026-09-24 performance review) ---------------
+
+
+def test_build_client_reuses_one_ssl_context_instead_of_rebuilding_per_client():
+    # genai.Client builds THREE SSL contexts internally per client (httpx,
+    # aiohttp, websocket transports), each parsing certifi's ~200KB CA
+    # bundle from disk - a measured 2.548s for this project's 3 real
+    # clients. Passing a prebuilt context makes the SDK reuse it (0.005s).
+    from bot.detectors.text.online.gemini_retry import _shared_ssl_context, build_client
+
+    assert _shared_ssl_context() is _shared_ssl_context()
+
+    client = build_client("fake-key-for-this-test")
+    assert client is not None
+
+
+def test_the_shared_ssl_context_still_really_verifies_certificates():
+    # The performance fix above hands the SDK our own SSL context. That
+    # is only acceptable while it keeps the SAME posture the SDK's own
+    # default had - a context with verification disabled would make every
+    # Gemini call trivially MITM-able, which is exactly the kind of
+    # silent weakening a "speed up the client" edit could introduce later.
+    import ssl
+
+    from bot.detectors.text.online.gemini_retry import _shared_ssl_context
+
+    context = _shared_ssl_context()
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_get_clients_builds_once_and_is_not_called_at_import_time():
+    # The laziness itself: build_clients() cost a measured 1.456s and
+    # used to run at import of context_engine.py, i.e. on every Render
+    # cold start before the bot could poll at all - 67% of the whole
+    # import phase, paid whether or not Gemini was ever used.
+    import bot.detectors.text.online.gemini_retry as gr
+
+    original_pool, original_backup = gr._shared_pool, gr._shared_backup
+    try:
+        gr._shared_pool = None
+        gr._shared_backup = None
+
+        first_pool, first_backup = gr.get_clients()
+        second_pool, second_backup = gr.get_clients()
+
+        # Same objects, not rebuilt.
+        assert first_pool is second_pool
+        assert first_backup is second_backup
+    finally:
+        gr._shared_pool, gr._shared_backup = original_pool, original_backup

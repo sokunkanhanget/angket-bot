@@ -927,9 +927,26 @@ async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | No
 
     if not urls:
         return []
-    return list(await asyncio.gather(
-        *(analyze_url(u, display_by_url.get(u), u.lower() in malformed_visible_urls) for u in urls)
-    ))
+    # return_exceptions=True (2026-09-24, networking review): without it,
+    # ONE link raising anywhere in the scoring code discarded the
+    # already-completed verdicts for every OTHER link in the same message
+    # and propagated up, so a user who sent 5 links and hit a single edge
+    # case got no link verdict at all instead of the 4 real ones that
+    # succeeded. Both handlers do catch the exception, so this was a
+    # silent loss of good results, not a crash. Matches the same
+    # return_exceptions treatment _gather_online_signals already uses.
+    results = await asyncio.gather(
+        *(analyze_url(u, display_by_url.get(u), u.lower() in malformed_visible_urls) for u in urls),
+        return_exceptions=True,
+    )
+    verdicts = []
+    for url, result in zip(urls, results):
+        if isinstance(result, BaseException):
+            logger.exception("Link check failed for %s - dropping just this link", url,
+                              exc_info=result)
+            continue
+        verdicts.append(result)
+    return verdicts
 
 
 def _risk_percent_and_label(score: int) -> tuple[int, str]:

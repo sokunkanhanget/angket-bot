@@ -20,9 +20,32 @@ import json
 import sqlite3
 import time
 
-import vt
-
 from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP
+
+# `vt` is imported lazily (2026-09-24, performance review). It pulls in
+# aiohttp, together a measured ~0.18s+ of the bot's cold-start import
+# phase on this machine and proportionally more on Render's slower free
+# tier - paid on every single restart even though this module is only
+# ever reached when a user actually uploads a FILE. Python caches
+# modules in sys.modules, so the deferred import costs nothing after the
+# first real file scan.
+#
+# Exposed through a module-level __getattr__ (PEP 562) rather than only
+# importing inside each function, because `vt` must still resolve as an
+# ATTRIBUTE of this module: the tests patch
+# "bot.detectors.file.online.virustotal.vt.Client", which has to be able
+# to traverse virustotal.vt. This keeps that working untouched while
+# still never importing vt at startup. It resolves to the exact same
+# global vt module the functions below import, so patching it has
+# exactly the same effect it always did.
+
+
+def __getattr__(name: str):
+    if name == "vt":
+        import vt
+
+        return vt
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
@@ -92,6 +115,8 @@ async def _fetch_from_vt(file_hash: str, api_key: str) -> dict:
     included) or a raw connection exception straight through - scan_vt_hash
     decides what each of those means (a real "not found" answer, a
     quota error worth retrying on the backup key, or any other failure)."""
+    import vt
+
     async with vt.Client(api_key, timeout=FETCH_TIMEOUT_SECONDS) as client:
         file_obj = await client.get_object_async(f"/files/{file_hash}")
         stats = file_obj.last_analysis_stats
@@ -154,6 +179,8 @@ async def scan_vt_hash(file_hash: str) -> dict:
     cached = cached_result(file_hash)
     if cached is not None:
         return cached
+
+    import vt
 
     last_error: Exception | None = None
     for api_key in filter(None, (VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP)):

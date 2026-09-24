@@ -21,6 +21,8 @@ by the newer intermediate tier - see test_scam_patterns_gemini.py for
 the 3-tier chain itself.
 """
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -169,3 +171,76 @@ async def test_bge_m3_index_is_built_once_and_reused(monkeypatch):
     # Same object, not rebuilt - proves the lazy-build-once behavior,
     # not just "it happens to still work".
     assert scam_patterns._bge_m3_index is index_after_first_call
+
+
+# --- failed-build negative cache (2026-09-24 networking review) -------
+#
+# Fully mocked, no real Modal/Ollama call - deliberately NOT gated
+# behind _ollama_reachable() like the tests above, since the whole
+# point is the behavior when that endpoint is exactly what's NOT
+# reachable.
+
+
+@pytest.mark.asyncio
+async def test_a_failed_index_build_is_not_retried_on_every_single_message(monkeypatch):
+    # Real defect this locks in (found by a networking audit): a failed
+    # build cached nothing, so the next message re-entered and re-ran a
+    # full 30-call concurrent embedding burst, each call bounded at
+    # bge_m3_embed.TIMEOUT_SECONDS (30s) - and serialized behind the
+    # build lock, so a burst of users queued behind each other and the
+    # last one could wait minutes. Only the SUCCESS path was cached.
+    monkeypatch.setattr(scam_patterns, "_bge_m3_index", None)
+    monkeypatch.setattr(scam_patterns, "_bge_m3_index_retry_after", 0.0)
+
+    call_count = 0
+
+    async def _unreachable_modal(text):
+        nonlocal call_count
+        call_count += 1
+        return None
+
+    monkeypatch.setattr(
+        "bot.detectors.text.online.bge_m3_embed.embed_bge_m3", _unreachable_modal
+    )
+
+    seed_row_count = len(scam_patterns._seed_rows())
+
+    results = await asyncio.gather(
+        *(scam_patterns._ensure_bge_m3_index() for _ in range(5))
+    )
+
+    assert all(result is False for result in results)
+    # Exactly ONE build attempt total across 5 concurrent callers, not
+    # one per caller. The pre-fix number here was seed_row_count * 5.
+    assert call_count == seed_row_count
+
+
+@pytest.mark.asyncio
+async def test_the_index_build_cooldown_expires_so_a_recovered_modal_is_picked_up(monkeypatch):
+    # The other half: a cooled-off failure must not become permanent -
+    # a Modal COLD START is a real, common transient here, not an
+    # outage, so the bot has to retry once the window passes.
+    monkeypatch.setattr(scam_patterns, "_bge_m3_index", None)
+    monkeypatch.setattr(scam_patterns, "_bge_m3_index_retry_after", 0.0)
+
+    attempts = 0
+
+    async def _fails_then_recovers(text):
+        nonlocal attempts
+        attempts += 1
+        return None if attempts <= len(scam_patterns._seed_rows()) else [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(
+        "bot.detectors.text.online.bge_m3_embed.embed_bge_m3", _fails_then_recovers
+    )
+
+    assert await scam_patterns._ensure_bge_m3_index() is False
+    # Still inside the cooldown - refused without attempting anything.
+    calls_after_failure = attempts
+    assert await scam_patterns._ensure_bge_m3_index() is False
+    assert attempts == calls_after_failure
+
+    # Simulate the cooldown having elapsed.
+    monkeypatch.setattr(scam_patterns, "_bge_m3_index_retry_after", 0.0)
+    assert await scam_patterns._ensure_bge_m3_index() is True
+    assert scam_patterns._bge_m3_index is not None

@@ -4,7 +4,7 @@ import logging
 from google.genai import types
 
 from bot.config.config import GEMINI_MODEL
-from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, build_clients, generate_content_with_backup
+from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, generate_content_with_backup, get_clients
 from bot.detectors.text.offline.keyword import analyze_text
 # Deliberate cross-module reuse of context_engine's offline fallback
 # (leading underscore is this project's "internal to its own reasoning
@@ -93,7 +93,21 @@ _RESPONSE_SCHEMA = {
     ],
 }
 
-_primary_pool, _backup_client = build_clients()
+# Lazy for the same reason context_engine.py's own pair is - see
+# gemini_retry.get_clients(). This module isn't imported at startup at
+# all (confirmed: it's pulled in on the first group-chat text scan), so
+# the ~1.46s was never part of cold start here - it was paid INSIDE a
+# live request instead, stalling that one user's scan. Shares the same
+# client objects as context_engine.py now rather than building a second
+# identical set.
+_primary_pool: list | None = None
+_backup_client = None
+
+
+def _ensure_clients() -> None:
+    global _primary_pool, _backup_client
+    if _primary_pool is None:
+        _primary_pool, _backup_client = get_clients()
 
 
 def _risk_label(risk_percentage: int | None) -> str:
@@ -146,6 +160,7 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
     and records real usage afterward - see context_engine.py's
     analyze_unified for the same pattern applied to the private-DM/
     business-chat path. None skips both, same reasoning as there."""
+    _ensure_clients()
     if not _primary_pool:
         return await _fallback("LLM analysis is not configured.", "missing_api_key", text)
 

@@ -20,6 +20,7 @@ assert on either stage independently.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import BadRequest
 
 import bot.context_engine.context_engine as context_engine
 from bot.handlers.url_handler import handle_business_message
@@ -821,3 +822,44 @@ async def test_business_owner_gets_the_trusted_link_notice_not_the_full_template
     # The header (who it's from) must still be there - only the
     # verdict/reasons/what-to-do part gets replaced by the short notice.
     assert "Customer" in body
+
+
+@pytest.mark.asyncio
+async def test_a_hostile_sender_display_name_cannot_silently_disable_live_detect():
+    # Real vulnerability found by a security review (2026-09-24): the
+    # status header embeds the CUSTOMER's display name in a Markdown
+    # code span, and that name is fully attacker-controlled. A single
+    # unbalanced backtick ("Sok`") breaks Telegram's entity parsing, and
+    # this first send used to abort the entire handler on BadRequest -
+    # so a scammer could turn Live Detect OFF for a whole business just
+    # by renaming themselves, silently, for every message they sent.
+    # The owner saw nothing and had no way to notice.
+    update = _business_update(text="Send $800 to this account right now")
+    update.effective_user = MagicMock(full_name="Sok`", id=42, username=None)
+    context = _context()
+
+    status = context.bot.send_message.return_value
+    # Markdown send fails (as the real API does), plain-text send works.
+    context.bot.send_message = AsyncMock(
+        side_effect=[BadRequest("Can't find end of the entity starting at byte offset 8"), status]
+    )
+
+    with patch("bot.handlers.url_handler.analyze_text", return_value={"suspicious": True, "matches": []}), \
+         patch("bot.handlers.url_handler.extract_text_link_entities", return_value=[]), \
+         patch("bot.handlers.url_handler.check_message_full", AsyncMock(return_value=[])), \
+         patch("bot.handlers.url_handler._owner_chat_id", AsyncMock(return_value=555)), \
+         patch("bot.handlers.url_handler.animate_status", AsyncMock()), \
+         patch("bot.handlers.url_handler.analyze_unified", AsyncMock(return_value={
+             "verdict": "Scam",
+             "risk_percentage": 95,
+             "key_reasons": [{"text": "Classic advance-fee pattern", "source": "message_text"}],
+             "recommendations": ["Do not send money"],
+         })) as mock_unified:
+        await handle_business_message(update, context)
+
+    # Retried as plain text rather than giving up...
+    assert context.bot.send_message.await_count == 2
+    assert context.bot.send_message.await_args_list[1].kwargs.get("parse_mode") is None
+    # ...and the real scan still ran and still reached the owner.
+    mock_unified.assert_awaited_once()
+    status.edit_text.assert_awaited_once()

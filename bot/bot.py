@@ -215,6 +215,49 @@ def _maybe_start_keepalive_server() -> None:
     logger.info("[startup] keepalive HTTP server listening on port %s", port)
 
 
+# Telegram's flood limits become genuinely reachable once
+# .concurrent_updates is raised above 1 (see main()): status_animation.py
+# edits its status message every STATUS_STAGE_INTERVAL_SECONDS (0.8s) for
+# EACH in-flight scan, so N concurrent scans cost N*1.25 requests/second
+# on animation alone, against Telegram's own ~30/second ceiling. Without
+# a limiter those come back as plain errors.
+#
+# max_retries is set explicitly because PTB's own default is 0, and with
+# 0 the retry loop runs exactly once and re-raises RetryAfter instead of
+# waiting it out (confirmed by reading AIORateLimiter.process_request:
+# `for i in range(max_retries + 1)`). Proactive throttling alone is the
+# bigger win, but a burst that still trips a real flood limit should be
+# slept off rather than surfaced as a failed reply.
+_RATE_LIMITER_MAX_RETRIES = 3
+
+
+def _build_rate_limiter():
+    """AIORateLimiter, or None if its optional dependency is missing.
+
+    Returning None rather than raising is deliberate: AIORateLimiter's
+    own __init__ raises RuntimeError when the `[rate-limiter]` extra
+    (aiolimiter) isn't installed, which would take the WHOLE bot down at
+    startup over what is really an optimization. This project's own
+    convention everywhere else is to degrade instead of crash on missing
+    optional config (see config.py's ADMIN_CHAT_ID/GEMINI_API_KEY
+    comments, and every quota gate's fail-open behavior), and the deploy
+    environment installs from py-requirement.txt, which this repo
+    controls but the Render build command is configured outside it.
+    Without the limiter the bot behaves exactly as it did before it was
+    added - it just has no flood protection."""
+    try:
+        from telegram.ext import AIORateLimiter
+
+        return AIORateLimiter(max_retries=_RATE_LIMITER_MAX_RETRIES)
+    except (ImportError, RuntimeError):
+        logger.warning(
+            "AIORateLimiter unavailable (install the 'python-telegram-bot[rate-limiter]' "
+            "extra) - continuing without flood protection, which matters more now that "
+            "concurrent updates are enabled"
+        )
+        return None
+
+
 def main():
     main_start = time.perf_counter()
     if not validate_config():
@@ -228,9 +271,41 @@ def main():
     logger.info("[startup] local SQLite tables ready in %.3fs", time.perf_counter() - step_start)
 
     step_start = time.perf_counter()
+    builder = Application.builder().token(TELEGRAM_BOT_TOKEN)
+
+    limiter = _build_rate_limiter()
+    if limiter is not None:
+        builder = builder.rate_limiter(limiter)
+
     app = (
-        Application.builder()
-        .token(TELEGRAM_BOT_TOKEN)
+        builder
+        # python-telegram-bot defaults concurrent_updates to 1, i.e. every
+        # update is processed to COMPLETION before the next one starts
+        # (confirmed on the real object: SimpleUpdateProcessor with
+        # max_concurrent_updates=1). That is the single biggest limit on
+        # how many users this bot can serve at once, and it is not a
+        # hardware limit - one scan is 5-15s of almost pure network WAIT
+        # (Gemini 3-13s observed, plus VirusTotal, Supabase, Modal, and
+        # the URL trace), so serializing them left the CPU idle while
+        # users queued. At the old default, 100 people messaging at once
+        # meant the last one waited ~10 minutes.
+        #
+        # 10, not higher, is bounded by three real ceilings measured on
+        # this deployment:
+        #   - Telegram's own ~30 requests/sec: status_animation.py edits
+        #     every STATUS_STAGE_INTERVAL_SECONDS (0.8s) per in-flight
+        #     scan, so N scans cost N*1.25 edits/sec on their own; ~24
+        #     concurrent scans would saturate the API on animation alone.
+        #   - Render free tier's 512MB: a file scan buffers the whole
+        #     file in RAM (MAX_DOWNLOAD_BYTES, 20MB) on top of a ~94MB
+        #     measured steady-state RSS - see _FILE_SCAN_SLOTS in
+        #     detectors/file/scanner.py for the separate, tighter cap
+        #     that keeps a burst of uploads from exhausting it.
+        #   - Gemini's free tier (~10 req/min across the primary pool)
+        #     remains the hard ceiling for AI-backed verdicts regardless;
+        #     overflow degrades to _grounded_fallback, which returns a
+        #     real offline verdict rather than failing.
+        .concurrent_updates(10)
         .post_init(set_bot_commands)
         .post_shutdown(close_shared_clients)
         .build()

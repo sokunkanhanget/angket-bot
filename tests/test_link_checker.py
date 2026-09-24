@@ -8,7 +8,7 @@ fakes so the merged-verdict logic can be verified deterministically.
 
 import asyncio
 import datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from telegram import Chat, Message, MessageEntity
@@ -425,6 +425,45 @@ def test_extract_page_text_strips_scripts():
     text = network.extract_page_text(html)
     assert "ABA Bank" in text
     assert "evil()" not in text
+
+
+def test_extract_page_text_is_linear_on_a_hostile_page():
+    # Real, CONFIRMED ReDoS (2026-09-24 security review), not theoretical:
+    # this function is fed attacker-controlled HTML by design - trace()
+    # downloads whatever URL a user sends and passes the body straight
+    # here. The old backtracking patterns went quadratic on input with
+    # many unterminated tags, MEASURED at 20.96s of solid CPU for a
+    # single 200KB page - sized exactly to MAX_PAGE_BYTES, so the
+    # existing size cap did not help at all. python-telegram-bot is
+    # single-threaded async, so that was 21 real seconds with every
+    # other user's scan, every Business-chat notification, and Telegram
+    # polling itself frozen - triggerable by anyone able to send the bot
+    # a link.
+    #
+    # 2s is a deliberately loose bound (the real fixed number is
+    # ~0.004s) so ordinary CI slowness can't flake this, while a genuine
+    # reintroduction of quadratic behavior still fails it loudly.
+    import time
+
+    for payload in (
+        "<script " * (network.MAX_PAGE_BYTES // 8),
+        "<" * network.MAX_PAGE_BYTES,
+        "<style " * (network.MAX_PAGE_BYTES // 7),
+    ):
+        started = time.perf_counter()
+        network.extract_page_text(payload)
+        assert time.perf_counter() - started < 2.0
+
+
+def test_extract_page_text_still_handles_malformed_html_the_old_way():
+    # The linear rewrite had to preserve the old regexes' real quirks,
+    # not just their happy path: an UNCLOSED <script> was never matched
+    # (so its text survives, minus the tag itself), and "<scriptfoo>"
+    # was never a script tag at all (the old pattern's \b).
+    assert "tail" in network.extract_page_text("<script>unclosed <p>tail")
+    assert "keep" in network.extract_page_text("<scriptfoo>x</scriptfoo>keep")
+    # Non-greedy: the block ends at the FIRST close tag, so "mid" lives.
+    assert "mid" in network.extract_page_text("<script>a</script>mid<script>b</script>")
 
 
 # --- form/password field detection -----------------------------------------
@@ -2069,3 +2108,28 @@ def test_safe_near_dup_failure_is_logged_not_silently_swallowed(monkeypatch, cap
 
     assert result is None
     assert any("_safe_near_dup" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_one_failing_link_does_not_discard_the_other_links_verdicts():
+    # Real defect (2026-09-24 networking review): check_message_full's
+    # asyncio.gather had no return_exceptions, so a single link raising
+    # anywhere in the scoring code threw away the already-completed
+    # verdicts for every OTHER link in the same message. Both handlers
+    # catch the exception, so the user silently got NO link verdict at
+    # all instead of the ones that really did succeed.
+    real_analyze = pipeline.analyze_url
+
+    async def _explode_on_one(url, *args, **kwargs):
+        if "boom" in url:
+            raise RuntimeError("scoring blew up for this one link")
+        return {"host": url, "score": 0, "level": "safe", "reasons": [], "detail": []}
+
+    with patch.object(pipeline, "analyze_url", _explode_on_one):
+        verdicts = await pipeline.check_message_full(
+            "https://good-one.example https://boom.example https://good-two.example"
+        )
+
+    assert len(verdicts) == 2
+    assert all("boom" not in v["host"] for v in verdicts)
+    assert pipeline.analyze_url is real_analyze  # patch really unwound

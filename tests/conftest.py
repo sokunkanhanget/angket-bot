@@ -400,3 +400,22 @@ def _reset_dns_resolution_cache():
     test, same defensive pattern as _reset_gemini_circuit_breaker above."""
     from bot.detectors.url.online import safe_net
     safe_net._resolution_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_embedding_index_build_cooldown():
+    """scam_patterns.py's failed-index-build negative cache (2026-09-24)
+    is module-level state with a 60s window, so it leaks across tests
+    exactly like the circuit breakers above do - and it bit immediately:
+    a test that simulates "Modal and Gemini are both down" sets the
+    cooldown, and the NEXT test, which supplies a perfectly good fake
+    embedding client, was then refused a build for the next 60 real
+    seconds and saw a None index.
+
+    Only the COOLDOWN is reset here, not the built indexes themselves -
+    those are a legitimate cross-test cache (building one costs 30 real
+    embedding calls) and tests that care already monkeypatch them
+    directly."""
+    from bot.detectors.text.offline import scam_patterns
+    scam_patterns._bge_m3_index_retry_after = 0.0
+    scam_patterns._gemini_index_retry_after = 0.0

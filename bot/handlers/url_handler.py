@@ -48,7 +48,7 @@ import asyncio
 import logging
 
 from telegram import MessageEntity, Update
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.scanner import download_and_hash, scan_file
@@ -336,12 +336,38 @@ async def _send_business_status(context: ContextTypes.DEFAULT_TYPE, owner_chat_i
     the label can switch from "Checking" to "Analyzing" at that real
     moment (see status_animation.py's own docstring)."""
     header = _business_header(sender, message_date, owner_lang)
+    status_text = f"{header}{t(owner_lang, STATUS_CHECKING_KEY)}"
     try:
         status = await context.bot.send_message(
-            chat_id=owner_chat_id,
-            text=f"{header}{t(owner_lang, STATUS_CHECKING_KEY)}",
-            parse_mode="Markdown",
+            chat_id=owner_chat_id, text=status_text, parse_mode="Markdown",
         )
+    except BadRequest:
+        # Real gap found by a security review (2026-09-24): the header
+        # embeds the CUSTOMER's own display name in a Markdown code span
+        # (_sender_header), and a display name is fully attacker-
+        # controlled. A single unbalanced backtick in it ("Sok`") breaks
+        # entity parsing, and this send used to abort the whole handler
+        # on that error - meaning a scammer could silently disable Live
+        # Detect for a business just by renaming themselves, for that
+        # message and every future one they send. The owner would see
+        # nothing at all and have no way to notice.
+        #
+        # _send_with_markdown_fallback (below, for this same message's
+        # FINAL edit) already learned this exact lesson from a real
+        # filename bug; the first send never got the same treatment.
+        # Plain text loses the bold header formatting and nothing else -
+        # the scan itself proceeds normally, which is the whole point.
+        logger.warning(
+            "Business status send failed to parse as Markdown (likely a "
+            "sender display name containing Markdown syntax) - retrying as plain text"
+        )
+        try:
+            status = await context.bot.send_message(chat_id=owner_chat_id, text=status_text)
+        except TelegramError as error:
+            logger.exception("Business chat status notification failed even as plain text")
+            health_alerts.record_failure("Business chat owner DM", str(error))
+            await health_alerts.maybe_alert("Business chat owner DM", str(error))
+            return None, None, None, None
     except TelegramError as error:
         # 2026-09-19 (direct user spec: "don't make Live Detect fail
         # silently"): logged already, but never surfaced past this

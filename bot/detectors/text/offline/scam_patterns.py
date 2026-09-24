@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,27 @@ _bge_m3_index_lock = asyncio.Lock()
 _gemini_index: list[tuple[list[float], str, str]] | None = None
 _gemini_index_lock = asyncio.Lock()
 
+# Negative cache for a FAILED index build (2026-09-24, found by a
+# networking review). Without this, a failed build cached nothing, so
+# the very next message re-entered and re-ran the whole thing: one build
+# is a concurrent gather of len(_seed_rows()) == 30 real embedding calls,
+# each bounded at bge_m3_embed.TIMEOUT_SECONDS == 30s. During a genuine
+# Modal outage or cold-start stall that meant EVERY incoming message
+# paid up to 30s - and because the build is serialized behind the lock
+# above, a burst of N messages queued behind each other, so the last one
+# could wait minutes with the status animation still spinning at the
+# user. The successful path was always cached (_bge_m3_index is not
+# None); only the failure path retried forever.
+#
+# monotonic(), not time(): immune to a system clock adjustment, and this
+# is a pure elapsed-time question. Same 3-strikes-then-cool-off shape
+# gemini_embed.py's own breaker already uses, kept deliberately short -
+# a Modal cold start IS a real transient worth retrying soon, unlike a
+# hard outage.
+_INDEX_BUILD_COOLDOWN_SECONDS = 60.0
+_bge_m3_index_retry_after = 0.0
+_gemini_index_retry_after = 0.0
+
 
 async def _ensure_bge_m3_index() -> bool:
     """Builds the bge-m3 embedding index for the same SCAM_MESSAGE_PATTERNS
@@ -192,22 +214,36 @@ async def _ensure_bge_m3_index() -> bool:
     it's NOT built at import time). Returns True once the index is ready
     to use, False if it couldn't be built (Modal unreachable) - a lock
     guards against two concurrent callers both trying to build it at
-    once on the very first call."""
-    global _bge_m3_index
+    once on the very first call.
+
+    A failed build is negatively cached for _INDEX_BUILD_COOLDOWN_SECONDS
+    so a sustained outage costs one attempt per minute, not one per
+    message - see that constant's own comment."""
+    global _bge_m3_index, _bge_m3_index_retry_after
     if _bge_m3_index is not None:
         return True
+    if time.monotonic() < _bge_m3_index_retry_after:
+        return False
 
     from bot.detectors.text.online.bge_m3_embed import embed_bge_m3
 
     async with _bge_m3_index_lock:
         if _bge_m3_index is not None:  # someone else built it while we waited
             return True
+        # Re-checked INSIDE the lock too: everyone queued behind a build
+        # that just failed would otherwise each run their own full
+        # 30-call attempt on the way out, which is the exact pile-up
+        # this cooldown exists to stop.
+        if time.monotonic() < _bge_m3_index_retry_after:
+            return False
 
         rows = _seed_rows()
         embeddings = await asyncio.gather(*(embed_bge_m3(text) for _, _, text, _ in rows))
         if any(e is None for e in embeddings):
+            _bge_m3_index_retry_after = time.monotonic() + _INDEX_BUILD_COOLDOWN_SECONDS
             logger.warning("[bge-m3] index build failed (Modal unreachable?) - "
-                            "trying the Gemini fallback tier")
+                            "trying the Gemini fallback tier, not retrying for %.0fs",
+                            _INDEX_BUILD_COOLDOWN_SECONDS)
             return False
 
         _bge_m3_index = [(emb, key, category) for emb, (_, key, _, category) in zip(embeddings, rows)]
@@ -224,21 +260,27 @@ async def _ensure_gemini_index() -> bool:
     hashed scheme) if GEMINI_API_KEY_EMBEDDING isn't set or the API call
     fails for any reason - embed_gemini() already degrades to None
     either way, this just propagates that."""
-    global _gemini_index
+    global _gemini_index, _gemini_index_retry_after
     if _gemini_index is not None:
         return True
+    if time.monotonic() < _gemini_index_retry_after:
+        return False
 
     from bot.detectors.text.online.gemini_embed import embed_gemini
 
     async with _gemini_index_lock:
         if _gemini_index is not None:
             return True
+        if time.monotonic() < _gemini_index_retry_after:
+            return False
 
         rows = _seed_rows()
         embeddings = await asyncio.gather(*(embed_gemini(text) for _, _, text, _ in rows))
         if any(e is None for e in embeddings):
+            _gemini_index_retry_after = time.monotonic() + _INDEX_BUILD_COOLDOWN_SECONDS
             logger.warning("[gemini-embed] index build failed (no key, or API "
-                            "unreachable) - falling back to the hashed scheme")
+                            "unreachable) - falling back to the hashed scheme, "
+                            "not retrying for %.0fs", _INDEX_BUILD_COOLDOWN_SECONDS)
             return False
 
         _gemini_index = [(emb, key, category) for emb, (_, key, _, category) in zip(embeddings, rows)]

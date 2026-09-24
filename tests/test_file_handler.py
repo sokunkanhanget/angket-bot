@@ -10,6 +10,7 @@ checks use), so this covers reply CONTENT only, not reply_markup.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram.error import BadRequest
 
 from bot.handlers.file_handler import (
     _classify_file_result,
@@ -418,3 +419,80 @@ async def test_daily_file_limit_only_notifies_once():
     mock_scan.assert_not_called()
     sent.edit_text.assert_not_called()
     sent.delete.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_filename_containing_markdown_syntax_does_not_kill_the_scan():
+    # Real defect found by a security review (2026-09-24): the status
+    # send interpolated the FILENAME (attacker-controlled) into a
+    # Markdown code span with no error handling whatsoever. A document
+    # named "inv`oice.pdf" raised BadRequest and the handler died right
+    # there - before the file was even hashed - so the user got no
+    # verdict at all and nothing but a log line recorded it.
+    update, _context, sent = _file_update(file_name="inv`oice.pdf")
+    context = _context
+    # Markdown send fails the way the real API does, plain text succeeds.
+    update.message.reply_text = AsyncMock(
+        side_effect=[BadRequest("Can't find end of the entity starting at byte offset 12"), sent]
+    )
+
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="a" * 64)), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
+             "checked": True, "found": True, "malicious": 0, "suspicious": 0,
+             "harmless": 70, "total": 70,
+         })), \
+         patch("bot.handlers.file_handler.cached_result", return_value=None), \
+         patch("bot.handlers.file_handler.animate_status", AsyncMock()), \
+         patch.object(subscription, "can_scan_file", AsyncMock(return_value=True)), \
+         patch.object(subscription, "record_file_scan", AsyncMock()):
+        await handle_file(update, context)
+
+    # Retried as plain text instead of dying...
+    assert update.message.reply_text.await_count == 2
+    assert update.message.reply_text.await_args_list[1].kwargs.get("parse_mode") is None
+    # ...and the user still got their real verdict.
+    sent.edit_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_file_is_refused_before_it_is_downloaded():
+    # Security review (2026-09-24): download_and_hash buffered the WHOLE
+    # file in RAM (io.BytesIO) with no size check of its own, on a 512MB
+    # instance. The guard checks the size Telegram already reports, so an
+    # oversized file costs no bandwidth and no memory at all.
+    from bot.detectors.file.scanner import (
+        MAX_DOWNLOAD_BYTES, FileTooLargeError, download_and_hash,
+    )
+
+    context = MagicMock()
+    huge = MagicMock(file_size=MAX_DOWNLOAD_BYTES + 1)
+    huge.download_to_memory = AsyncMock()
+    context.bot.get_file = AsyncMock(return_value=huge)
+
+    with pytest.raises(FileTooLargeError):
+        await download_and_hash(context, "fake-file-id")
+
+    # The point of the guard: nothing was ever downloaded.
+    huge.download_to_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_normal_sized_file_and_an_unknown_size_both_still_scan():
+    # The guard must not police ordinary uploads - a real 13MB file has
+    # been legitimately scanned in production - and Telegram does not
+    # always populate file_size at all, which is not a refusal reason.
+    from bot.detectors.file.scanner import download_and_hash
+
+    for size in (13 * 1024 * 1024, None):
+        context = MagicMock()
+        ok = MagicMock(file_size=size)
+
+        async def _write(buf):
+            buf.write(b"real file bytes")
+
+        ok.download_to_memory = AsyncMock(side_effect=_write)
+        context.bot.get_file = AsyncMock(return_value=ok)
+
+        digest = await download_and_hash(context, "fake-file-id")
+        assert len(digest) == 64
+        ok.download_to_memory.assert_awaited_once()

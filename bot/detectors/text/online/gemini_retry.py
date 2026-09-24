@@ -34,13 +34,25 @@ key changes the tradeoff.
 from __future__ import annotations
 
 import logging
+import ssl
 import time
+from typing import TYPE_CHECKING
 
-from google import genai
-from google.genai import errors as genai_errors
-from google.genai import types as genai_types
+import certifi
+
+if TYPE_CHECKING:  # annotations only - never imported at runtime
+    from google import genai
 
 from bot.config.config import GEMINI_API_KEY, GEMINI_API_KEY_BACKUP, GEMINI_API_KEY_TEST
+
+# google.genai is imported lazily inside the functions that need it
+# (2026-09-24, performance review): it is a measured ~0.94s of the bot's
+# cold-start import phase on this machine (google.genai.types alone is
+# 0.36s of pure module execution, and it drags in aiohttp), and Render's
+# free tier runs several times slower - all paid on every restart even
+# when no message ever reaches Gemini. The type annotations below stay
+# readable because `from __future__ import annotations` makes them
+# strings that are never evaluated at runtime.
 
 logger = logging.getLogger(__name__)
 
@@ -98,16 +110,62 @@ GEMINI_TIMEOUT_MS = 25_000
 # still fully bounded, still far below GEMINI_TIMEOUT_MS's own ceiling,
 # and still logged as a real failure by this file's own retry/breaker
 # logic if the retry itself also fails.
-_TAMED_SDK_RETRY = genai_types.HttpRetryOptions(attempts=2, initial_delay=1.0, max_delay=2.0)
+def _tamed_sdk_retry():
+    """The retry options above, built on demand - a module-level constant
+    here would force google.genai to be imported at startup, which is
+    exactly what the lazy-import note at the top of this file avoids."""
+    from google.genai import types as genai_types
+
+    return genai_types.HttpRetryOptions(attempts=2, initial_delay=1.0, max_delay=2.0)
+
+
+_ssl_context: ssl.SSLContext | None = None
+
+
+def _shared_ssl_context() -> ssl.SSLContext:
+    """One SSL context, reused by every Gemini client.
+
+    Real, measured cost this exists to avoid (2026-09-24): genai.Client's
+    own __init__ builds THREE separate SSL contexts internally (httpx,
+    aiohttp and websocket transports each get their own), and every one
+    of them parses certifi's ~200KB CA bundle from disk. Building this
+    project's 3 real clients therefore meant 9 context builds and a
+    measured 2.548s. Passing an already-built context through
+    client_args/async_client_args makes the SDK use it instead of
+    constructing its own, which drops the same 3 clients to 0.005s -
+    a real 2.5s saved on top of the laziness above, rather than just
+    moved to the first request.
+
+    Verification is UNCHANGED and still real: ssl.create_default_context
+    with certifi's bundle keeps CERT_REQUIRED + check_hostname, the same
+    posture the SDK's own default has (asserted in
+    tests/test_gemini_retry.py so a future edit can't silently weaken it
+    into an unverified context).
+
+    Built lazily, not at module level: this module IS imported at startup
+    via context_engine.py, and the one-time ~0.49s bundle parse belongs
+    on the first real Gemini call, not on every cold start."""
+    global _ssl_context
+    if _ssl_context is None:
+        _ssl_context = ssl.create_default_context(cafile=certifi.where())
+    return _ssl_context
 
 
 def build_client(api_key: str | None) -> genai.Client | None:
     if not api_key:
         return None
+
+    from google import genai
+    from google.genai import types as genai_types
+
+    context = _shared_ssl_context()
     return genai.Client(
         api_key=api_key,
         http_options=genai_types.HttpOptions(
-            timeout=GEMINI_TIMEOUT_MS, retry_options=_TAMED_SDK_RETRY,
+            timeout=GEMINI_TIMEOUT_MS,
+            retry_options=_tamed_sdk_retry(),
+            client_args={"verify": context},
+            async_client_args={"verify": context, "ssl": context},
         ),
     )
 
@@ -123,6 +181,38 @@ def build_clients() -> tuple[list[genai.Client], genai.Client | None]:
     internally - callers just pass the pool through unchanged."""
     primary_pool = [c for c in (build_client(GEMINI_API_KEY), build_client(GEMINI_API_KEY_TEST)) if c is not None]
     return primary_pool, build_client(GEMINI_API_KEY_BACKUP)
+
+
+_shared_pool: list[genai.Client] | None = None
+_shared_backup: genai.Client | None = None
+
+
+def get_clients() -> tuple[list[genai.Client], genai.Client | None]:
+    """build_clients(), built once on first real use and reused after -
+    the lazy accessor every caller should use instead of calling
+    build_clients() at module level.
+
+    Real, measured cost this exists to avoid (2026-09-24): one
+    genai.Client() construction is ~0.5s, and build_clients() makes
+    three of them (2 co-primaries + backup) for ~1.46s. Called at import
+    time from context_engine.py, that was 67% of the bot's ENTIRE local
+    import phase (1.46s of 2.18s) - paid on every cold start before the
+    bot can poll at all, and paid whether or not Gemini is ever used.
+    On Render's free tier (slower CPU, ~14.5s real measured import
+    phase, cold-starting after every deploy/sleep) the same work costs
+    proportionally more.
+
+    Shared across context_engine.py and llm.py rather than each building
+    its own set: identical config (same keys, same timeout, same tamed
+    retry options), so two separate sets meant two separate underlying
+    httpx connection pools competing instead of one reusing its
+    connections. Callers still keep their own module-level
+    _primary_pool/_backup_client names, assigned from this - tests
+    monkeypatch those per-module and must keep working unchanged."""
+    global _shared_pool, _shared_backup
+    if _shared_pool is None:
+        _shared_pool, _shared_backup = build_clients()
+    return _shared_pool, _shared_backup
 
 
 # --- Circuit breaker (2026-09-16, mentor/teammate spec) ----------------
@@ -209,6 +299,8 @@ async def _call_with_429_retry(primary_client, backup_client, **kwargs):
     """The original generate_content_with_backup body, unchanged -
     just renamed so the breaker above can wrap it without the 429/backup
     logic itself needing to know the breaker exists."""
+    from google.genai import errors as genai_errors
+
     try:
         return await primary_client.aio.models.generate_content(**kwargs)
     except genai_errors.ClientError as error:

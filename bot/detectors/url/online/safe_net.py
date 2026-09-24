@@ -144,6 +144,7 @@ _UNRESOLVABLE_ERRORS = (socket.gaierror, UnicodeError)
 # extra lookup, not an incorrect result - not worth the complexity of
 # guarding a pure optimization.
 _RESOLUTION_CACHE_TTL_SECONDS = 5.0
+_RESOLUTION_CACHE_MAX_ENTRIES = 256
 _resolution_cache: dict[str, tuple[float, list[str]]] = {}
 
 
@@ -154,15 +155,34 @@ def _resolve_all_sync(host: str, port: int) -> list[str]:
     swallowed here where a caller couldn't tell "didn't resolve" apart
     from "resolved to something blocked"."""
     key = host.lower()
+    now = time.monotonic()
     cached = _resolution_cache.get(key)
     if cached is not None:
         cached_at, ips = cached
-        if time.monotonic() - cached_at < _RESOLUTION_CACHE_TTL_SECONDS:
+        if now - cached_at < _RESOLUTION_CACHE_TTL_SECONDS:
             return ips
 
     infos = socket.getaddrinfo(host, port)
     result = sorted({info[4][0] for info in infos})
-    _resolution_cache[key] = (time.monotonic(), result)
+    _resolution_cache[key] = (now, result)
+
+    # Expired entries were never actually removed before (2026-09-24,
+    # found by a performance review) - only overwritten if the SAME host
+    # came back within the window. Every distinct hostname the bot ever
+    # resolved therefore stayed forever, and this bot resolves whatever
+    # arbitrary domains strangers send it, so the dict grew without
+    # bound for the life of the process on a 512MB instance.
+    #
+    # Swept only when the cache is already larger than any real 5s
+    # window could justify, so the common path stays a plain dict
+    # insert: entries live 5 seconds, so a genuinely busy moment holds
+    # maybe a few dozen, never hundreds.
+    if len(_resolution_cache) > _RESOLUTION_CACHE_MAX_ENTRIES:
+        for stale_key in [
+            k for k, (at, _) in _resolution_cache.items()
+            if now - at >= _RESOLUTION_CACHE_TTL_SECONDS
+        ]:
+            del _resolution_cache[stale_key]
     return result
 
 

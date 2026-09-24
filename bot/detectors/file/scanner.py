@@ -12,6 +12,7 @@ change.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 
@@ -21,15 +22,68 @@ from bot.detectors.file.offline.filename_check import check_filename
 from bot.detectors.file.online.virustotal import cached_result, scan_vt_hash
 
 
+# The size guard this module's own docstring anticipated (2026-09-24,
+# security review). Telegram's Bot API caps getFile downloads at 20MB
+# today, so this is normally a no-op - but nothing in this process
+# enforced that itself, and the whole file is buffered in RAM
+# (io.BytesIO) on a 512MB Render instance where several concurrent
+# uploads already add up. Checked against the size Telegram reports
+# BEFORE downloading a single byte, so an oversized file costs no
+# bandwidth and no memory at all.
+#
+# Deliberately generous rather than tight: a real 13MB file has been
+# legitimately scanned in production, so anything near that would break
+# real use. This guards the pathological case, it does not police
+# ordinary uploads.
+MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
+
+# How many file downloads may be in flight at once, process-wide
+# (2026-09-24, added together with bot.py's .concurrent_updates(10)).
+#
+# Raising update concurrency is safe for text/link scans - those are
+# network-wait-bound and hold at most a 200KB page - but a FILE scan
+# buffers the whole file in RAM (io.BytesIO below), up to
+# MAX_DOWNLOAD_BYTES each. With 10 updates running concurrently, 10
+# simultaneous uploads would be up to 200MB of buffers on top of a
+# measured ~94MB steady-state RSS, against Render's free 512MB. This
+# keeps the worst case at 3 * 20MB = 60MB instead.
+#
+# Deliberately in this module, not in a handler: all THREE file-scanning
+# entry points (handlers/file_handler.py, text_handler.py's
+# _scan_attached_file, url_handler.py's business-chat equivalent) come
+# through this one function, so guarding here can't be bypassed by a
+# path that forgets it. Waiting for a slot is just backpressure - the
+# status animation the user is already watching keeps running.
+_FILE_SCAN_SLOTS = asyncio.Semaphore(3)
+
+
+class FileTooLargeError(Exception):
+    """download_and_hash refused the file on size alone, before any
+    download. Callers already wrap download_and_hash in a broad except
+    that shows the user the generic "scan failed" message, so this needs
+    no new handling at any call site to degrade correctly."""
+
+
 async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:
     """Download a Telegram file and return its SHA-256 hex digest, ready
     for scan_vt_hash() - shared by every flow that scans an uploaded
-    file (handle_file, handle_business_message) so a future fix (e.g. a
-    size guard) only needs to land in one place."""
+    file (handle_file, handle_business_message) so a fix like the size
+    guard above only needs to land in one place."""
     file_info = await context.bot.get_file(file_id)
-    buf = io.BytesIO()
-    await file_info.download_to_memory(buf)
-    return hashlib.sha256(buf.getvalue()).hexdigest()
+
+    # file_size can be None (Telegram doesn't always populate it); that's
+    # not treated as a refusal, since the API's own 20MB ceiling still
+    # applies to the download itself.
+    size = getattr(file_info, "file_size", None)
+    if isinstance(size, int) and size > MAX_DOWNLOAD_BYTES:
+        raise FileTooLargeError(f"file is {size} bytes, over the {MAX_DOWNLOAD_BYTES}-byte scan limit")
+
+    # Size check first, slot second: an oversized file is rejected without
+    # ever occupying a slot other users are waiting for.
+    async with _FILE_SCAN_SLOTS:
+        buf = io.BytesIO()
+        await file_info.download_to_memory(buf)
+        return hashlib.sha256(buf.getvalue()).hexdigest()
 
 
 async def scan_file(file_hash: str, file_name: str) -> dict:

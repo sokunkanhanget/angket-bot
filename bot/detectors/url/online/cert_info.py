@@ -21,25 +21,29 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import sqlite3
 import ssl
 import time
 from datetime import datetime, timezone
 
 from bot.config.config import SCAN_LOG_DB
 from bot.detectors.url.online import safe_net
+from bot.storage import sqlite_pool
 
 TIMEOUT = 8.0
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(SCAN_LOG_DB)
-    # See bot/storage/scan_log.py's init_db() for why: this file is
-    # shared by several unrelated caches/logs, and WAL mode lets
-    # concurrent access to different tables proceed without blocking
-    # each other. Set defensively here too in case this connects first.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _ensure_table(conn) -> None:
+    """DDL is kept (rather than moved to a one-time startup init) for the
+    same reason vectors.py keeps its own _ensure_page_tables: Render's
+    free tier wipes the filesystem on every deploy, restart and
+    sleep-wake, so this database is genuinely empty on a regular basis,
+    and a worker thread can be the first to touch a file that
+    scan_log.init_db() never saw. `create table if not exists` against an
+    already-open pooled connection is cheap; the expensive parts that
+    used to sit beside it - opening a new connection and re-running
+    `PRAGMA journal_mode=WAL`, a real disk write, on EVERY call - now
+    happen once per thread inside sqlite_pool."""
     conn.execute(
         """
         create table if not exists cert_info(
@@ -49,7 +53,6 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    return conn
 
 
 def _cache_get(host: str) -> tuple[bool, str | None]:
@@ -59,29 +62,31 @@ def _cache_get(host: str) -> tuple[bool, str | None]:
     handshake failed, etc.) was indistinguishable from no cache entry
     at all, silently defeating the cache for exactly the miss case and
     triggering a real TLS handshake retry on every subsequent scan of
-    that host. `was_cached` makes the two cases distinguishable."""
-    conn = _connect()
-    try:
+    that host. `was_cached` makes the two cases distinguishable.
+
+    Synchronous on purpose: this is the thread-side half, and the async
+    caller hands it to asyncio.to_thread rather than running it on the
+    event loop. Measured before that change: a single cache read cost
+    ~3.1ms of blocked loop on a dev machine, roughly ten times that on
+    Render's 0.1 CPU, multiplied by however many scans run concurrently.
+    """
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_table(conn)
         row = conn.execute(
             "select issued_at, looked_up_at from cert_info where host = ?", (host,)
         ).fetchone()
-    finally:
-        conn.close()
     if row is None or time.time() - row[1] > CACHE_TTL_SECONDS:
         return False, None
     return True, row[0]
 
 
 def _cache_put(host: str, issued_at: str | None) -> None:
-    conn = _connect()
-    try:
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_table(conn)
         conn.execute(
             "insert or replace into cert_info(host, issued_at, looked_up_at) values (?, ?, ?)",
             (host, issued_at, time.time()),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _get_cert_sync(host: str, port: int = 443) -> dict | None:
@@ -135,7 +140,7 @@ async def cert_issued_days_ago(host: str, port: int = 443) -> int | None:
     if not host:
         return None
 
-    was_cached, cached = _cache_get(host)
+    was_cached, cached = await asyncio.to_thread(_cache_get, host)
     if not was_cached:
         try:
             # _get_cert_sync's own SSRF resolution (safe_net.first_safe_ip_sync)
@@ -154,7 +159,7 @@ async def cert_issued_days_ago(host: str, port: int = 443) -> int | None:
         issued = None
         if cert and "notBefore" in cert:
             issued = _parse_cert_date(cert["notBefore"])
-        _cache_put(host, issued)
+        await asyncio.to_thread(_cache_put, host, issued)
         cached = issued
 
     if not cached:

@@ -24,7 +24,6 @@ data never changes for an existing domain.
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import time
 from datetime import datetime, timezone
 
@@ -32,6 +31,7 @@ import httpx
 
 from bot.config.config import SCAN_LOG_DB
 from bot.detectors.url.online import safe_net
+from bot.storage import sqlite_pool
 
 RDAP_TIMEOUT = 8.0
 # Duplicate constant, found by code review (2026-09-16): this used to be
@@ -97,13 +97,14 @@ async def resolve_host(host: str) -> list[str] | None:
 
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(SCAN_LOG_DB)
-    # See bot/storage/scan_log.py's init_db() for why: this file is
-    # shared by several unrelated caches/logs, and WAL mode lets
-    # concurrent access to different tables proceed without blocking
-    # each other. Set defensively here too in case this connects first.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _ensure_table(conn) -> None:
+    """Kept rather than moved to a one-time startup init: Render wipes the
+    filesystem on every deploy, so this database is genuinely empty on a
+    regular basis, and a worker thread can be first to touch a file
+    scan_log.init_db() never saw. See cert_info._ensure_table for the
+    full reasoning - what was removed here is the per-call connect plus
+    `PRAGMA journal_mode=WAL` (a real disk write), which sqlite_pool now
+    does once per thread instead of once per cache lookup."""
     conn.execute(
         """
         create table if not exists domain_info(
@@ -114,34 +115,30 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    return conn
 
 
 def _cache_get(host: str):
-    conn = _connect()
-    try:
+    """Synchronous: the async caller hands this to asyncio.to_thread, so
+    it never runs on the event loop."""
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_table(conn)
         row = conn.execute(
             "select created_at, registrar, looked_up_at from domain_info where host = ?",
             (host,),
         ).fetchone()
-    finally:
-        conn.close()
     if row is None or time.time() - row[2] > CACHE_TTL_SECONDS:
         return None
     return row[0], row[1]
 
 
 def _cache_put(host: str, created_at: str | None, registrar: str | None) -> None:
-    conn = _connect()
-    try:
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_table(conn)
         conn.execute(
             "insert or replace into domain_info(host, created_at, registrar, looked_up_at) "
             "values (?, ?, ?, ?)",
             (host, created_at, registrar, time.time()),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _parse_rdap_date(raw: str) -> str | None:
@@ -157,7 +154,7 @@ async def fetch_registration(host: str) -> tuple[str | None, str | None]:
     """(creation_date_iso, registrar) for a registrable domain via RDAP.
     Returns (None, None) when RDAP has no data (some ccTLDs, incl. .kh).
     """
-    cached = _cache_get(host)
+    cached = await asyncio.to_thread(_cache_get, host)
     if cached is not None:
         return cached
 
@@ -170,7 +167,7 @@ async def fetch_registration(host: str) -> tuple[str | None, str | None]:
     if response.status_code != 200:
         # 404 = registry knows nothing about it; cache the miss too so we
         # don't re-query every scan this week.
-        _cache_put(host, None, None)
+        await asyncio.to_thread(_cache_put, host, None, None)
         return None, None
 
     data = response.json()
@@ -189,7 +186,7 @@ async def fetch_registration(host: str) -> tuple[str | None, str | None]:
                         break
             break
 
-    _cache_put(host, created, registrar)
+    await asyncio.to_thread(_cache_put, host, created, registrar)
     return created, registrar
 
 

@@ -30,6 +30,8 @@ import inspect
 import sys
 import time
 
+import _gate_env  # noqa: F401 - sys.path + utf-8 stdout bootstrap
+
 # One cache round trip per iteration, repeated enough times that a real
 # per-call cost cannot hide in noise.
 ITERATIONS = 40

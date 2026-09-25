@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from bot.detectors.url.online import domain_info
+from bot.storage import sqlite_pool
 
 
 @pytest.fixture(autouse=True)
@@ -222,14 +223,25 @@ async def test_resolve_host_unresolvable_and_timed_out_are_both_none(monkeypatch
     assert timed_out == unresolvable
 
 
-def test_connect_creates_the_table_idempotently(tmp_path, monkeypatch):
+def test_the_table_is_created_on_a_fresh_database_and_reused_idempotently(tmp_path, monkeypatch):
+    # Rewritten when the per-call _connect() was replaced by a pooled,
+    # per-thread connection from bot/storage/sqlite_pool.py. The property
+    # is unchanged and still load-bearing: Render wipes the filesystem on
+    # every deploy, so this database really does start empty in
+    # production, and the DDL has to survive that.
     db_path = str(tmp_path / "idempotent.db")
     monkeypatch.setattr(domain_info, "SCAN_LOG_DB", db_path)
+    sqlite_pool.close_for_thread()  # do not inherit a connection to another file
 
-    domain_info._connect().close()
-    domain_info._connect().close()  # must not raise on a pre-existing table
+    try:
+        domain_info._cache_put("example.test", "2026-01-01T00:00:00", "Registrar A")
+        domain_info._cache_put("example.test", "2026-01-02T00:00:00", "Registrar B")
 
-    conn = sqlite3.connect(db_path)
-    tables = conn.execute("select name from sqlite_master where type='table'").fetchall()
-    conn.close()
-    assert ("domain_info",) in tables
+        assert domain_info._cache_get("example.test") == ("2026-01-02T00:00:00", "Registrar B")
+
+        conn = sqlite3.connect(db_path)
+        tables = conn.execute("select name from sqlite_master where type='table'").fetchall()
+        conn.close()
+        assert ("domain_info",) in tables
+    finally:
+        sqlite_pool.close_for_thread()

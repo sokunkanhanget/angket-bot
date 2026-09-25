@@ -195,7 +195,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # live VT call either way, so a repeat upload of an already-known
     # file is never blocked or charged - only a genuinely new hash pays
     # quota.
-    already_cached = cached_result(sha256) is not None
+    already_cached = await asyncio.to_thread(cached_result, sha256) is not None
     if not already_cached and not await subscription.can_scan_file(user_id):
         await stop_status_animation(animation_task)
         # Direct user spec (2026-09-15): tell them once, not on every

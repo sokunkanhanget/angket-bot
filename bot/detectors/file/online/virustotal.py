@@ -16,11 +16,12 @@ skip charging quota for a cache hit (see file_handler.py's handle_file).
 
 from __future__ import annotations
 
+import asyncio
 import json
-import sqlite3
 import time
 
 from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP
+from bot.storage import sqlite_pool
 
 # `vt` is imported lazily (2026-09-24, performance review). It pulls in
 # aiohttp, together a measured ~0.18s+ of the bot's cold-start import
@@ -50,13 +51,12 @@ def __getattr__(name: str):
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(SCAN_LOG_DB)
-    # See bot/storage/scan_log.py's init_db() for why: this file is
-    # shared by several unrelated caches/logs, and WAL mode lets
-    # concurrent access to different tables proceed without blocking
-    # each other. Set defensively here too in case this connects first.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _ensure_table(conn) -> None:
+    """Kept rather than moved to a one-time startup init - see
+    cert_info._ensure_table for the reasoning. What was removed is the
+    per-call connect plus `PRAGMA journal_mode=WAL` (a real disk write),
+    which sqlite_pool now does once per thread instead of once per
+    cache lookup."""
     conn.execute(
         """
         create table if not exists file_vt_cache(
@@ -66,38 +66,36 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    return conn
 
 
 def cached_result(file_hash: str) -> dict | None:
     """Fresh VT verdict for this exact SHA-256, or None. Callers use a
     non-None result both to skip the live VT call AND (handle_file) to
     skip the sender's daily file-scan quota - a repeat upload of an
-    already-known file is free either way."""
-    conn = _connect()
-    try:
+    already-known file is free either way.
+
+    Stays synchronous: async callers hand it to asyncio.to_thread, and
+    the one synchronous caller (scan_vt_hash's own early return) already
+    runs inside a thread."""
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_table(conn)
         row = conn.execute(
             "select result_json, cached_at from file_vt_cache where file_hash = ?",
             (file_hash,),
         ).fetchone()
-    finally:
-        conn.close()
     if row is None or time.time() - row[1] > CACHE_TTL_SECONDS:
         return None
     return json.loads(row[0])
 
 
 def _cache_put(file_hash: str, result: dict) -> None:
-    conn = _connect()
-    try:
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_table(conn)
         conn.execute(
             "insert or replace into file_vt_cache(file_hash, result_json, cached_at) "
             "values (?, ?, ?)",
             (file_hash, json.dumps(result), time.time()),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 FETCH_TIMEOUT_SECONDS = 15  # vt.Client's own default is 300s (unbounded in
@@ -176,7 +174,7 @@ async def scan_vt_hash(file_hash: str) -> dict:
     pattern, adapted to the vt SDK's exception shape instead of a raw
     HTTP status code.
     """
-    cached = cached_result(file_hash)
+    cached = await asyncio.to_thread(cached_result, file_hash)
     if cached is not None:
         return cached
 
@@ -186,12 +184,12 @@ async def scan_vt_hash(file_hash: str) -> dict:
     for api_key in filter(None, (VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP)):
         try:
             result = await _fetch_from_vt(file_hash, api_key)
-            _cache_put(file_hash, result)
+            await asyncio.to_thread(_cache_put, file_hash, result)
             return result
         except vt.APIError as error:
             if error.code == "NotFoundError":
                 result = {"checked": True, "found": False}
-                _cache_put(file_hash, result)
+                await asyncio.to_thread(_cache_put, file_hash, result)
                 return result
             last_error = error
             if error.code != "QuotaExceededError":

@@ -29,6 +29,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import _gate_env  # noqa: F401 - sys.path + utf-8 stdout bootstrap
+
 
 async def _call(fn, *args):
     """Call a cache function whether it is sync (today) or async (after

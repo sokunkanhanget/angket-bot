@@ -59,7 +59,6 @@ import asyncio
 import json
 import logging
 import re
-import sqlite3
 import time
 from urllib.parse import urlsplit
 
@@ -76,6 +75,7 @@ from bot.detectors.url.offline.lexical import (
     has_malformed_protocol,
     registered_domain,
 )
+from bot.storage import sqlite_pool
 from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP
 from bot.storage import health_alerts
 from bot.response.translate import DEFAULT_LANG
@@ -219,13 +219,13 @@ KNOWN_FIRST_PARTY_REDIRECTS = {
 LINK_VERDICT_CACHE_TTL_SECONDS = 60 * 60  # 1 hour
 
 
-def _verdict_cache_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(SCAN_LOG_DB)
-    # See bot/storage/scan_log.py's init_db() for why: this file is
-    # shared by several unrelated caches/logs, and WAL mode lets
-    # concurrent access to different tables proceed without blocking
-    # each other. Set defensively here too in case this connects first.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _ensure_verdict_cache_table(conn) -> None:
+    """Kept rather than moved to a one-time startup init - see
+    cert_info._ensure_table for the reasoning. What was removed is the
+    per-call connect plus `PRAGMA journal_mode=WAL` (a real disk write),
+    which sqlite_pool now does once per thread instead of once per
+    cache lookup. This is the hottest of the five caches: it is consulted
+    for every URL in every message."""
     conn.execute(
         """
         create table if not exists link_verdict_cache(
@@ -237,7 +237,6 @@ def _verdict_cache_connect() -> sqlite3.Connection:
         )
         """
     )
-    return conn
 
 
 def _verdict_cache_get(url_id: str) -> dict | None:
@@ -245,15 +244,19 @@ def _verdict_cache_get(url_id: str) -> dict | None:
     through VT) if checked recently enough - excludes message-context
     signals (malformed_protocol, anchor-mismatch), which are always
     computed fresh per call since two different messages can link the
-    same URL with different display text or formatting."""
-    conn = _verdict_cache_connect()
-    try:
+    same URL with different display text or formatting.
+
+    Synchronous: analyze_url hands it to asyncio.to_thread rather than
+    running it on the event loop. Measured before that change, this exact
+    call cost ~3.1ms of blocked loop per invocation on a dev machine and
+    roughly ten times that on Render's 0.1 CPU - multiplied by every URL
+    in every concurrently-scanned message."""
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_verdict_cache_table(conn)
         row = conn.execute(
             "select score, reasons, detail, cached_at from link_verdict_cache where url_id = ?",
             (url_id,),
         ).fetchone()
-    finally:
-        conn.close()
     if row is None or time.time() - row[3] > LINK_VERDICT_CACHE_TTL_SECONDS:
         return None
     score, reasons_json, detail_json, _ = row
@@ -261,16 +264,13 @@ def _verdict_cache_get(url_id: str) -> dict | None:
 
 
 def _verdict_cache_put(url_id: str, score: int, reasons: list[str], detail: list[str]) -> None:
-    conn = _verdict_cache_connect()
-    try:
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_verdict_cache_table(conn)
         conn.execute(
             "insert or replace into link_verdict_cache(url_id, score, reasons, detail, cached_at) "
             "values (?, ?, ?, ?, ?)",
             (url_id, score, json.dumps(reasons), json.dumps(detail), time.time()),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _web_urls(text: str) -> list[str]:
@@ -366,7 +366,7 @@ async def analyze_url(
     # url AS THE USER SENT IT (before following any redirects) since
     # the whole point is to skip the network fetch that would otherwise
     # discover those redirects - see LINK_VERDICT_CACHE_TTL_SECONDS.
-    cached = None if is_official_brand else _verdict_cache_get(normalized.lower())
+    cached = None if is_official_brand else await asyncio.to_thread(_verdict_cache_get, normalized.lower())
 
     # Only ever set True inside the non-cached branch below (a cache hit
     # never touches Supabase for THIS request) - see EVIDENCE_DEGRADED_NOTICE.
@@ -556,7 +556,7 @@ async def analyze_url(
         await _remember(normalized, net, intrinsic_level)
 
         if not is_official_brand:
-            _verdict_cache_put(normalized.lower(), score, reasons, detail)
+            await asyncio.to_thread(_verdict_cache_put, normalized.lower(), score, reasons, detail)
 
     # Message-context adjustments - always computed fresh regardless of
     # cache hit/miss, since two different messages can link the same

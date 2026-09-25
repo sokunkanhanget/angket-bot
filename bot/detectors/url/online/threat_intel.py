@@ -33,13 +33,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import sqlite3
 import time
 
 import httpx
 
 from bot.config.config import SCAN_LOG_DB
-from bot.storage import health_alerts
+from bot.storage import health_alerts, sqlite_pool
 
 API_BASE = "https://www.virustotal.com/api/v3"
 LOOKUP_TIMEOUT = 8.0
@@ -70,13 +69,12 @@ def score(stats: dict) -> tuple[int, str] | None:
 
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(SCAN_LOG_DB)
-    # See bot/storage/scan_log.py's init_db() for why: this file is
-    # shared by several unrelated caches/logs, and WAL mode lets
-    # concurrent access to different tables proceed without blocking
-    # each other. Set defensively here too in case this connects first.
-    conn.execute("PRAGMA journal_mode=WAL")
+def _ensure_table(conn) -> None:
+    """Kept rather than moved to a one-time startup init - see
+    cert_info._ensure_table for the reasoning. What was removed is the
+    per-call connect plus `PRAGMA journal_mode=WAL` (a real disk write),
+    which sqlite_pool now does once per thread instead of once per
+    cache lookup."""
     conn.execute(
         """
         create table if not exists vt_cache(
@@ -88,35 +86,31 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    return conn
 
 
 def _cache_get(url_id: str):
-    conn = _connect()
-    try:
+    """Synchronous: the async caller hands this to asyncio.to_thread, so
+    it never runs on the event loop."""
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_table(conn)
         row = conn.execute(
             "select malicious, suspicious, total, looked_up_at from vt_cache where url_id = ?",
             (url_id,),
         ).fetchone()
-    finally:
-        conn.close()
     if row is None or time.time() - row[3] > CACHE_TTL_SECONDS:
         return None
     return {"malicious": row[0], "suspicious": row[1], "total": row[2]}
 
 
 def _cache_put(url_id: str, stats: dict) -> None:
-    conn = _connect()
-    try:
+    with sqlite_pool.connection(SCAN_LOG_DB) as conn:
+        _ensure_table(conn)
         conn.execute(
             "insert or replace into vt_cache(url_id, malicious, suspicious, total, looked_up_at) "
             "values (?, ?, ?, ?, ?)",
             (url_id, stats.get("malicious", 0), stats.get("suspicious", 0),
              stats.get("total", 0), time.time()),
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 
@@ -175,7 +169,7 @@ async def lookup(url: str, api_key: str | None, live: bool = True,
 
     url_id = _url_identifier(url)
 
-    cached = _cache_get(url_id)
+    cached = await asyncio.to_thread(_cache_get, url_id)
     if cached is not None:
         # A cache row of all zeros means "VT knows nothing / was asked
         # before" — still counts as a real answer for TTL purposes but
@@ -227,6 +221,6 @@ async def lookup(url: str, api_key: str | None, live: bool = True,
     # Don't cache that, or the URL would stay "no opinion" for a week;
     # the next user who sends it will get the finished verdict instead.
     if result["total"] > 0:
-        _cache_put(url_id, result)
+        await asyncio.to_thread(_cache_put, url_id, result)
     return result
 

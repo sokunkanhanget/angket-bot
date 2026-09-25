@@ -13,6 +13,7 @@ import sqlite3
 import pytest
 
 from bot.detectors.url.online import cert_info
+from bot.storage import sqlite_pool
 
 
 @pytest.fixture(autouse=True)
@@ -115,14 +116,27 @@ async def test_cert_issued_days_ago_does_not_re_handshake_on_a_cached_negative_r
     assert handshake_calls["n"] == 1  # only the FIRST call should hit the network
 
 
-def test_connect_creates_the_table_idempotently(tmp_path, monkeypatch):
+def test_the_table_is_created_on_a_fresh_database_and_reused_idempotently(tmp_path, monkeypatch):
+    # Was written against the old per-call _connect(). That helper is gone:
+    # the cache now borrows a pooled, per-thread connection from
+    # bot/storage/sqlite_pool.py instead of opening (and re-running PRAGMA
+    # journal_mode=WAL on) a new one for every single read. The property
+    # under test is unchanged and still matters most on this deployment -
+    # Render wipes the filesystem on every deploy, so this database really
+    # is empty on a regular basis and the DDL has to survive that.
     db_path = str(tmp_path / "idempotent.db")
     monkeypatch.setattr(cert_info, "SCAN_LOG_DB", db_path)
+    sqlite_pool.close_for_thread()  # do not inherit a connection to another file
 
-    cert_info._connect().close()
-    cert_info._connect().close()  # must not raise on a pre-existing table
+    try:
+        cert_info._cache_put("example.test", "2026-01-01T00:00:00")
+        cert_info._cache_put("example.test", "2026-01-02T00:00:00")  # must not raise
 
-    conn = sqlite3.connect(db_path)
-    tables = conn.execute("select name from sqlite_master where type='table'").fetchall()
-    conn.close()
-    assert ("cert_info",) in tables
+        assert cert_info._cache_get("example.test") == (True, "2026-01-02T00:00:00")
+
+        conn = sqlite3.connect(db_path)
+        tables = conn.execute("select name from sqlite_master where type='table'").fetchall()
+        conn.close()
+        assert ("cert_info",) in tables
+    finally:
+        sqlite_pool.close_for_thread()

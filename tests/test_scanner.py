@@ -23,7 +23,7 @@ def test_flags_the_classic_pdf_exe_disguise():
     result = check_filename("invoice.pdf.exe")
     assert result is not None
     score, key, params = result
-    assert score == 50
+    assert score == 60  # high band: re-pinned 2026-10-01, see filename_check.py
     assert key == "filename_warning_double_extension_executable"
     assert params == {"inner_ext": "pdf", "outer_ext": "exe"}
 
@@ -32,7 +32,7 @@ def test_flags_document_hidden_in_an_archive():
     result = check_filename("Document.pdf.z")
     assert result is not None
     score, key, params = result
-    assert score == 20
+    assert score == 30  # medium band: re-pinned 2026-10-01, see filename_check.py
     assert key == "filename_warning_double_extension_archive"
     assert params == {"inner_ext": "pdf", "outer_ext": "z"}
 
@@ -40,7 +40,7 @@ def test_flags_document_hidden_in_an_archive():
 def test_case_insensitive():
     result = check_filename("Invoice.PDF.EXE")
     assert result is not None
-    assert result[0] == 50
+    assert result[0] == 60
 
 
 def test_ordinary_single_extension_is_not_flagged():
@@ -63,7 +63,7 @@ def test_no_extension_at_all_is_not_flagged():
 def test_script_extension_disguised_behind_an_image():
     result = check_filename("photo.jpg.scr")
     assert result is not None
-    assert result[0] == 50
+    assert result[0] == 60
 
 
 # --- lone executable extension (2026-09-11: no VT signal shouldn't mean
@@ -116,7 +116,7 @@ async def test_scan_file_merges_vt_result_with_filename_warning():
     assert result["malicious"] == 0  # VT's own count is untouched by the filename heuristic
     assert result["filename_warning_key"] == "filename_warning_double_extension_executable"
     assert result["filename_warning_params"] == {"inner_ext": "pdf", "outer_ext": "exe"}
-    assert result["filename_risk_score"] == 50  # check_filename's own severity number, carried through
+    assert result["filename_risk_score"] == 60  # check_filename's own severity number, carried through
 
 
 @pytest.mark.asyncio

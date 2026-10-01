@@ -5,6 +5,7 @@ from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
+from bot.detectors.file.file_risk import file_risk, has_antivirus_answer
 from bot.detectors.file.scanner import cached_result, download_and_hash, scan_file
 from bot.storage.scan_log import log_scan
 from bot.storage import subscription
@@ -54,70 +55,71 @@ def filename_warning_text(result: dict, lang: str) -> str | None:
     return t(lang, key).format(**(result.get("filename_warning_params") or {}))
 
 
+def content_finding_texts(result: dict, lang: str) -> list[str]:
+    """Rendered local-inspection findings (offline/content_check.py),
+    strongest first. Shared with context_engine.py's offline fallback for
+    the same reason filename_warning_text is."""
+    findings = sorted(result.get("content_findings") or [], key=lambda f: -f.get("score", 0))
+    return [t(lang, f["key"]).format(**(f.get("params") or {})) for f in findings]
+
+
+# How many offline warnings (filename + content) a single reply shows.
+# The strongest ones carry the verdict; a long tail of weaker ones only
+# buries them.
+_MAX_LOCAL_REASONS = 3
+
+
+def _local_reasons(result: dict, lang: str) -> list[str]:
+    warnings = []
+    filename_warning = filename_warning_text(result, lang)
+    if filename_warning:
+        warnings.append((result.get("filename_risk_score", 0), filename_warning))
+    findings = sorted(result.get("content_findings") or [], key=lambda f: -f.get("score", 0))
+    for finding, text in zip(findings, content_finding_texts(result, lang)):
+        warnings.append((finding.get("score", 0), text))
+    warnings.sort(key=lambda pair: -pair[0])
+    return [text for _score, text in warnings[:_MAX_LOCAL_REASONS]]
+
+
 def _classify_file_result(result: dict, lang: str = DEFAULT_LANG) -> tuple[str, int | None, list[str]]:
     """(level, risk_percentage, reasons) from a merged scan_file() result.
-    risk_percentage is None only for the genuinely-no-signal case (no VT
-    match/reachability AND no filename warning) - same "nothing to base
-    a number on" honesty pipeline.py's own risk_style(None) -> "N/A"
-    already uses elsewhere, rather than inventing a fake number.
 
-    VirusTotal's own finding always takes priority when it actually has
-    one (checked AND found) - the filename heuristic only decides the
-    verdict when VT has NOTHING real to say, exactly matching
-    scanner.py's own "VT's malicious count stays untouched by the
-    filename heuristic" principle, just extended to the reverse case.
+    The verdict itself comes from bot/detectors/file/file_risk.py, which
+    the unified text+file path also uses - this function only explains it.
+    risk_percentage is None only for "uncertain": no antivirus answer and
+    no offline signal strong enough to stand on. That reads as "UNABLE TO
+    VERIFY", replacing the old flat "safe, 0%" (2026-10-01) - see
+    file_risk.file_risk for why "VirusTotal has never seen it" must not
+    read as safe.
 
-    `lang` renders the reasons. Engine counts, file extensions and the
-    example engine's detection name are real evidence and stay verbatim
-    in every language.
+    Engine counts, file extensions, archive entry names and the example
+    engine's detection name are real evidence and stay verbatim in every
+    language.
     """
+    level, pct = file_risk(result)
     reasons: list[str] = []
-    filename_warning = filename_warning_text(result, lang)
-    filename_score = result.get("filename_risk_score", 0)
+    local = _local_reasons(result, lang)
 
-    if result.get("checked") and result.get("found"):
-        malicious, total = result["malicious"], result["total"]
+    if has_antivirus_answer(result):
+        malicious, total = result.get("malicious", 0), result.get("total", 0)
         if malicious > 0:
-            pct = min(100, round(malicious / total * 100)) if total else 100
             reasons.append(t(lang, "reason_file_engines_flag").format(
                 malicious=malicious, total=total,
                 top_engine=result["top_engines"]["Microsoft"],
             ))
-            if filename_warning:
-                reasons.append(filename_warning)
-            return "dangerous", pct, reasons
-
-        if filename_warning:
+        elif local:
             reasons.append(t(lang, "reason_file_clean_but_name_suspect").format(total=total))
-            reasons.append(filename_warning)
-            return ("dangerous" if filename_score >= 50 else "suspicious"), filename_score, reasons
-        reasons.append(t(lang, "reason_file_no_engine_flags").format(total=total))
-        return "safe", 0, reasons
+        else:
+            reasons.append(t(lang, "reason_file_no_engine_flags").format(total=total))
+        return level, pct, reasons + local
 
-    # Either VirusTotal has genuinely never seen this hash before, or it
-    # couldn't be reached at all right now - either way, there's no real
-    # AV signal, only whatever the file's NAME suggests. Direct user spec
-    # (2026-09-11): don't tell the user a specific backend service is
-    # down/unreachable - just state the real limitation (no antivirus
-    # engine data backing this particular result) without naming why.
-    if not result.get("checked"):
-        reasons.append(t(lang, "reason_file_name_only"))
-    else:
-        reasons.append(t(lang, "reason_file_never_seen"))
-
-    if filename_warning:
-        reasons.append(filename_warning)
-        return ("dangerous" if filename_score >= 50 else "suspicious"), filename_score, reasons
-
-    # No VT signal AND nothing about the name looks off - the filename
-    # check DID run and found nothing, so this isn't "we have no idea"
-    # (the old "uncertain"/None here), it's "nothing we checked flagged
-    # it", the same honest "safe" this function already returns when VT
-    # itself confirms a clean file. Direct user spec: a single unavailable
-    # service (VT) shouldn't be enough to blank out a real verdict when
-    # the offline check already ran.
-    reasons.append(t(lang, "reason_file_no_name_flags"))
-    return "safe", 0, reasons
+    # No antivirus answer. Direct user spec (2026-09-11), kept: never name
+    # WHICH backend was unavailable, only the real limitation.
+    reasons.append(t(lang, "reason_file_name_only" if not result.get("checked") else "reason_file_never_seen"))
+    if local:
+        return level, pct, reasons + local
+    reasons.append(t(lang, "reason_file_no_local_findings"))
+    return level, pct, reasons
 
 
 def _with_disclaimer(message: str, lang: str = DEFAULT_LANG) -> str:
@@ -127,7 +129,9 @@ def _with_disclaimer(message: str, lang: str = DEFAULT_LANG) -> str:
 
 def _format_file_verdict(level: str, pct: int | None, reasons: list[str], lang: str = DEFAULT_LANG) -> str:
     """Format the file verdict using the shared scan-response layout."""
-    verdict = LEVEL_TO_VERDICT[level]
+    # An unverified file (no number) reads "UNABLE TO VERIFY", not
+    # "SUSPICIOUS": nothing accused it, nothing vouched for it either.
+    verdict = None if pct is None else LEVEL_TO_VERDICT[level]
     verdict_icon, verdict_label = verdict_style(verdict, lang)
     risk_icon, risk_label = risk_style(pct, lang)
     recs = [t(lang, key) for key in _FILE_RECOMMENDATION_KEYS[level]]
@@ -181,7 +185,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     animation_task = asyncio.create_task(animate_status(message, lang, status_suffix))
 
     try:
-        sha256 = await download_and_hash(context, document.file_id)
+        sha256 = await download_and_hash(context, document.file_id, document.file_name or "")
     except Exception:                          # noqa: BLE001
         logger.exception("File download failed for %s", file_name)
         await stop_status_animation(animation_task)

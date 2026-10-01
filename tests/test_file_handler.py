@@ -80,15 +80,13 @@ async def test_malicious_scan_reports_a_scam_verdict():
 
 
 @pytest.mark.asyncio
-async def test_unknown_signature_with_clean_filename_reports_safe():
+async def test_unknown_signature_with_clean_filename_reports_unverified():
     # checked=True here specifically means VT itself confirmed it has
-    # never seen this hash - a real (if weak) answer, distinct from
-    # "VT couldn't be reached" below, which used to be indistinguishable.
-    # 2026-09-11 spec: no VT signal AND a clean filename (no disguise, no
-    # risky extension) is "safe" (nothing we checked flagged it), not the
-    # old blanket "uncertain, N/A risk" - a single unavailable/silent
-    # service shouldn't blank out a real verdict when the offline
-    # filename check already ran and found nothing.
+    # never seen this hash - distinct from "VT couldn't be reached" below.
+    # Policy reversed 2026-10-01 (was "safe" under the 2026-09-11 spec):
+    # "never seen" is exactly what brand-new or repacked malware looks
+    # like, so it is not evidence of safety - the reply says the file
+    # could not be verified instead.
     update, context, sent = _file_update()
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="c" * 64)), \
@@ -99,22 +97,22 @@ async def test_unknown_signature_with_clean_filename_reports_safe():
         await handle_file(update, context)
 
     reply = sent.edit_text.call_args.args[0]
-    assert "SAFE / LEGITIMATE" in reply
+    assert "UNABLE TO VERIFY" in reply
+    assert "SAFE / LEGITIMATE" not in reply
     assert "never been seen by VirusTotal" in reply
-    assert "No filename red flags were found either" in reply
+    assert "can't be confirmed safe" in reply
 
 
 @pytest.mark.asyncio
-async def test_virustotal_outage_with_clean_filename_still_reports_safe():
+async def test_virustotal_outage_with_clean_filename_reports_unverified():
     # Real fix, matching the text/link checkers' own resilience: before
     # this session, ANY scan_file failure (a genuine VT outage included)
     # showed a bare "couldn't scan, try again later" with zero signal.
     # Now scan_vt_hash() itself never raises - a VT outage comes back as
     # checked=False, and the handler builds a real verdict from whatever
-    # offline evidence remains. 2026-09-11 spec: a clean filename here
-    # means "safe" (the filename check ran and found nothing), not the
-    # old blanket "uncertain, N/A risk" that treated VT's own outage as
-    # if nothing at all had been checked.
+    # offline evidence remains. Policy reversed 2026-10-01: with no
+    # antivirus answer and nothing found locally, the honest verdict is
+    # "unable to verify", not "safe" (it was "safe" under 2026-09-11).
     update, context, sent = _file_update()
 
     with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="e" * 64)), \
@@ -126,8 +124,9 @@ async def test_virustotal_outage_with_clean_filename_still_reports_safe():
         await handle_file(update, context)
 
     reply = sent.edit_text.call_args.args[0]
-    assert "SAFE / LEGITIMATE" in reply
-    assert "based on the file name only" in reply
+    assert "UNABLE TO VERIFY" in reply
+    assert "SAFE / LEGITIMATE" not in reply
+    assert "No antivirus engine has checked this exact file" in reply
     assert "VirusTotal" not in reply  # 2026-09-11 spec: don't name the failing backend service to the user
     mock_log.assert_called_once()  # this DID complete a real (degraded) scan, unlike a download failure
 
@@ -168,7 +167,7 @@ async def test_virustotal_outage_with_a_disguised_filename_still_flags_it():
              "checked": False, "found": False, "error": "503 UNAVAILABLE",
              "filename_warning_key": "filename_warning_double_extension_executable",
              "filename_warning_params": {"inner_ext": "pdf", "outer_ext": "exe"},
-             "filename_risk_score": 50,
+             "filename_risk_score": 60,  # check_filename's real score for this key since 2026-10-01
          })), \
          patch("bot.handlers.file_handler.log_scan"):
         await handle_file(update, context)
@@ -351,7 +350,7 @@ def test_no_signal_reasons_render_in_khmer():
 
     level, pct, reasons = _classify_file_result(result, "km")
 
-    assert level == "safe"
+    assert level == "uncertain"  # unverified, not safe, since 2026-10-01
     for r in reasons:
         assert _has_khmer(r), f"not translated: {r!r}"
 
@@ -496,3 +495,93 @@ async def test_a_normal_sized_file_and_an_unknown_size_both_still_scan():
         digest = await download_and_hash(context, "fake-file-id")
         assert len(digest) == 64
         ok.download_to_memory.assert_awaited_once()
+
+
+# --- risk percentage must agree with the verdict (2026-10-01) ---------
+#
+# Reported live: a ".pdf.rar" flagged by 14 of 75 VirusTotal engines
+# (Trojan:Script/Wacatac) rendered "VERDICT: LIKELY A SCAM" directly above
+# a green "19% LOW RISK". The percentage was the raw engine ratio
+# (14/75), which measures vendor coverage rather than likelihood of
+# malware - so EVERY detection got the Scam header while the badge stayed
+# green until ~23 engines and orange until ~46.
+
+
+def _vt_hit(malicious, total=75, **extra):
+    return {
+        "checked": True, "found": True, "malicious": malicious, "total": total,
+        "top_engines": {"Microsoft": "Trojan:Script/Wacatac.B!ml"},
+        "filename_warning_key": None, "filename_warning_params": {},
+        "filename_risk_score": 0, **extra,
+    }
+
+
+def test_the_exact_reported_case_is_high_risk_not_green():
+    result = _vt_hit(
+        14,
+        filename_warning_key="filename_warning_double_extension_archive",
+        filename_warning_params={"outer_ext": "rar", "inner_ext": "pdf"},
+        filename_risk_score=20,
+    )
+
+    level, pct, _reasons = _classify_file_result(result)
+
+    assert level == "dangerous"
+    assert pct > 60, f"14/75 engines rendered as {pct}% - the badge would not be red"
+
+
+def test_the_risk_badge_never_contradicts_the_verdict_header():
+    # The invariant itself, swept across detection counts rather than
+    # pinned to one number: a "Scam" verdict may never sit above a green
+    # badge, and a green/low badge may never accompany a Scam verdict.
+    from bot.response.verdict_style import LEVEL_TO_VERDICT, risk_style
+
+    for malicious in (1, 2, 3, 5, 10, 14, 30, 40, 60, 75):
+        level, pct, _ = _classify_file_result(_vt_hit(malicious))
+        verdict = LEVEL_TO_VERDICT[level]
+        icon, _label = risk_style(pct)
+        if verdict == "Scam":
+            assert icon == "🔴", f"{malicious}/75 engines: Scam verdict over a {icon} badge ({pct}%)"
+        assert icon != "🟢", f"{malicious}/75 engines flagged but badge is green ({pct}%)"
+
+
+def test_risk_never_decreases_as_more_engines_flag_the_file():
+    previous = -1
+    for malicious in range(1, 76):
+        _level, pct, _ = _classify_file_result(_vt_hit(malicious))
+        assert pct >= previous, f"risk dropped at {malicious} engines: {previous}% -> {pct}%"
+        previous = pct
+
+
+def test_a_lone_engine_detection_is_suspicious_not_a_confident_scam():
+    # Single-engine hits are the classic VirusTotal false-positive shape
+    # (one vendor's generic heuristic), so one engine alone does not earn
+    # a "Scam" verdict - matching how threat_intel.score() already treats
+    # the same signal as the weakest tier on the link side.
+    level, pct, _ = _classify_file_result(_vt_hit(1))
+
+    assert level == "suspicious"
+    assert 30 < pct <= 60
+
+
+def test_a_lone_detection_plus_an_executable_disguise_is_dangerous():
+    # Independent corroboration: the filename trick is real evidence the
+    # old code dropped whenever VirusTotal had a finding of its own.
+    result = _vt_hit(
+        1,
+        filename_warning_key="filename_warning_double_extension_executable",
+        filename_warning_params={"outer_ext": "exe", "inner_ext": "pdf"},
+        filename_risk_score=50,
+    )
+
+    level, _pct, _ = _classify_file_result(result)
+
+    assert level == "dangerous"
+
+
+def test_a_file_risk_never_claims_absolute_certainty():
+    for malicious in (14, 40, 75):
+        _level, pct, _ = _classify_file_result(_vt_hit(malicious, filename_risk_score=50,
+            filename_warning_key="filename_warning_double_extension_executable",
+            filename_warning_params={"outer_ext": "exe", "inner_ext": "pdf"}))
+        assert pct <= 99

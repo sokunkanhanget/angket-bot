@@ -272,10 +272,7 @@ TEXT = {
         "File name disguises an executable ('.{outer_ext}') behind a '.{inner_ext}' "
         "extension — a classic malware trick (e.g. 'invoice.pdf.exe')."
     ),
-    "filename_warning_double_extension_archive": (
-        "File name hides a '.{inner_ext}' file inside a '.{outer_ext}' archive — "
-        "this bot cannot see inside archives, so the real content is unverified."
-    ),
+    "filename_warning_double_extension_archive": "File name hides a '.{inner_ext}' file inside a '.{outer_ext}' archive — a common way to slip a payload past attachment filters.",
     "filename_warning_lone_executable": (
         "This is a '.{ext}' executable/script file — a common malware vector, "
         "especially when unsolicited."
@@ -285,19 +282,15 @@ TEXT = {
         "{malicious} of {total} security engines on VirusTotal flag this file as "
         "malicious (e.g. Microsoft: {top_engine})."
     ),
-    "reason_file_clean_but_name_suspect": (
-        "VirusTotal found no threats in this exact file ({total} engines checked), "
-        "but its name is still worth a second look."
-    ),
+    "reason_file_clean_but_name_suspect": "VirusTotal found no threats in this exact file ({total} engines checked), but the file still shows warning signs of its own.",
     "reason_file_no_engine_flags": "No security engine out of {total} on VirusTotal flags this file.",
     # Deliberately does not name the unavailable backend - state the real
     # limitation without the "why" (9th-session decision).
-    "reason_file_name_only": "This result is based on the file name only, not a full antivirus scan.",
+    "reason_file_name_only": "No antivirus engine has checked this exact file.",
     "reason_file_never_seen": (
         "This file's signature has never been seen by VirusTotal before — no track "
         "record either way."
     ),
-    "reason_file_no_name_flags": "No filename red flags were found either.",
 
     "rec_file_dangerous_do_not_open": "Do not open this file, run it, or extract its contents.",
     "rec_file_dangerous_already_opened": (
@@ -323,4 +316,17 @@ TEXT = {
     "rec_file_uncertain_verify_sender": (
         "Verify the sender through another channel before opening it."
     ),
+
+    # --- Local file inspection (offline/content_check.py) + unverified state ---
+    "reason_file_no_local_findings": "Nothing suspicious was found in its name or structure either — but that is not the same as an antivirus check, so it can't be confirmed safe.",
+    "reason_file_unverified_attachment": "The attached file could not be verified by any antivirus engine, so this message can't be confirmed safe.",
+    "content_disguised_executable": "The file is named '.{claimed_ext}' but its contents are actually a {real_type} program.",
+    "content_disguised_archive": "The file is named '.{claimed_ext}' but it is actually a {real_type} archive.",
+    "content_rtlo_filename": "The file name uses a hidden right-to-left control character to fake its extension — a deliberate disguise.",
+    "content_archive_executable": "The archive contains a program or script: '{entry}'.",
+    "content_archive_disguised_entry": "The archive contains a disguised program: '{entry}'.",
+    "content_archive_encrypted": "The archive is password-protected, so its contents can't be checked — a common way to slip malware past scanners.",
+    "content_office_macros": "This Office document contains macros, which can run code when it is opened.",
+    "content_pdf_launch": "This PDF contains an instruction to launch another program.",
+    "content_pdf_javascript": "This PDF contains embedded JavaScript.",
 }

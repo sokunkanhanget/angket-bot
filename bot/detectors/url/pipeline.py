@@ -76,6 +76,7 @@ from bot.detectors.url.offline.lexical import (
     registered_domain,
 )
 from bot.storage import sqlite_pool
+from bot.response import risk_scale
 from bot.config.config import SCAN_LOG_DB, VIRUSTOTAL_API_KEY, VIRUSTOTAL_API_KEY_BACKUP
 from bot.storage import health_alerts
 from bot.response.translate import DEFAULT_LANG
@@ -949,14 +950,16 @@ async def check_message_full(text: str, hidden_links: list[tuple[str, str]] | No
     return verdicts
 
 
+_BAND_LABELS = {risk_scale.LOW: "Low Risk", risk_scale.MEDIUM: "Medium Risk", risk_scale.HIGH: "High Risk"}
+
+
 def _risk_percent_and_label(score: int) -> tuple[int, str]:
-    """Score capped to a 0-100 display percentage, bucketed independently of _verdict_labels."""
-    pct = min(score, 100)
-    if pct <= 30:
-        return pct, "Low Risk"
-    if pct <= 60:
-        return pct, "Medium Risk"
-    return pct, "High Risk"
+    """Display percentage + label from the SAME scale _verdict_labels uses.
+    The docstring here used to say "bucketed independently of
+    _verdict_labels" - that independence was the bug: score 25-30 and
+    exactly 60 rendered a badge contradicting their own verdict."""
+    pct = risk_scale.clamp(score)
+    return pct, _BAND_LABELS[risk_scale.band(pct)]
 
 
 # Translation keys rather than literal strings - these used to be the

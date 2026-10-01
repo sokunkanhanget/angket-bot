@@ -11,6 +11,7 @@ Public functions the handler uses:
 
 from __future__ import annotations
 
+from bot.response import risk_scale
 import math
 import re
 from collections import Counter
@@ -228,13 +229,21 @@ def check_anchor_mismatch(display_text: str, actual_url: str) -> tuple[int, str]
     return None
 
 
+_LEVEL_LABELS = {
+    "dangerous": ("🔴", "Dangerous"),
+    "suspicious": ("🟠", "Suspicious"),
+    "safe": ("🟢", "Looks OK"),
+}
+
+
 def _verdict_labels(score: int):
-    """Turn a score into (level, emoji, label)."""
-    if score >= 60:
-        return "dangerous", "🔴", "Dangerous"
-    if score >= 25:
-        return "suspicious", "🟠", "Suspicious"
-    return "safe", "🟢", "Looks OK"
+    """Turn a score into (level, emoji, label). The cut-offs live in
+    bot/response/risk_scale.py so the link level can never again disagree
+    with the risk badge shown beside it (score 25-30 used to read
+    "Uncertain" over a green badge, and 60 "Scam" over an orange one)."""
+    level = risk_scale.level_for(score)
+    emoji, label = _LEVEL_LABELS[level]
+    return level, emoji, label
 
 
 

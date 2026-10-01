@@ -157,7 +157,7 @@ async def test_grounded_fallback_flags_malicious_file(fake_vector_store):
     result = await _grounded_fallback("x", "", {"suspicious": False, "matches": []}, [], file_verdict)
 
     assert result["verdict"] == "Scam"
-    assert result["risk_percentage"] == 100
+    assert result["risk_percentage"] == 85  # file_risk tier for 5 engines; a flat 100 claimed certainty (2026-10-01)
     assert any(r["source"] == "file_evidence" for r in result["key_reasons"])
 
 
@@ -433,7 +433,7 @@ async def test_analyze_unified_clamps_out_of_range_risk_percentage(monkeypatch):
 
     result = await analyze_unified("x", {"suspicious": False, "matches": []}, link_verdicts)
 
-    assert result["risk_percentage"] == 100
+    assert result["risk_percentage"] == 99  # risk_scale.MAX_DISPLAYED: nothing renders as certain
 
 
 @pytest.mark.asyncio
@@ -503,7 +503,7 @@ def test_reconcile_escalates_to_scam_when_gemini_misses_a_malicious_file():
     result = _reconcile_with_evidence(data, [], file_verdict)
 
     assert result["verdict"] == "Scam"
-    assert result["risk_percentage"] == 100
+    assert result["risk_percentage"] == 70  # file_risk tier for 3 engines; a flat 100 claimed certainty (2026-10-01)
     assert any(r["source"] == "file_evidence" and "Overridden" in r["text"] for r in result["key_reasons"])
 
 
@@ -694,7 +694,7 @@ async def test_analyze_unified_applies_reconciliation_end_to_end(monkeypatch):
     result = await analyze_unified("here's the invoice you asked for", {"suspicious": False, "matches": []}, [], file_verdict)
 
     assert result["verdict"] == "Scam"
-    assert result["risk_percentage"] == 100
+    assert result["risk_percentage"] == 85  # file_risk tier for 5 engines; a flat 100 claimed certainty (2026-10-01)
 
 
 # --- language-aware live path (private DM / business chat translation) --

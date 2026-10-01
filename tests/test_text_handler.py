@@ -116,17 +116,20 @@ def test_format_unified_response_shows_real_reasons_not_ai_unavailable_admission
 
 
 def test_format_analysis_response_uses_medium_and_low_thresholds():
+    # Boundary moved from 30/31 to 24/25 on 2026-10-01: the cut-offs now
+    # come from bot/response/risk_scale.py, the link scorer's own level
+    # boundaries, so every surface shares one scale.
     medium = format_analysis_response(
-        _result(31, verdict="Uncertain"), {"suspicious": False, "matches": []}
+        _result(25, verdict="Uncertain"), {"suspicious": False, "matches": []}
     )
     low = format_analysis_response(
-        _result(30, verdict="Not a Scam"), {"suspicious": False, "matches": []}
+        _result(24, verdict="Not a Scam"), {"suspicious": False, "matches": []}
     )
 
-    assert "🟠 <b>31%  MEDIUM RISK</b>" in medium
+    assert "🟠 <b>25%  MEDIUM RISK</b>" in medium
     assert "⚠️ <b>VERDICT: SUSPICIOUS</b>" in medium
     assert "This message has warning signs. Verify it before taking action." in medium
-    assert "🟢 <b>30%  LOW RISK</b>" in low
+    assert "🟢 <b>24%  LOW RISK</b>" in low
     assert "✅ <b>VERDICT: SAFE / LEGITIMATE</b>" in low
     assert "No strong scam indicators were detected in this message." in low
 

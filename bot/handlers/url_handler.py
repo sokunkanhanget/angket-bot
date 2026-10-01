@@ -179,7 +179,7 @@ async def _scan_attached_file(context: ContextTypes.DEFAULT_TYPE, document) -> d
     session - kept as a separate copy here rather than shared, since
     text_handler.py already imports extract_text_link_entities FROM this
     module, so importing back would be circular."""
-    sha256 = await download_and_hash(context, document.file_id)
+    sha256 = await download_and_hash(context, document.file_id, document.file_name or "")
     return await scan_file(sha256, document.file_name or "")
 
 

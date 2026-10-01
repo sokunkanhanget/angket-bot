@@ -75,7 +75,20 @@ GEMINI_BYPASS_KEYS = [
     "reason_file_no_engine_flags",
     "reason_file_name_only",
     "reason_file_never_seen",
-    "reason_file_no_name_flags",
+    # reason_file_no_name_flags was replaced on 2026-10-01: the unverified
+    # state now covers the file's name AND its inspected structure.
+    "reason_file_no_local_findings",
+    "reason_file_unverified_attachment",
+    # Local byte inspection (offline/content_check.py), added 2026-10-01.
+    "content_disguised_executable",
+    "content_disguised_archive",
+    "content_rtlo_filename",
+    "content_archive_executable",
+    "content_archive_disguised_entry",
+    "content_archive_encrypted",
+    "content_office_macros",
+    "content_pdf_launch",
+    "content_pdf_javascript",
     "rec_file_dangerous_do_not_open",
     "rec_file_dangerous_already_opened",
     "rec_file_dangerous_delete_block",

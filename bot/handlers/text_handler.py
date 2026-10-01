@@ -362,7 +362,7 @@ async def _scan_attached_file(context: ContextTypes.DEFAULT_TYPE, document) -> d
     top-level function rather than a closure over context/document (as it
     used to be, nested inside _run_full_check_and_reply) - no reuse reason
     to capture instead of pass explicitly, and it's used exactly once."""
-    sha256 = await download_and_hash(context, document.file_id)
+    sha256 = await download_and_hash(context, document.file_id, document.file_name or "")
     return await scan_file(sha256, document.file_name or "")
 
 

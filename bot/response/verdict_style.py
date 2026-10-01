@@ -21,6 +21,7 @@ import html
 from datetime import datetime, timedelta
 
 from bot.detectors.url.offline.lexical import URL_REGEX
+from bot.response import risk_scale
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
 from bot.config.config import DISPLAY_TIMEZONE_OFFSET_HOURS
@@ -142,14 +143,21 @@ def verdict_style(verdict: str | None, lang: str = DEFAULT_LANG) -> tuple[str, s
     return icon, t(lang, key)
 
 
+_BAND_STYLE = {
+    risk_scale.LOW: ("🟢", "risk_low"),
+    risk_scale.MEDIUM: ("🟠", "risk_medium"),
+    risk_scale.HIGH: ("🔴", "risk_high"),
+}
+
+
 def risk_style(risk_percentage: int | None, lang: str = DEFAULT_LANG) -> tuple[str, str]:
-    if risk_percentage is None:
+    """Badge icon + label. Cut-offs come from risk_scale only - see that
+    module for why they used to drift between surfaces."""
+    level_band = risk_scale.band(risk_percentage)
+    if level_band is None:
         return "⚪", t(lang, "risk_unknown")
-    if risk_percentage <= 30:
-        return "🟢", t(lang, "risk_low")
-    if risk_percentage <= 60:
-        return "🟠", t(lang, "risk_medium")
-    return "🔴", t(lang, "risk_high")
+    icon, key = _BAND_STYLE[level_band]
+    return icon, t(lang, key)
 
 
 def summary_sentence(verdict: str | None, risk_percentage: int | None, lang: str = DEFAULT_LANG) -> str:
@@ -160,17 +168,18 @@ def summary_sentence(verdict: str | None, risk_percentage: int | None, lang: str
     text_handler.py importing this from here instead of defining it
     locally avoids a circular import (pipeline.py is imported BY
     url_handler.py, which text_handler.py also imports from)."""
+    level_band = risk_scale.band(risk_percentage)
     if verdict == "Scam":
-        if risk_percentage is not None and risk_percentage <= 60:
+        if level_band in (risk_scale.LOW, risk_scale.MEDIUM):
             return t(lang, "summary_warning_signs")
         return t(lang, "summary_strong_unsafe")
     if verdict == "Not a Scam":
-        if risk_percentage is not None and risk_percentage > 30:
+        if level_band in (risk_scale.MEDIUM, risk_scale.HIGH):
             return t(lang, "summary_warning_signs")
         return t(lang, "summary_no_indicators")
-    if risk_percentage is not None and risk_percentage > 60:
+    if level_band == risk_scale.HIGH:
         return t(lang, "summary_strong_unsafe")
-    if risk_percentage is not None and risk_percentage > 30:
+    if level_band == risk_scale.MEDIUM:
         return t(lang, "summary_warning_signs")
     # risk_percentage is None here only for file_handler.py's genuine
     # no-signal case (no VT match/reachability AND no filename warning) -

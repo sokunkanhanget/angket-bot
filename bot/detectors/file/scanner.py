@@ -18,6 +18,7 @@ import io
 
 from telegram.ext import ContextTypes
 
+from bot.detectors.file.offline.content_check import inspect_content
 from bot.detectors.file.offline.filename_check import check_filename
 from bot.detectors.file.online.virustotal import cached_result, scan_vt_hash
 
@@ -64,11 +65,34 @@ class FileTooLargeError(Exception):
     no new handling at any call site to degrade correctly."""
 
 
-async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> str:
-    """Download a Telegram file and return its SHA-256 hex digest, ready
-    for scan_vt_hash() - shared by every flow that scans an uploaded
-    file (handle_file, handle_business_message) so a fix like the size
-    guard above only needs to land in one place."""
+class FileDigest(str):
+    """A SHA-256 hex digest that also carries the local content findings
+    for the bytes it was computed from.
+
+    A str subclass on purpose: every existing caller (and 27 test mocks)
+    treat download_and_hash's result as a plain digest string, and keep
+    working unchanged. scan_file picks the findings up with getattr, so a
+    plain string (a test mock, a cached hash) simply has none.
+
+    It carries FINDINGS, never the bytes. Inspection runs inside the
+    download slot below and the bytes are released before this returns -
+    holding them until the VirusTotal call finished would let concurrent
+    scans buffer far more than the 3-slot cap allows on a 512MB instance.
+    """
+
+    content_findings: list[dict]
+
+
+async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str, file_name: str = "") -> str:
+    """Download a Telegram file, inspect its bytes locally, and return its
+    SHA-256 digest (a FileDigest carrying the content findings) - shared
+    by every flow that scans an uploaded file (handle_file,
+    handle_business_message, the private-DM attachment path) so a fix
+    like the size guard only needs to land in one place.
+
+    `file_name` lets the content inspector compare what the name CLAIMS
+    against what the bytes ARE; it defaults to "" so an older caller
+    still works, just without the name-vs-content checks."""
     file_info = await context.bot.get_file(file_id)
 
     # file_size can be None (Telegram doesn't always populate it); that's
@@ -83,7 +107,12 @@ async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str) ->
     async with _FILE_SCAN_SLOTS:
         buf = io.BytesIO()
         await file_info.download_to_memory(buf)
-        return hashlib.sha256(buf.getvalue()).hexdigest()
+        data = buf.getvalue()
+        digest = FileDigest(hashlib.sha256(data).hexdigest())
+        # Parsing attacker-supplied archives/PDFs is CPU work; on Render's
+        # 0.1 CPU it must not run on the event loop.
+        digest.content_findings = await asyncio.to_thread(inspect_content, data, file_name)
+    return digest
 
 
 async def scan_file(file_hash: str, file_name: str) -> dict:
@@ -115,7 +144,10 @@ async def scan_file(file_hash: str, file_name: str) -> dict:
     idea which language the eventual reply is in, so each display site
     renders it (see filename_check.py's docstring).
     """
-    result = await scan_vt_hash(file_hash)
+    # str(): a FileDigest is a str subclass; hand the network and cache
+    # layers a plain string so nothing downstream depends on that.
+    result = await scan_vt_hash(str(file_hash))
+    result["content_findings"] = list(getattr(file_hash, "content_findings", None) or [])
     warning = check_filename(file_name)
     result["filename_warning_key"] = warning[1] if warning else None
     result["filename_warning_params"] = warning[2] if warning else {}

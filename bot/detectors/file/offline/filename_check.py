@@ -57,11 +57,20 @@ def _double_extension_disguise(name: str) -> tuple[int, str, dict] | None:
     _, inner_ext, outer_ext = parts
     if inner_ext not in DOCUMENT_LIKE_EXTENSIONS:
         return None
+    # Scores sit on bot/response/risk_scale.py's shared bands (medium from
+    # 25, high from 60), so the level a file gets is derived from the same
+    # number as its badge. Re-pinned 2026-10-01 when the verdict and badge
+    # were found contradicting each other:
+    #   - executable disguise 50 -> 60 (high): it was already reported as
+    #     dangerous, but 50 rendered as an orange "medium" badge under a
+    #     "Scam" verdict. This trick is inherently deceptive.
+    #   - archive disguise 20 -> 30 (medium): it was already reported as
+    #     suspicious, but 20 rendered as a green "low" badge under it.
     if outer_ext in EXECUTABLE_EXTENSIONS:
-        return (50, "filename_warning_double_extension_executable",
+        return (60, "filename_warning_double_extension_executable",
                 {"outer_ext": outer_ext, "inner_ext": inner_ext})
     if outer_ext in ARCHIVE_EXTENSIONS:
-        return (20, "filename_warning_double_extension_archive",
+        return (30, "filename_warning_double_extension_archive",
                 {"outer_ext": outer_ext, "inner_ext": inner_ext})
     return None
 

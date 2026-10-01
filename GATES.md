@@ -26,10 +26,10 @@ Toolchain: Windows, Git Bash, `.venv/Scripts/python` (3.13). Commands assume `PY
   EXPECT: EVENT_LOOP_UNBLOCKED_OK
   EVIDENCE: automatic-evidence=v1; definition-sha256=d71377c32f23ca74713c2e525d9f8b99a772d10b68bf281b75d9cd2517199c6c; exit=0; EXPECT=matched; output-sha256=4d3e0241ff8e9828cbb79b86729b7835ceb633548b45b662dc12b76480aa8ccd; output-bytes=141; shell=C:\WINDOWS\system32\cmd.exe; cwd=C:\Users\USER\OneDrive\Desktop\Project\angket-bot; path=18e6b6e52134/53 entries
 
-- [ ] G5: The whole test suite still passes
+- [x] G5: The whole test suite still passes
   CHECK: .venv\Scripts\python tools/gate_pytest.py
   EXPECT: PYTEST_ALL_GREEN
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=0e67e15414711ac822a30a415351dda0c6e6552fc080b8384a9ba9f63ac8ddf6; exit=0; EXPECT=matched; output-sha256=0770e01284e06cdf674453df5d2df3a646d53b9ae1312736366fb312379c2ac0; output-bytes=1645; shell=C:\WINDOWS\system32\cmd.exe; cwd=C:\Users\USER\OneDrive\Desktop\Project\angket-bot; path=a123e80b0bc2/40 entries
 
 - [x] G6: Static analysis finds nothing beyond the one known pre-existing flag
   CHECK: .venv\Scripts\python tools/gate_pyflakes.py

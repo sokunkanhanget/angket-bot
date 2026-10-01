@@ -17,8 +17,11 @@ import _gate_env  # noqa: F401 - sys.path + utf-8 stdout bootstrap
 
 
 def main() -> int:
+    # Optional test paths: a ledger can gate on one file (e.g.
+    # tests/test_risk_scale.py) without re-running the whole, partly
+    # network-dependent suite.
     completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q"],
+        [sys.executable, "-m", "pytest", "-q", *sys.argv[1:]],
         cwd=_gate_env.REPO_ROOT,
         text=True,
     )

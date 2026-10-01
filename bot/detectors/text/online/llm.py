@@ -5,6 +5,7 @@ from google.genai import types
 
 from bot.config.config import GEMINI_MODEL
 from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, generate_content_with_backup, get_clients
+from bot.response import risk_scale
 from bot.detectors.text.offline.keyword import analyze_text
 # Deliberate cross-module reuse of context_engine's offline fallback
 # (leading underscore is this project's "internal to its own reasoning
@@ -110,14 +111,13 @@ def _ensure_clients() -> None:
         _primary_pool, _backup_client = get_clients()
 
 
+_BAND_LABELS = {risk_scale.LOW: "Low", risk_scale.MEDIUM: "Medium", risk_scale.HIGH: "High"}
+
+
 def _risk_label(risk_percentage: int | None) -> str:
-    if risk_percentage is None:
-        return "Unknown"
-    if risk_percentage <= 30:
-        return "Low"
-    if risk_percentage <= 60:
-        return "Medium"
-    return "High"
+    """Cut-offs from risk_scale, the single shared definition."""
+    level_band = risk_scale.band(risk_percentage)
+    return "Unknown" if level_band is None else _BAND_LABELS[level_band]
 
 
 async def _fallback(reason: str, error: str, text: str) -> dict:
@@ -181,10 +181,15 @@ async def analyze_text_with_llm(text: str, user_id: int | None = None) -> dict:
         if user_id is not None and response.usage_metadata is not None:
             await subscription.record_token_usage(user_id, response.usage_metadata.total_token_count or 0)
         data = json.loads(response.text)
-        risk_percentage = max(0, min(100, int(data.get("risk_percentage", 0))))
+        verdict = data.get("verdict", "Uncertain")
+        # Gemini chooses the verdict word and the number independently;
+        # pull the number into the verdict's band so they never contradict,
+        # and derive the label from the same shared scale rather than
+        # trusting the model's own free-text risk_level.
+        risk_percentage = risk_scale.coherent_risk(verdict, int(data.get("risk_percentage", 0)))
         return {
-            "verdict": data.get("verdict", "Uncertain"),
-            "risk_level": data.get("risk_level", "Unknown"),
+            "verdict": verdict,
+            "risk_level": _risk_label(risk_percentage),
             "risk_percentage": risk_percentage,
             "key_reasons": data.get("key_reasons", []),
             "recommendations": data.get("recommendations", []),

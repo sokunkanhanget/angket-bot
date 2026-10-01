@@ -34,6 +34,8 @@ import re
 import secrets
 
 from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
+from bot.detectors.file.file_risk import file_risk
+from bot.response import risk_scale
 from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, generate_content_with_backup, get_clients
 from bot.response.translate import DEFAULT_LANG
 from bot.response.buttons import t
@@ -601,29 +603,32 @@ def _fallback_link_reasons(link_verdicts: list[dict], lang: str) -> list[dict]:
     return reasons
 
 
-def _fallback_file_reasons(file_verdict: dict | None, lang: str) -> tuple[list[dict], bool, int]:
-    """(reasons, file_flagged, filename_score)."""
+def _fallback_file_reasons(file_verdict: dict | None, lang: str) -> tuple[list[dict], str | None, int | None]:
+    """(reasons, file_level, file_risk_percentage) - level and number come
+    from bot/detectors/file/file_risk.py, the SAME rule the direct file
+    reply uses, so a file gets one verdict whichever surface shows it.
+    Before 2026-10-01 this path scored any VirusTotal hit as 100% while the
+    direct reply used an engine ratio."""
+    if not file_verdict:
+        return [], None, None
+    # Imported here, not at module scope: file_handler.py imports
+    # text_handler.py, which would make this a real import cycle at load
+    # time. The renderers are shared rather than duplicated so the file
+    # reply and this fallback can't word the same warning differently.
+    from bot.handlers.file_handler import _local_reasons
+
+    level, pct = file_risk(file_verdict)
     reasons: list[dict] = []
-    file_flagged = bool(file_verdict and file_verdict.get("malicious", 0) > 0)
-    if file_flagged:
+    if file_verdict.get("malicious", 0) > 0:
         reasons.append({
             "text": t(lang, "reason_file_malicious").format(count=file_verdict["malicious"]),
             "source": "file_evidence",
         })
-    filename_score = 0
-    if file_verdict:
-        # Imported here, not at module scope: file_handler.py imports
-        # text_handler.py, which would make this a real import cycle at
-        # load time. The renderer is shared rather than duplicated so the
-        # file reply and this fallback can't word the same warning
-        # differently.
-        from bot.handlers.file_handler import filename_warning_text
-
-        warning = filename_warning_text(file_verdict, lang)
-        if warning:
-            reasons.append({"text": warning, "source": "file_evidence"})
-        filename_score = file_verdict.get("filename_risk_score", 0)
-    return reasons, file_flagged, filename_score
+    for text in _local_reasons(file_verdict, lang):
+        reasons.append({"text": text, "source": "file_evidence"})
+    if level == "uncertain":
+        reasons.append({"text": t(lang, "reason_file_unverified_attachment"), "source": "file_evidence"})
+    return reasons, level, pct
 
 
 async def _grounded_fallback(
@@ -676,7 +681,7 @@ async def _grounded_fallback(
 
     reasons.extend(_fallback_link_reasons(link_verdicts, lang))
 
-    file_reasons, file_flagged, filename_score = _fallback_file_reasons(file_verdict, lang)
+    file_reasons, file_level, file_pct = _fallback_file_reasons(file_verdict, lang)
     reasons.extend(file_reasons)
 
     # Derived from whatever evidence actually got appended above - not
@@ -694,26 +699,26 @@ async def _grounded_fallback(
         # Risk" right next to an "Uncertain" verdict, undercutting
         # exactly the signal this fallback exists to surface.
         #
-        # filename_score included here too (found by code review,
-        # 2026-09-16): a file with only a filename-warning (not a VT
-        # malicious hit) made has_concern True -> verdict "Uncertain"
-        # while contributing nothing to this number, rendering as
-        # "Uncertain / 0%". file_handler.py's own _classify_file_result
-        # already uses this exact same filename_risk_score field as the
-        # percentage for the identical filename-only-warning case (see
-        # scanner.py's filename_risk_score / filename_check.py) - reusing
-        # it here instead of inventing a new number keeps the two
-        # surfaces consistent.
-        risk_percentage = 100 if file_flagged else max(min(worst_link_score, 100), pattern_score, filename_score)
+        # The file's number is file_risk.file_risk()'s, the exact one the
+        # direct file reply shows (2026-10-01) - so an attachment scores
+        # the same here as it would sent on its own. (Before that this
+        # used the raw filename score alone, and any VirusTotal hit as a
+        # flat 100.)
+        risk_percentage = max(min(worst_link_score, 100), pattern_score, file_pct or 0)
         if not _has_confirmed_evidence(link_verdicts, file_verdict):
             risk_percentage = min(risk_percentage, UNCORROBORATED_RISK_CAP)
 
-    if file_flagged:
+    if file_level == "dangerous":
         verdict = "Scam"
     elif has_concern:
         verdict = "Uncertain"
     else:
         verdict = "Not a Scam"
+
+    # The only concern is an attachment nothing could vouch for: say
+    # "unverified" (no number) rather than inventing a percentage.
+    if verdict == "Uncertain" and file_level == "uncertain" and not risk_percentage:
+        risk_percentage = None
 
     return {
         "verdict": verdict,
@@ -734,12 +739,14 @@ class _EvidenceFlags:
     override branches each need - a plain attribute-holder rather than a
     dict so callers get typo-safe `.file_flagged` access."""
 
-    __slots__ = ("file_flagged", "worst_link_score", "confirmed_link_flagged",
-                 "pattern_similarity", "pattern_category", "pattern_flagged")
+    __slots__ = ("file_flagged", "file_concern", "file_pct", "worst_link_score",
+                 "confirmed_link_flagged", "pattern_similarity", "pattern_category", "pattern_flagged")
 
-    def __init__(self, file_flagged, worst_link_score, confirmed_link_flagged,
+    def __init__(self, file_flagged, file_concern, file_pct, worst_link_score, confirmed_link_flagged,
                  pattern_similarity, pattern_category, pattern_flagged):
         self.file_flagged = file_flagged
+        self.file_concern = file_concern
+        self.file_pct = file_pct
         self.worst_link_score = worst_link_score
         self.confirmed_link_flagged = confirmed_link_flagged
         self.pattern_similarity = pattern_similarity
@@ -755,8 +762,13 @@ def _classify_evidence(
     - split out of _reconcile_with_evidence so its two override branches
     below are just flag checks instead of re-deriving these inline."""
     pattern_similarity, pattern_category = pattern_match or (0.0, None)
+    file_level, file_pct = file_risk(file_verdict) if file_verdict else (None, None)
     return _EvidenceFlags(
-        file_flagged=bool(file_verdict and file_verdict.get("malicious", 0) > 0),
+        file_flagged=file_level == "dangerous",
+        # Not dangerous, but nothing vouches for it either: a suspicious
+        # file, or one no antivirus engine could check.
+        file_concern=file_level in ("suspicious", "uncertain"),
+        file_pct=file_pct,
         worst_link_score=max((v.get("score", 0) for v in link_verdicts), default=0),
         confirmed_link_flagged=any(
             v.get("level") != "safe" and _link_is_vt_confirmed(v)
@@ -768,15 +780,18 @@ def _classify_evidence(
     )
 
 
-def _override_for_malicious_file(data: dict, lang: str) -> None:
-    """Mutates `data` in place - a malicious file finding always wins,
-    regardless of what Gemini said."""
+def _override_for_malicious_file(data: dict, evidence: "_EvidenceFlags", lang: str) -> None:
+    """Mutates `data` in place - a dangerous file finding always wins,
+    regardless of what Gemini said. The number is the file's own risk
+    (bot/detectors/file/file_risk.py), not a flat 100: a displayed 100%
+    claims absolute certainty, and the direct file reply for the same file
+    would have shown a different number."""
     logger.warning(
         "context_engine: Gemini returned verdict=%r despite a malicious file "
         "finding - overriding to Scam", data.get("verdict"),
     )
     data["verdict"] = "Scam"
-    data["risk_percentage"] = 100
+    data["risk_percentage"] = max(data.get("risk_percentage") or 0, evidence.file_pct or 0)
     reasons = list(data.get("key_reasons") or [])
     reasons.append({
         "text": t(lang, "reason_override_file"),
@@ -823,6 +838,26 @@ def _override_for_flagged_evidence(data: dict, evidence: "_EvidenceFlags", lang:
     data["key_reasons"] = reasons
 
 
+def _override_for_file_concern(data: dict, evidence: "_EvidenceFlags",
+                               file_verdict: dict, lang: str) -> None:
+    """Mutates `data` in place - Gemini may judge the message TEXT innocent
+    and answer "Not a Scam", but it cannot vouch for an attachment that is
+    suspicious, or that no antivirus engine could check (2026-10-01). The
+    message as a whole is then at least "Uncertain"; an unverified file
+    with no number of its own reads as unverified, not as a percentage."""
+    logger.warning(
+        "context_engine: Gemini returned 'Not a Scam' with a suspicious or unverified "
+        "attachment - overriding to Uncertain",
+    )
+    data["verdict"] = "Uncertain"
+    data["risk_percentage"] = evidence.file_pct
+    reasons = list(data.get("key_reasons") or [])
+    file_reasons, _level, _pct = _fallback_file_reasons(file_verdict, lang)
+    reasons.extend(file_reasons)
+    data["key_reasons"] = reasons
+    data["recommendations"] = _fallback_recommendations("Uncertain", lang)
+
+
 def _reconcile_with_evidence(
     data: dict,
     link_verdicts: list[dict],
@@ -863,9 +898,11 @@ def _reconcile_with_evidence(
     verdict = data.get("verdict")
 
     if evidence.file_flagged and verdict != "Scam":
-        _override_for_malicious_file(data, lang)
+        _override_for_malicious_file(data, evidence, lang)
     elif verdict == "Not a Scam" and (evidence.confirmed_link_flagged or evidence.pattern_flagged):
         _override_for_flagged_evidence(data, evidence, lang)
+    elif verdict == "Not a Scam" and evidence.file_concern:
+        _override_for_file_concern(data, evidence, file_verdict, lang)
 
     # Final, uniform policy step regardless of which branch above (or
     # neither) produced this number: a risk_percentage this high must be
@@ -1004,7 +1041,7 @@ async def _call_gemini(
     return data
 
 
-async def analyze_unified(
+async def _analyze_unified_raw(
     text: str,
     keyword_result: dict,
     link_verdicts: list[dict],
@@ -1104,3 +1141,30 @@ async def analyze_unified(
         await health_alerts.maybe_alert("Gemini", str(error))
         return await _degrade("LLM analysis failed, please try again later.",
                                text, keyword_result, link_verdicts, file_verdict, lang)
+
+
+async def analyze_unified(
+    text: str,
+    keyword_result: dict,
+    link_verdicts: list[dict],
+    file_verdict: dict | None = None,
+    lang: str = DEFAULT_LANG,
+    user_id: int | None = None,
+    sender_identity: dict | None = None,
+) -> dict:
+    """The public entry point - see _analyze_unified_raw for what each
+    path does. This wrapper is the single choke point every path (live
+    Gemini, the two deterministic short-circuits, the offline fallback,
+    the evidence overrides) passes through, and it makes the final number
+    agree with the final verdict via bot/response/risk_scale.py.
+
+    Why here and not in each path (2026-10-01): Gemini chooses its verdict
+    word and its number independently ("Scam" at 40% is possible), and the
+    overrides and caps each adjust one or the other. Enforcing agreement
+    once, at the exit, means no current or future path can render a Scam
+    verdict over a green badge."""
+    result = await _analyze_unified_raw(
+        text, keyword_result, link_verdicts, file_verdict, lang, user_id, sender_identity,
+    )
+    result["risk_percentage"] = risk_scale.coherent_risk(result.get("verdict"), result.get("risk_percentage"))
+    return result

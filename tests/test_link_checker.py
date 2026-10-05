@@ -1863,7 +1863,12 @@ def test_lookup_429_with_no_backup_key_alerts_and_degrades_as_before(tmp_path, m
 
     stats = asyncio.run(threat_intel.lookup("http://example.com/scam", api_key="primary-key", live=True))
 
-    assert stats is None
+    # Was `stats is None` before 2026-10-05. A 429 is "VirusTotal could not
+    # answer", which must now be distinguishable from "no data" so the
+    # pipeline can tell the user the check was partial. It still scores
+    # nothing, exactly as None did.
+    assert threat_intel.is_unavailable(stats)
+    assert threat_intel.score(stats) is None
     assert len(alert_calls) == 1
 
 
@@ -2133,3 +2138,81 @@ async def test_one_failing_link_does_not_discard_the_other_links_verdicts():
     assert len(verdicts) == 2
     assert all("boom" not in v["host"] for v in verdicts)
     assert pipeline.analyze_url is real_analyze  # patch really unwound
+
+
+
+# --- VirusTotal could not answer -> honest "partial check" (2026-10-05) ---
+#
+# Free tier is 4 requests/minute; with concurrent_updates(10) a burst of
+# fresh links can exhaust it. lookup() used to return None for both "no
+# data" and "could not answer", so the second silently dropped a signal.
+# Chosen fix (decision court, option B): flag it and reuse the existing
+# evidence_degraded notice.
+
+
+def test_unavailable_marker_is_distinct_from_no_data_and_scores_nothing():
+    assert threat_intel.is_unavailable(threat_intel.unavailable())
+    assert not threat_intel.is_unavailable(None)
+    assert not threat_intel.is_unavailable({"malicious": 0, "suspicious": 0, "total": 70})
+    assert threat_intel.score(threat_intel.unavailable()) is None
+    # A fresh dict each call: no caller can mutate shared state.
+    assert threat_intel.unavailable() is not threat_intel.unavailable()
+
+
+@pytest.mark.parametrize("score,expect_notice", [
+    (10, True),    # safe: VirusTotal is exactly what could have escalated it
+    (40, True),    # suspicious: same
+    (80, False),   # already dangerous: its absence changes nothing
+])
+def test_vt_unavailable_marks_the_verdict_degraded_unless_already_dangerous(score, expect_notice):
+    verdict = pipeline._finalize_verdict(
+        {"raw": "http://x.example"}, "x.example", score, [], [],
+        vector_search_unavailable=False, is_official_brand=False, vt_unavailable=True,
+    )
+    assert verdict["evidence_degraded"] is expect_notice
+
+
+def test_no_notice_when_virustotal_simply_had_no_data():
+    verdict = pipeline._finalize_verdict(
+        {"raw": "http://x.example"}, "x.example", 10, [], [],
+        vector_search_unavailable=False, is_official_brand=False, vt_unavailable=False,
+    )
+    assert verdict["evidence_degraded"] is False
+
+
+def test_rate_limited_virustotal_end_to_end_shows_the_notice(seeded_vectors, monkeypatch):
+    async def rate_limited(url, api_key, live=True, **kwargs):
+        return threat_intel.unavailable()
+
+    _stub_out_network(monkeypatch, tls_valid=True)
+    monkeypatch.setattr(pipeline, "VIRUSTOTAL_API_KEY", "fake-key")
+    monkeypatch.setattr(pipeline.threat_intel, "lookup", rate_limited)
+
+    verdict = asyncio.run(pipeline.analyze_url("http://totally-not-a-bank-login.tk/verify-account"))
+
+    assert not any("VirusTotal" in r for r in verdict["reasons"])
+    assert verdict["evidence_degraded"] is (verdict["level"] != "dangerous")
+    if verdict["evidence_degraded"]:
+        reply = pipeline.format_verdict_full(verdict, include_evidence=False)
+        assert "server has experienced some difficulties" in reply
+
+
+@pytest.mark.asyncio
+async def test_a_failed_seed_is_not_retried_by_every_waiting_handler(monkeypatch):
+    # 2026-10-05 concurrency audit: with 10 handlers queued on the seed
+    # lock, a failed seed() was re-run by each of them in turn.
+    calls = 0
+
+    async def failing_seed():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        raise ConnectionError("Supabase down")
+
+    monkeypatch.setattr(vectors, "seed", failing_seed)
+    bot_data: dict = {}
+
+    await asyncio.gather(*(vectors.ensure_seeded(bot_data) for _ in range(10)))
+
+    assert calls == 1
+    assert not bot_data.get("_vectors_seeded")

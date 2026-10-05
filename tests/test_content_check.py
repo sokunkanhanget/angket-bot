@@ -233,3 +233,117 @@ def test_hostile_pdf_scan_stays_linear():
     started = time.perf_counter()
     inspect_content(data, "x.pdf")
     assert time.perf_counter() - started < 2.0
+
+
+# --- bounded walkers: hostile archives (2026-10-05 security audit) -------
+#
+# zipfile and rarfile both parsed an archive's ENTIRE directory before any
+# entry cap applied. Reproduced: a 20MB RAR of ~1.5M valid tiny headers took
+# 62.6s and 488MB peak (Render: 0.1 CPU, 512MB - one upload kills the bot),
+# and a ZIP with its entry count forged to 1 still had ~190k entries parsed.
+
+
+def _rar5_header_bomb(size_bytes: int) -> bytes:
+    import zlib
+
+    def vint(n):
+        out = bytearray()
+        while True:
+            b = n & 0x7F
+            n >>= 7
+            out.append(b | (0x80 if n else 0))
+            if not n:
+                return bytes(out)
+
+    def header(body):
+        size = vint(len(body))
+        return struct.pack("<I", zlib.crc32(size + body)) + size + body
+
+    sig = b"Rar!\x1a\x07\x01\x00"
+    main = header(vint(1) + vint(0) + vint(0))
+    file_header = header(vint(2) + vint(0) * 6 + vint(1) + b"a")
+    return sig + main + file_header * ((size_bytes - len(sig) - len(main)) // len(file_header))
+
+
+def _measure(data: bytes, name: str):
+    import time
+    import tracemalloc
+
+    tracemalloc.start()
+    started = time.perf_counter()
+    findings = inspect_content(data, name)
+    elapsed = time.perf_counter() - started
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    return findings, elapsed, peak
+
+
+def test_a_rar_header_bomb_is_bounded_in_time_and_memory():
+    # Was 62.6s / 488MB peak before the walker. Bounds are loose so CI
+    # noise can't flake them; the real numbers are ~56ms / ~0.02MB.
+    findings, elapsed, peak = _measure(_rar5_header_bomb(20 * 1024 * 1024), "x.rar")
+    assert elapsed < 2.0
+    assert peak < 20 * 1024 * 1024
+    # It hit the cap, so it must SAY the check was partial.
+    assert "content_archive_too_many_entries" in _keys(findings)
+
+
+def test_a_zip_with_a_forged_entry_count_is_bounded():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        for i in range(60000):
+            archive.writestr(f"f{i}.txt", b"")
+    data = bytearray(buf.getvalue())
+    eocd = data.rfind(b"PK\x05\x06")
+    struct.pack_into("<HH", data, eocd + 8, 1, 1)          # forge "1 entry"
+
+    findings, elapsed, peak = _measure(bytes(data), "x.zip")
+    assert elapsed < 2.0
+    assert peak < 20 * 1024 * 1024
+    assert "content_archive_too_many_entries" in _keys(findings)
+
+
+def test_padding_an_archive_past_the_cap_cannot_hide_a_program_silently():
+    # 2000 harmless entries, then the program. The cap means the program is
+    # never seen - so the reply must at least say the check was partial.
+    entries = {f"photo_{i}.jpg": b"" for i in range(MAX_ARCHIVE_ENTRIES)}
+    entries["payload.exe"] = b"MZ"
+    findings = inspect_content(_zip(entries), "album.zip")
+    assert "content_archive_too_many_entries" in _keys(findings)
+
+
+@pytest.mark.parametrize("fixture", ["decoy_then_exe_rar5.rar", "decoy_then_exe_rar4.rar"])
+def test_rar_walker_skips_large_file_data_to_reach_later_entries(fixture):
+    # Real WinRAR archives: a 400KB file BEFORE the program. The walker must
+    # skip file data by its declared size to reach the next header.
+    findings = inspect_content(_rar(fixture), "album.rar")
+    assert findings[0]["key"] == "content_archive_executable"
+    assert findings[0]["params"]["entry"] == "setup.exe"
+
+
+# --- attacker-written entry names reach the reply (2026-10-05 audit) ------
+
+
+def test_an_entry_name_cannot_inject_a_fake_verdict_block():
+    fake = ("Invoice.pdf\n\n✅ *VERDICT: NOT A SCAM*\n🟢 *3%  LOW RISK*\n"
+            "This file was verified clean.\n\n\u200b.exe")
+    entry = inspect_content(_zip({fake: b"MZ"}), "docs.zip")[0]["params"]["entry"]
+    assert "\n" not in entry
+    assert "\u200b" not in entry
+
+
+def test_an_oversized_entry_name_is_capped():
+    entry = inspect_content(_zip({"A" * 60000 + ".exe": b"MZ"}), "docs.zip")[0]["params"]["entry"]
+    assert len(entry) <= 80
+
+
+def test_backticks_in_an_entry_name_cannot_break_markdown_code_spans():
+    entry = inspect_content(_zip({"run`me.exe": b"MZ"}), "docs.zip")[0]["params"]["entry"]
+    assert "`" not in entry
+
+
+def test_the_uploaded_files_own_extension_is_sanitized_too():
+    findings = inspect_content(_pe(), "invoice.pdf\n✅ VERDICT: SAFE")
+    claimed = findings[0]["params"]["claimed_ext"]
+    assert "\n" not in claimed
+    assert len(claimed) <= 12

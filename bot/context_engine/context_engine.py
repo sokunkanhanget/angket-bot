@@ -492,7 +492,21 @@ def _evidence_dict(
         ],
     }
     if file_verdict is not None:
-        evidence["file_finding"] = file_verdict
+        # Content findings go to Gemini as kind + score only, never their
+        # params (2026-10-05 security audit). params carry attacker-written
+        # text - archive entry names, the upload's own extension - and this
+        # block is labelled "SYSTEM-GATHERED EVIDENCE (not written by the
+        # user)", outside the per-call fence that contains the user's own
+        # message. An entry named like a system note was reproduced landing
+        # here word for word. The verdict is still enforced in code by
+        # file_risk; Gemini needs only to know what kind of sign was found.
+        evidence["file_finding"] = {
+            **file_verdict,
+            "content_findings": [
+                {"kind": f.get("key"), "score": f.get("score")}
+                for f in file_verdict.get("content_findings") or []
+            ],
+        }
     if pattern_match is not None:
         similarity, category = pattern_match
         evidence["scam_pattern_similarity"] = {

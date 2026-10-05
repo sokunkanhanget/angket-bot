@@ -191,6 +191,33 @@ class _FakeSubscriptionStore:
     async def record_link_or_message_scan(self, user_id: int) -> None:
         self._row(user_id)["links_messages_used"] += 1
 
+    # Atomic in the fake for the same reason it is in SQL: there is no await
+    # between the check and the increment, so concurrent callers in one
+    # event loop cannot all see the same remaining capacity.
+    async def reserve_file_scan(self, user_id: int) -> bool:
+        max_files, _, _ = await subscription._limits_for(user_id)
+        row = self._row(user_id)
+        if row["files_used"] >= max_files:
+            return False
+        row["files_used"] += 1
+        return True
+
+    async def refund_file_scan(self, user_id: int) -> None:
+        row = self._row(user_id)
+        row["files_used"] = max(row["files_used"] - 1, 0)
+
+    async def reserve_link_or_message_scan(self, user_id: int) -> bool:
+        _, max_links, _ = await subscription._limits_for(user_id)
+        row = self._row(user_id)
+        if row["links_messages_used"] >= max_links:
+            return False
+        row["links_messages_used"] += 1
+        return True
+
+    async def refund_link_or_message_scan(self, user_id: int) -> None:
+        row = self._row(user_id)
+        row["links_messages_used"] = max(row["links_messages_used"] - 1, 0)
+
     async def has_token_budget(self, user_id: int) -> bool:
         _, _, max_tokens = await subscription._limits_for(user_id)
         return self._row(user_id)["tokens_used"] < max_tokens
@@ -275,6 +302,8 @@ def fake_subscription_store(monkeypatch):
     for name in (
         "can_scan_file", "record_file_scan", "can_scan_link_or_message",
         "record_link_or_message_scan", "has_token_budget", "record_token_usage",
+        "reserve_file_scan", "refund_file_scan",
+        "reserve_link_or_message_scan", "refund_link_or_message_scan",
         "should_notify_file_limit", "should_notify_link_limit",
         "should_notify_live_detect_ended", "usage_summary", "ensure_trial_started",
         "live_detect_trial_days_left", "live_detect_allowed",

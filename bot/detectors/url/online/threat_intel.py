@@ -47,6 +47,27 @@ CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 
+def unavailable() -> dict:
+    """The marker lookup() returns when VirusTotal could not answer right
+    now: every key rate-limited (429), a network failure, or any other
+    error response. Distinct on purpose from None, which means VirusTotal
+    answered and has nothing ("unknown URL", or no key configured at all).
+
+    Added 2026-10-05. Before, both cases were None, so the pipeline could
+    not tell "VirusTotal says nothing" from "VirusTotal never got asked" -
+    and under concurrent load (free tier: 4 requests/minute) the second
+    silently dropped a signal from the verdict without telling the user.
+
+    A fresh dict per call so no caller can mutate shared state. Its zero
+    counts make score() return None, so a caller that ignores the flag
+    still behaves exactly as before."""
+    return {"unavailable": True, "malicious": 0, "suspicious": 0, "total": 0}
+
+
+def is_unavailable(stats: dict | None) -> bool:
+    return bool(stats and stats.get("unavailable"))
+
+
 def score(stats: dict) -> tuple[int, str] | None:
     """Turn VT stats into (points, reason). None = VT sees nothing bad."""
     malicious = stats.get("malicious", 0)
@@ -186,7 +207,7 @@ async def lookup(url: str, api_key: str | None, live: bool = True,
         except Exception as error:                 # noqa: BLE001 - network is best-effort
             health_alerts.record_failure("VirusTotal", str(error))
             await health_alerts.maybe_alert("VirusTotal", str(error))
-            return None
+            return unavailable()
         if response.status_code != 429:
             break
 
@@ -202,13 +223,15 @@ async def lookup(url: str, api_key: str | None, live: bool = True,
         if response.status_code == 429:
             health_alerts.record_failure("VirusTotal", "rate limited (429) - quota likely exhausted")
             await health_alerts.maybe_alert("VirusTotal", "rate limited (429) - quota likely exhausted")
-        return None
+        # 404 is a real answer ("never seen this URL"); every other failure
+        # (429, 401 bad key, 5xx) means VirusTotal could not answer.
+        return None if response.status_code == 404 else unavailable()
 
     try:
         attributes = response.json()["data"]["attributes"]
         stats = attributes.get("last_analysis_stats", {}) or {}
     except (KeyError, ValueError, json.JSONDecodeError):
-        return None
+        return unavailable()
 
     result = {
         "malicious": stats.get("malicious", 0),

@@ -198,6 +198,61 @@ class _HealthCheckHandler(BaseHTTPRequestHandler):
         pass  # don't spam Render's log with every keepalive ping
 
 
+def summarize_update(update: Update) -> str:
+    """One log line describing an update's SHAPE, never its content.
+
+    Privacy fix (2026-10-05). This used to log the full Message objects at
+    INFO: message text, first/last names and @usernames for every update.
+    That included Business chat, so private messages from a business
+    owner's CUSTOMERS - people who never used this bot themselves - were
+    written to Render's log stream, along with forwarded scam content that
+    often carries third parties' personal data. The error handler dumped
+    the full update a second time on every exception.
+
+    Kept, because each has been needed to debug real incidents: update and
+    message ids, numeric chat/user ids (pseudonymous; needed to answer
+    "who is using this" and to match a support report), chat type, which
+    update kind arrived, and structural flags - notably `reply_to`, which
+    is exactly what diagnosing the /check-as-reply bug depended on.
+    Dropped: all text, captions, names, usernames, file names, link URLs.
+    """
+    kinds = [
+        name for name in ("message", "edited_message", "business_message",
+                          "edited_business_message", "callback_query", "my_chat_member",
+                          "business_connection", "channel_post")
+        if getattr(update, name, None) is not None
+    ]
+    parts = [f"id={update.update_id}", f"kind={'+'.join(kinds) or 'other'}"]
+
+    message = update.effective_message
+    if message is not None:
+        text = message.text or message.caption or ""
+        entity_types = sorted({e.type for e in (message.entities or message.caption_entities or ())})
+        parts += [
+            f"msg={message.message_id}",
+            f"chat={message.chat_id}",
+            f"chat_type={message.chat.type}" if message.chat else "chat_type=?",
+            f"text_len={len(text)}",
+        ]
+        if text.startswith("/"):
+            # The command word only (e.g. "/check@AngketIs_bot"), never its
+            # arguments, which can be a user's pasted message or link.
+            parts.append(f"command={text.split()[0]}")
+        if entity_types:
+            parts.append("entities=" + ",".join(str(t) for t in entity_types))
+        if message.document is not None:
+            parts.append(f"document_bytes={message.document.file_size}")
+        if message.reply_to_message is not None:
+            parts.append("reply_to=yes")
+        if message.business_connection_id:
+            parts.append("business=yes")
+
+    user = update.effective_user
+    if user is not None:
+        parts.append(f"user={user.id}")
+    return " ".join(parts)
+
+
 def _maybe_start_keepalive_server() -> None:
     """Render's free Web Service tier requires a bound HTTP port and spins
     the process down after 15 minutes with no inbound HTTP traffic - which
@@ -313,14 +368,11 @@ def main():
     logger.info("[startup] Application built in %.3fs", time.perf_counter() - step_start)
 
     async def _log_every_update(update, context):
-        logger.info(
-            "update: message=%s edited=%s business=%s callback=%s",
-            update.message, update.edited_message,
-            update.business_message, update.callback_query,
-        )
+        logger.info("update: %s", summarize_update(update))
 
     async def _on_error(update, context):
-        logger.exception("handler error for update %s", update, exc_info=context.error)
+        summary = summarize_update(update) if isinstance(update, Update) else repr(update)
+        logger.error("handler error for update %s", summary, exc_info=context.error)
 
     app.add_handler(TypeHandler(Update, _log_every_update), group=-1)  # group=-1 = runs first, logs, doesn't block
     app.add_error_handler(_on_error)

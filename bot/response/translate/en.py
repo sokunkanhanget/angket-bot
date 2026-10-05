@@ -326,6 +326,7 @@ TEXT = {
     "content_archive_executable": "The archive contains a program or script: '{entry}'.",
     "content_archive_disguised_entry": "The archive contains a disguised program: '{entry}'.",
     "content_archive_encrypted": "The archive is password-protected, so its contents can't be checked — a common way to slip malware past scanners.",
+    "content_archive_too_many_entries": "The archive holds more than {count} files, so only the first {count} could be checked.",
     "content_office_macros": "This Office document contains macros, which can run code when it is opened.",
     "content_pdf_launch": "This PDF contains an instruction to launch another program.",
     "content_pdf_javascript": "This PDF contains embedded JavaScript.",

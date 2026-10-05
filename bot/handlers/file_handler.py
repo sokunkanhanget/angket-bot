@@ -200,7 +200,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # file is never blocked or charged - only a genuinely new hash pays
     # quota.
     already_cached = await asyncio.to_thread(cached_result, sha256) is not None
-    if not already_cached and not await subscription.can_scan_file(user_id):
+    # reserve_file_scan, not a read-then-charge-later check (2026-10-05):
+    # with concurrent updates, several uploads could all pass a plain
+    # check before any was charged - see subscription._RESERVABLE_COLUMNS.
+    if not already_cached and not await subscription.reserve_file_scan(user_id):
         await stop_status_animation(animation_task)
         # Direct user spec (2026-09-15): tell them once, not on every
         # file they try to send while still over today's limit - see
@@ -222,17 +225,29 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         result = await scan_file(sha256, file_name)
     except Exception:                          # noqa: BLE001
         logger.exception("Unexpected error scanning %s", file_name)
+        if not already_cached:
+            # Only finished scans count against the daily limit.
+            await subscription.refund_file_scan(user_id)
         await stop_status_animation(animation_task)
         await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))
         return
 
     await stop_status_animation(animation_task)
 
-    if not already_cached:
-        await subscription.record_file_scan(user_id)
-
     level, risk_percentage, reasons = _classify_file_result(result, lang)
     reply = _format_file_verdict(level, risk_percentage, reasons, lang)
     await asyncio.to_thread(log_scan, user_id, file_name, sha256, result.get("malicious", 0))
 
-    await message.edit_text(reply, parse_mode="Markdown")
+    try:
+        await message.edit_text(reply, parse_mode="Markdown")
+    except BadRequest:
+        # The reply now quotes attacker-written text - archive entry names
+        # and the upload's own extension - and an odd underscore in it
+        # (an ordinary "setup_v2.exe" inside a ZIP) breaks Telegram's
+        # legacy Markdown. Without this retry the user was left on
+        # "Checking..." with no verdict, after already being charged
+        # quota; a crafted name could do that on purpose (2026-10-05
+        # security audit). Same plain-text retry url_handler's
+        # _send_with_markdown_fallback already uses for the final send.
+        logger.warning("File verdict failed to parse as Markdown - retrying as plain text")
+        await message.edit_text(reply)

@@ -80,9 +80,14 @@ async def get_user_lang(context: ContextTypes.DEFAULT_TYPE, user_id: int | None)
     if cached is not None:
         return str(cached)
     stored = await subscription.get_stored_lang(user_id) if user_id is not None else None
-    lang = stored or DEFAULT_LANG
-    context.user_data["lang"] = lang
-    return lang
+    # setdefault, not assignment (2026-10-05, found by a concurrency audit):
+    # with concurrent_updates(10), a language tap and an ordinary message
+    # can both miss the cold cache right after a restart and both await
+    # this read. If the tap's set_user_lang lands first, a plain assignment
+    # here overwrote the user's fresh choice with the stale DB value - the
+    # user saw "language set" yet got replies in the old language until
+    # the next restart. A value written while we awaited must win.
+    return str(context.user_data.setdefault("lang", stored or DEFAULT_LANG))
 
 
 async def set_user_lang(context: ContextTypes.DEFAULT_TYPE, user_id: int, lang: str) -> None:
@@ -340,7 +345,11 @@ async def _check_quota_gate(message, lang: str, user_id: int | None, trusted_sha
     handle_text's private-DM branch and handle_check - those two only
     ever differed in lang, plus whether a main-menu keyboard is attached
     to the notice."""
-    if user_id is None or trusted_shape or await subscription.can_scan_link_or_message(user_id):
+    # Atomic reservation, not a read (2026-10-05): with concurrent updates
+    # a burst of messages could all pass a plain check before any was
+    # charged. A True return here has TAKEN the slot;
+    # _run_full_check_and_reply refunds it if the scan never finishes.
+    if user_id is None or trusted_shape or await subscription.reserve_link_or_message_scan(user_id):
         return False
     # Direct user spec (2026-09-15): tell them once, not on every
     # message they send while still over today's limit - see
@@ -459,26 +468,36 @@ async def _run_full_check_and_reply(
     docstring. None-safe (handle_check's DM-then-fallback retry loop can
     in principle leave this None if _send_check_status's own return
     changes shape later) - .set() is skipped rather than crashing."""
-    await ensure_vectors_seeded(context.bot_data)
-
-    link_verdicts, file_verdict = await _gather_check_verdicts(text, hidden_links, document, context)
-    if phase is not None:
-        phase.set()
+    # _check_quota_gate already RESERVED a slot exactly when there is a
+    # user and the message is not a bare trusted-link shape.
+    reserved = user_id is not None and not trusted_shape
 
     # try/finally-equivalent (except/re-stop) so the animation task can
-    # never outlive this handler.
+    # never outlive this handler. Seeding and evidence-gathering sit inside
+    # it too (2026-10-05): a failure there used to escape to PTB's error
+    # handler, leaving the user on "Checking..." - and now it must also
+    # hand back the reserved slot.
     try:
+        await ensure_vectors_seeded(context.bot_data)
+
+        link_verdicts, file_verdict = await _gather_check_verdicts(text, hidden_links, document, context)
+        if phase is not None:
+            phase.set()
+
         unified = await analyze_unified(text, keyword_result, link_verdicts, file_verdict, lang, user_id)
         reply_text, trusted_host = _build_reply_text(unified, keyword_result, lang, has_text_fn, link_verdicts, document)
         # trusted_host (deduped-verdict-based) can disagree with
         # trusted_shape (raw-URL-count-based) - e.g. "facebook.com
         # facebook.com" makes trusted_shape False but trusted_host truthy.
-        # Charging only when both agree keeps the charge from ever
-        # diverging from what the pre-check gate already committed to.
-        if user_id is not None and not (trusted_shape and trusted_host):
+        # A message that LOOKED like a free trusted link but turned out not
+        # to be one was never reserved at the gate, so it is charged here.
+        if user_id is not None and trusted_shape and not trusted_host:
             await subscription.record_link_or_message_scan(user_id)
     except Exception:                          # noqa: BLE001 - must still stop the animation and reply
         logger.exception("Unified analysis failed for %s", log_context)
+        if reserved:
+            # Only finished scans count against the daily limit.
+            await subscription.refund_link_or_message_scan(user_id)
         await stop_status_animation(animation_task)
         await status.edit_text(t(lang, "scan_failed"))
         return

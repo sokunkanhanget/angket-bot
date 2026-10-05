@@ -372,6 +372,9 @@ async def analyze_url(
     # Only ever set True inside the non-cached branch below (a cache hit
     # never touches Supabase for THIS request) - see EVIDENCE_DEGRADED_NOTICE.
     vector_search_unavailable = False
+    # Set only when VirusTotal was actually asked and could not answer -
+    # see threat_intel.unavailable().
+    vt_unavailable = False
 
     if cached is not None:
         score = cached["score"]
@@ -536,7 +539,8 @@ async def analyze_url(
                 live=(score > 0),
                 backup_api_key=VIRUSTOTAL_API_KEY_BACKUP,
             )
-            if vt_stats:
+            vt_unavailable = threat_intel.is_unavailable(vt_stats)
+            if vt_stats and not vt_unavailable:
                 vt_scored = threat_intel.score(vt_stats)
                 if vt_scored:
                     score += vt_scored[0]
@@ -574,7 +578,8 @@ async def analyze_url(
             score += mismatch[0]
             reasons.append(mismatch[1])
 
-    return _finalize_verdict(verdict, host, score, reasons, detail, vector_search_unavailable, is_official_brand)
+    return _finalize_verdict(verdict, host, score, reasons, detail, vector_search_unavailable, is_official_brand,
+                             vt_unavailable)
 
 
 async def _gather_online_signals(normalized: str, host: str):
@@ -663,7 +668,8 @@ def _score_response_shape(net: dict, chain: list, add_network) -> None:
 
 
 def _finalize_verdict(verdict: dict, host: str, score: int, reasons: list[str], detail: list[str],
-                       vector_search_unavailable: bool, is_official_brand: bool) -> dict:
+                       vector_search_unavailable: bool, is_official_brand: bool,
+                       vt_unavailable: bool = False) -> dict:
     """Final level/emoji/label + evidence_degraded + the merged return
     dict - split out of analyze_url's tail."""
     level, emoji, label = _verdict_labels(score)
@@ -681,6 +687,15 @@ def _finalize_verdict(verdict: dict, host: str, score: int, reasons: list[str], 
         vector_search_unavailable
         and level != "safe"
         and not any("VirusTotal" in r for r in reasons)
+    ) or (
+        # VirusTotal was asked and could not answer (rate limit under
+        # concurrent load, network failure). Unlike the vector-search case
+        # above, this matters MOST when the verdict came out safe:
+        # VirusTotal is exactly the signal that could have escalated it.
+        # A link already judged dangerous loses nothing by its absence.
+        # 2026-10-05, chosen via decision court as option B: be honest
+        # about a partial check rather than silently drop the signal.
+        vt_unavailable and level != "dangerous"
     )
 
     logger.info("verdict %s (%d) for %s", level, score, host)

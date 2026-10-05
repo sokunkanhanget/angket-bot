@@ -442,8 +442,7 @@ async def test_a_filename_containing_markdown_syntax_does_not_kill_the_scan():
          })), \
          patch("bot.handlers.file_handler.cached_result", return_value=None), \
          patch("bot.handlers.file_handler.animate_status", AsyncMock()), \
-         patch.object(subscription, "can_scan_file", AsyncMock(return_value=True)), \
-         patch.object(subscription, "record_file_scan", AsyncMock()):
+         patch.object(subscription, "reserve_file_scan", AsyncMock(return_value=True)):
         await handle_file(update, context)
 
     # Retried as plain text instead of dying...
@@ -585,3 +584,31 @@ def test_a_file_risk_never_claims_absolute_certainty():
             filename_warning_key="filename_warning_double_extension_executable",
             filename_warning_params={"outer_ext": "exe", "inner_ext": "pdf"}))
         assert pct <= 99
+
+
+@pytest.mark.asyncio
+async def test_a_verdict_that_breaks_markdown_is_still_delivered_as_plain_text():
+    # 2026-10-05 security audit: the final verdict quotes attacker-written
+    # archive entry names, and an odd underscore breaks legacy Markdown.
+    # The final send had no fallback, so the user was stuck on
+    # "Checking..." with no verdict - after being charged quota.
+    update, context, sent = _file_update(file_name="files.zip")
+    sent.edit_text = AsyncMock(side_effect=[BadRequest("Can't find end of the entity"), None])
+
+    finding = {"score": 70, "key": "content_archive_executable", "params": {"entry": "setup_v2.exe"}}
+    with patch("bot.handlers.file_handler.download_and_hash", AsyncMock(return_value="a" * 64)), \
+         patch("bot.handlers.file_handler.scan_file", AsyncMock(return_value={
+             "checked": True, "found": False, "content_findings": [finding],
+             "filename_warning_key": None, "filename_warning_params": {}, "filename_risk_score": 0,
+         })), \
+         patch("bot.handlers.file_handler.log_scan"):
+        await handle_file(update, context)
+
+    assert sent.edit_text.await_count == 2
+    final = sent.edit_text.await_args_list[1]
+    assert final.kwargs.get("parse_mode") is None
+    assert "LIKELY A SCAM" in final.args[0]
+    # defang_domains reads "v2.exe" as a domain and wraps it in backticks,
+    # so the name renders as "setup_`v2.exe`" - the very unbalanced "_"
+    # that breaks Markdown. Cosmetic, left as is; the verdict still lands.
+    assert "v2.exe" in final.args[0]

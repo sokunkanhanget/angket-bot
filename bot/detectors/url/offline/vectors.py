@@ -535,6 +535,9 @@ _seed_lock: asyncio.Lock | None = None
 _seed_lock_loop: asyncio.AbstractEventLoop | None = None
 
 
+_SEED_RETRY_COOLDOWN_SECONDS = 60.0
+
+
 def _get_seed_lock() -> asyncio.Lock:
     """A fresh asyncio.Lock per event loop instead of one shared
     module-level instance. asyncio.Lock only actually binds itself to a
@@ -585,16 +588,26 @@ async def ensure_seeded(bot_data: dict) -> None:
     simply finds the work already done instead of redoing it."""
     if bot_data.get("_vectors_seeded"):
         return
+    if time.monotonic() < bot_data.get("_vectors_seed_retry_after", 0.0):
+        return
     async with _get_seed_lock():
         if bot_data.get("_vectors_seeded"):
             return  # another concurrent caller already finished while we waited
+        # Re-checked inside the lock (2026-10-05, concurrency audit): with
+        # concurrent_updates(10), when seed() FAILED every handler queued
+        # behind the lock took it in turn and ran its own full seed() again -
+        # during a Supabase outage the 10th message waited ~10x the failure
+        # time. Same failed-build cooldown scam_patterns.py uses.
+        if time.monotonic() < bot_data.get("_vectors_seed_retry_after", 0.0):
+            return
         start = time.perf_counter()
         try:
             await seed()
             bot_data["_vectors_seeded"] = True
             logger.info("[first-message] Vector store seeded in %.3fs", time.perf_counter() - start)
         except Exception:                       # noqa: BLE001 - must never crash the calling handler
+            bot_data["_vectors_seed_retry_after"] = time.monotonic() + _SEED_RETRY_COOLDOWN_SECONDS
             logger.exception(
-                "[first-message] Vector store seeding failed after %.3fs - will retry on next message",
-                time.perf_counter() - start,
+                "[first-message] Vector store seeding failed after %.3fs - not retrying for %.0fs",
+                time.perf_counter() - start, _SEED_RETRY_COOLDOWN_SECONDS,
             )

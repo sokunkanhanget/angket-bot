@@ -25,4 +25,3 @@ pytest-asyncio==1.4.0
 psycopg[binary,pool]==3.3.4
 pgvector==0.5.0
 aiolimiter==1.2.1
-rarfile==4.5

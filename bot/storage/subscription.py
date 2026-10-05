@@ -129,11 +129,11 @@ async def _get_or_create_today(user_id: int) -> tuple[int, int, int, bool, bool]
 
 
 async def can_scan_file(user_id: int) -> bool:
-    """Check WITHOUT incrementing - callers check before doing the
-    expensive work, then call record_file_scan() only once it actually
-    ran, mirroring this codebase's existing check-then-act-then-log
-    pattern (e.g. log_scan). Fails OPEN (allows the scan) on a Supabase
-    outage - see module docstring."""
+    """Read-only peek at whether a file slot remains. NOT a gate: since
+    2026-10-05 the handlers take slots with reserve_file_scan(), because
+    "check now, charge after the scan" let a burst of concurrent uploads
+    all pass before any was charged. Kept for read-only callers and tests.
+    Fails OPEN on a Supabase outage - see module docstring."""
     try:
         max_files, _, _ = await _limits_for(user_id)
         files_used, _, _, _, _ = await _get_or_create_today(user_id)
@@ -160,6 +160,8 @@ async def record_file_scan(user_id: int) -> None:
 
 
 async def can_scan_link_or_message(user_id: int) -> bool:
+    """Read-only peek. NOT a gate - handlers use
+    reserve_link_or_message_scan(); see can_scan_file for why."""
     try:
         _, max_links, _ = await _limits_for(user_id)
         _, links_messages_used, _, _, _ = await _get_or_create_today(user_id)
@@ -183,6 +185,83 @@ async def record_link_or_message_scan(user_id: int) -> None:
             )
     except Exception as error:                          # noqa: BLE001 - the scan already happened, never raise here
         await _on_supabase_failure("record_link_or_message_scan", error)
+
+
+# --- Atomic reservation (2026-10-05) ---------------------------------------
+#
+# can_scan_* above only READS the counter, and record_* increments it after
+# the scan - 3 to 25 seconds later (link trace + Gemini). That was safe while
+# the bot handled one update at a time. Since bot.py's concurrent_updates(10)
+# it is a check-then-act race: a concurrency audit reproduced a user at 7/8
+# sending 10 messages at once, all 10 passing the check, and the counter
+# ending at 17. Every extra scan spends shared Gemini and VirusTotal quota.
+#
+# reserve_* takes the slot in ONE conditional statement, so concurrent
+# callers cannot all see the same remaining capacity: the increment only
+# happens while the counter is still under the limit, and no row comes back
+# when it is not. refund_* hands the slot back when the scan it paid for
+# never completed, matching the old rule that only finished scans count.
+#
+# The column name is interpolated from this fixed whitelist, never from
+# caller input.
+_RESERVABLE_COLUMNS = {"files_used": 0, "links_messages_used": 1}
+
+# Module constants (not inline) so tools/gate_quota_sql.py can run the exact
+# statements against real Postgres inside a rolled-back transaction - the
+# test suite's in-memory fake store never executes this SQL.
+_RESERVE_SQL = """
+    insert into daily_usage (user_id, usage_date, {column}) values (%s, %s, 1)
+    on conflict (user_id, usage_date) do update
+    set {column} = daily_usage.{column} + 1
+    where daily_usage.{column} < %s
+    returning {column}
+"""
+_REFUND_SQL = """
+    update daily_usage set {column} = greatest({column} - 1, 0)
+    where user_id = %s and usage_date = %s
+"""
+
+
+async def _reserve(user_id: int, column: str) -> bool:
+    limit_index = _RESERVABLE_COLUMNS[column]
+    try:
+        limit = (await _limits_for(user_id))[limit_index]
+        pool = await get_pool()
+        async with pool.connection() as conn:
+            cur = await conn.execute(_RESERVE_SQL.format(column=column), (user_id, _today(), limit))
+            return await cur.fetchone() is not None
+    except Exception as error:                          # noqa: BLE001 - degrade, never block a scan
+        await _on_supabase_failure(f"reserve {column}", error)
+        return True
+
+
+async def _refund(user_id: int, column: str) -> None:
+    if column not in _RESERVABLE_COLUMNS:
+        raise ValueError(f"not a reservable column: {column!r}")
+    try:
+        pool = await get_pool()
+        async with pool.connection() as conn:
+            await conn.execute(_REFUND_SQL.format(column=column), (user_id, _today()))
+    except Exception as error:                          # noqa: BLE001 - a lost refund costs one slot, never raise
+        await _on_supabase_failure(f"refund {column}", error)
+
+
+async def reserve_link_or_message_scan(user_id: int) -> bool:
+    """Take one link/message slot atomically. False = over today's limit.
+    Fails OPEN (True) on a Supabase outage, like every gate here."""
+    return await _reserve(user_id, "links_messages_used")
+
+
+async def refund_link_or_message_scan(user_id: int) -> None:
+    await _refund(user_id, "links_messages_used")
+
+
+async def reserve_file_scan(user_id: int) -> bool:
+    return await _reserve(user_id, "files_used")
+
+
+async def refund_file_scan(user_id: int) -> None:
+    await _refund(user_id, "files_used")
 
 
 async def has_token_budget(user_id: int) -> bool:

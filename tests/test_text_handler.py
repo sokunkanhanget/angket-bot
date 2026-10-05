@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram.error import TelegramError
@@ -946,3 +946,87 @@ async def test_handle_text_private_bare_trusted_link_skips_quota_even_when_over_
     assert "facebook.com" in reply
     assert "VERDICT" not in reply  # the lightweight notice, not the full template
     assert (await subscription.usage_summary(42))["links_messages_used"] == used_before
+
+@pytest.mark.asyncio
+async def test_cold_cache_read_cannot_overwrite_a_language_set_meanwhile(monkeypatch):
+    # Concurrency race (2026-10-05): a cold-cache read that started before
+    # the user's language tap must not overwrite the tap when it finishes.
+    import asyncio
+
+    from bot.handlers import text_handler as th
+
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+
+    async def slow_stored_lang(user_id):
+        read_started.set()
+        await release_read.wait()
+        return "en"                      # the stale value in the DB
+
+    monkeypatch.setattr(th.subscription, "get_stored_lang", slow_stored_lang)
+    monkeypatch.setattr(th.subscription, "set_stored_lang", AsyncMock())
+
+    context = MagicMock()
+    context.user_data = {}
+
+    reader = asyncio.create_task(th.get_user_lang(context, 42))
+    await read_started.wait()
+    await th.set_user_lang(context, 42, "km")   # the tap lands mid-read
+    release_read.set()
+
+    assert await reader == "km"
+    assert context.user_data["lang"] == "km"
+
+
+# --- quota race at concurrent_updates(10) (2026-10-05) ---------------------
+
+
+@pytest.mark.asyncio
+async def test_a_burst_of_messages_cannot_overrun_the_daily_limit(fake_subscription_store):
+    # Reproduced by a concurrency audit on the old check-then-charge flow:
+    # a user at 7/8 sending 10 messages at once had all 10 pass the gate
+    # (nothing was charged until each scan finished) and ended at 17/8.
+    import asyncio
+
+    from bot.handlers import text_handler as th
+    from bot.storage import subscription
+
+    uid = 4242
+    fake_subscription_store._row(uid)["links_messages_used"] = subscription.FREEMIUM_DAILY_LINKS_MESSAGES - 1
+
+    message = MagicMock()
+    message.reply_text = AsyncMock()
+    turned_away = await asyncio.gather(*(
+        th._check_quota_gate(message, "en", uid, trusted_shape=False) for _ in range(10)
+    ))
+
+    assert turned_away.count(False) == 1     # exactly one slot was left
+    assert fake_subscription_store._row(uid)["links_messages_used"] == subscription.FREEMIUM_DAILY_LINKS_MESSAGES
+
+
+@pytest.mark.asyncio
+async def test_a_scan_that_fails_hands_its_reserved_slot_back(fake_subscription_store, monkeypatch):
+    # Only finished scans count against the limit, as before the race fix.
+    from bot.handlers import text_handler as th
+
+    uid = 4343
+    message = MagicMock()
+    message.reply_text = AsyncMock()
+    assert await th._check_quota_gate(message, "en", uid, trusted_shape=False) is False
+    assert fake_subscription_store._row(uid)["links_messages_used"] == 1
+
+    monkeypatch.setattr(th, "ensure_vectors_seeded", AsyncMock())
+    monkeypatch.setattr(th, "_gather_check_verdicts", AsyncMock(return_value=([], None)))
+    monkeypatch.setattr(th, "analyze_unified", AsyncMock(side_effect=RuntimeError("Gemini down")))
+    monkeypatch.setattr(th, "stop_status_animation", AsyncMock())
+    status = MagicMock()
+    status.edit_text = AsyncMock()
+
+    await th._run_full_check_and_reply(
+        status, MagicMock(), None, MagicMock(), "hello", [], None,
+        {"suspicious": False, "matches": []}, "en", uid, False,
+        has_text_fn=lambda _links: True, log_context="test",
+    )
+
+    assert fake_subscription_store._row(uid)["links_messages_used"] == 0
+    status.edit_text.assert_awaited()          # the user still got a reply

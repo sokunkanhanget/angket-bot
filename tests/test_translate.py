@@ -86,6 +86,7 @@ GEMINI_BYPASS_KEYS = [
     "content_archive_executable",
     "content_archive_disguised_entry",
     "content_archive_encrypted",
+    "content_archive_too_many_entries",
     "content_office_macros",
     "content_pdf_launch",
     "content_pdf_javascript",

@@ -50,6 +50,63 @@ def local_score(result: dict) -> int:
     return max(scores)
 
 
+# How much a deceptive filename adds when the file could not be scanned at
+# all (decision court, option B, 2026-10-07). A live malware file - a 21.2MB
+# "Salary adjustments ... .xlsx.z" - was too large for the Bot API to hand
+# over, so the only signal left was the name, which scored 30 (medium) and
+# rendered as an orange "Uncertain". Two independent warning signs together
+# - a deliberate disguise AND no way to check the bytes - are stronger than
+# either alone, and oversizing is a known way to slip past scanners that
+# skip large files (MITRE ATT&CK T1027.001, cited from memory, not checked
+# this session - treated as a risk, not a finding).
+UNSCANNABLE_DISGUISE_BOOST = 30
+
+
+# Which double-extension disguises are strong enough to lift an unscannable
+# file to high risk. Narrowed on 2026-10-07 after an independent review
+# reproduced that the first version (any document-like inner extension, any
+# archive outer) put a "LIKELY A SCAM" header on routine files over 20MB:
+# data.csv.gz, export.csv.xz, syslog.txt.gz, Photos.jpg.zip, video.mp4.zip,
+# book.pdf.tar. Two real conventions explain most of them:
+#   - gzip/bzip2/xz/tar APPEND their extension to the original name by
+#     design (file.csv -> file.csv.gz), so `.csv.gz` is the tool working,
+#     not a disguise;
+#   - csv/txt/jpg/mp4 inside an archive is ordinary data, not a lure.
+# What remains is the actual lure class: an Office/PDF "document" that is
+# really a zip/rar/7z/z archive (the reported malware was `.xlsx.z`).
+_LURE_INNER = frozenset({"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"})
+_LURE_ARCHIVE_OUTER = frozenset({"zip", "rar", "7z", "z"})
+
+
+def is_unscannable_disguise(result: dict) -> bool:
+    """True only for a file that could not be read because it was TOO LARGE
+    AND whose name is a strong, deliberate disguise.
+
+    Every limit here is a court condition or a reviewed refinement:
+    - never for a file that WAS scanned: a scanned file's own verdict
+      stands;
+    - only scan_error == "too_large". A transient "failed" (a timeout, a
+      Telegram hiccup) on a 2MB photos.jpg.zip must not read as a scam;
+    - not for a bare executable extension: legitimate installers routinely
+      exceed 20MB, so "setup.exe, too large" stays a medium "unverified";
+    - an EXECUTABLE disguise (invoice.pdf.exe) always counts, but an ARCHIVE
+      disguise only for the document-lure shape above.
+
+    Known remaining false positives, accepted deliberately: a genuine
+    over-20MB `scan.pdf.7z` or `report.xlsx.zip` from a colleague. They are
+    what the `[oversize-file]` log (ledger B7) exists to measure.
+    """
+    if result.get("scan_error") != "too_large":
+        return False
+    key = result.get("filename_warning_key") or ""
+    if key == "filename_warning_double_extension_executable":
+        return True
+    if key != "filename_warning_double_extension_archive":
+        return False
+    params = result.get("filename_warning_params") or {}
+    return params.get("inner_ext") in _LURE_INNER and params.get("outer_ext") in _LURE_ARCHIVE_OUTER
+
+
 def has_antivirus_answer(result: dict) -> bool:
     """True only when VirusTotal both answered AND knew this exact file.
     "Unreachable" and "never seen this hash" are both NOT an answer - and
@@ -91,6 +148,9 @@ def file_risk(result: dict) -> tuple[str, int | None]:
             return risk_scale.level_for(pct), pct
         return "safe", 0
 
+    if is_unscannable_disguise(result):
+        pct = risk_scale.clamp(max(risk_scale.HIGH_FROM, local + UNSCANNABLE_DISGUISE_BOOST))
+        return risk_scale.level_for(pct), pct
     if local >= risk_scale.MEDIUM_FROM:
         pct = risk_scale.clamp(local)
         return risk_scale.level_for(pct), pct

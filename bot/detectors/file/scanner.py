@@ -15,12 +15,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import logging
 
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from bot.detectors.file.offline.content_check import inspect_content
 from bot.detectors.file.offline.filename_check import check_filename
 from bot.detectors.file.online.virustotal import cached_result, scan_vt_hash
+
+logger = logging.getLogger(__name__)
 
 
 # The size guard this module's own docstring anticipated (2026-09-24,
@@ -83,7 +87,8 @@ class FileDigest(str):
     content_findings: list[dict]
 
 
-async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str, file_name: str = "") -> str:
+async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str, file_name: str = "",
+                            declared_size: int | None = None) -> str:
     """Download a Telegram file, inspect its bytes locally, and return its
     SHA-256 digest (a FileDigest carrying the content findings) - shared
     by every flow that scans an uploaded file (handle_file,
@@ -92,15 +97,35 @@ async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str, fi
 
     `file_name` lets the content inspector compare what the name CLAIMS
     against what the bytes ARE; it defaults to "" so an older caller
-    still works, just without the name-vs-content checks."""
-    file_info = await context.bot.get_file(file_id)
+    still works, just without the name-vs-content checks.
+
+    `declared_size` is the size Telegram already put on the Message's
+    document. It is checked BEFORE any API call (2026-10-07): the cloud Bot
+    API refuses getFile for large files outright, so the old check on
+    `file_info.file_size` below was never reached for the very files it was
+    written for - a 21.2MB upload failed inside get_file with an unrelated
+    error, and every caller treated that as a transient "try again"."""
+    if isinstance(declared_size, int) and declared_size > MAX_DOWNLOAD_BYTES:
+        # No byte counts in exception text: it reaches the log via traceback
+        # and warning lines, and an exact size narrows down which file it was.
+        raise FileTooLargeError("declared size is over the scan limit")
+
+    try:
+        file_info = await context.bot.get_file(file_id)
+    except BadRequest as error:
+        # Telegram's own refusal for an oversized file. Matched on the text
+        # because the Bot API gives no distinct error type for it; anything
+        # else (a genuinely bad file_id) still propagates unchanged.
+        if "too big" in str(error).lower():
+            raise FileTooLargeError("Telegram refused to serve the file as too big") from error
+        raise
 
     # file_size can be None (Telegram doesn't always populate it); that's
     # not treated as a refusal, since the API's own 20MB ceiling still
     # applies to the download itself.
     size = getattr(file_info, "file_size", None)
     if isinstance(size, int) and size > MAX_DOWNLOAD_BYTES:
-        raise FileTooLargeError(f"file is {size} bytes, over the {MAX_DOWNLOAD_BYTES}-byte scan limit")
+        raise FileTooLargeError("file size is over the scan limit")
 
     # Size check first, slot second: an oversized file is rejected without
     # ever occupying a slot other users are waiting for.
@@ -113,6 +138,67 @@ async def download_and_hash(context: ContextTypes.DEFAULT_TYPE, file_id: str, fi
         # 0.1 CPU it must not run on the event loop.
         digest.content_findings = await asyncio.to_thread(inspect_content, data, file_name)
     return digest
+
+
+def _size_bucket(size: int | None) -> str:
+    """Coarse size bucket for the oversize log line. A bucket, never the
+    exact size: nothing here may identify a file or a person."""
+    if not isinstance(size, int):
+        return "unknown"
+    megabytes = size / (1024 * 1024)
+    if megabytes <= 20:
+        # A transient failure on a small file lands here; calling it
+        # "20-50MB" skewed the statistics the oversize log exists to give.
+        return "under-20MB"
+    if megabytes <= 50:
+        return "20-50MB"
+    if megabytes <= 200:
+        return "50-200MB"
+    if megabytes <= 1000:
+        return "200MB-1GB"
+    return "over-1GB"
+
+
+def unscannable_file_result(file_name: str, reason: str, declared_size: int | None = None) -> dict:
+    """A scan_file()-shaped result for a file whose bytes could not be read
+    at all (too large for the Bot API, or the download failed).
+
+    Added 2026-10-07 after a live report: a 21.2MB "Salary adjustments ...
+    .xlsx.z" with a caption rendered "VERDICT: SAFE / LEGITIMATE, 0% LOW
+    RISK". The file scan raised, the text and Business paths swallowed the
+    exception and carried on with file_verdict=None - i.e. "no file" - so
+    the verdict was decided from the caption alone while the reply still
+    said TYPE: text+file. An attachment that could not be checked must read
+    as unverified, never as safe.
+
+    Not checked, not found, no antivirus answer - the same shape
+    file_risk.file_risk already reports as "unable to verify". The one
+    check that needs no bytes, the filename heuristic, still runs: it
+    would have flagged that exact file as an archive disguised as a
+    spreadsheet. `scan_error` makes the reply say WHY nothing was checked,
+    because the generic "name and structure look fine" wording would be
+    false when the structure was never read."""
+    warning = check_filename(file_name)
+    # Option B's second court condition: make oversize events measurable.
+    # The decision was scored without production data on how often big files
+    # arrive or how often the disguise rule fires (no labeled file corpus
+    # exists), so the false-positive rate is unknowable until this is
+    # counted. Logged as a fixed-prefix line to be searched in Render's logs:
+    # a size BUCKET, the reason, and whether the name was disguised - no file
+    # name, no user id, no hash.
+    logger.info(
+        "[oversize-file] reason=%s size=%s disguised=%s",
+        reason, _size_bucket(declared_size),
+        bool(warning and warning[1].startswith("filename_warning_double_extension")),
+    )
+    return {
+        "checked": False, "found": False, "malicious": 0,
+        "scan_error": reason,
+        "content_findings": [],
+        "filename_warning_key": warning[1] if warning else None,
+        "filename_warning_params": warning[2] if warning else {},
+        "filename_risk_score": warning[0] if warning else 0,
+    }
 
 
 async def scan_file(file_hash: str, file_name: str) -> dict:

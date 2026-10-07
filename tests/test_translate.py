@@ -79,6 +79,10 @@ GEMINI_BYPASS_KEYS = [
     # state now covers the file's name AND its inspected structure.
     "reason_file_no_local_findings",
     "reason_file_unverified_attachment",
+    "reason_file_too_large",
+    "reason_file_scan_failed",
+    "reason_file_unscannable_disguised",
+    "reason_override_file_local",
     # Local byte inspection (offline/content_check.py), added 2026-10-01.
     "content_disguised_executable",
     "content_disguised_archive",

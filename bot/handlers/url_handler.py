@@ -51,7 +51,7 @@ from telegram import MessageEntity, Update
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 
-from bot.detectors.file.scanner import download_and_hash, scan_file
+from bot.detectors.file.scanner import FileTooLargeError, download_and_hash, scan_file, unscannable_file_result
 from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
 from bot.response.translate import DEFAULT_LANG
@@ -179,7 +179,7 @@ async def _scan_attached_file(context: ContextTypes.DEFAULT_TYPE, document) -> d
     session - kept as a separate copy here rather than shared, since
     text_handler.py already imports extract_text_link_entities FROM this
     module, so importing back would be circular."""
-    sha256 = await download_and_hash(context, document.file_id, document.file_name or "")
+    sha256 = await download_and_hash(context, document.file_id, document.file_name or "", document.file_size)
     return await scan_file(sha256, document.file_name or "")
 
 
@@ -419,7 +419,13 @@ async def _gather_business_check_verdicts(text: str, hidden_links: list, documen
     file_verdict = results[1] if document is not None else None
     if isinstance(file_verdict, Exception):
         logger.exception("File check failed in business chat", exc_info=file_verdict)
-        file_verdict = None
+        # An unscannable attachment is NOT "no attachment" (2026-10-07) -
+        # see scanner.unscannable_file_result.
+        file_verdict = unscannable_file_result(
+            document.file_name or "",
+            "too_large" if isinstance(file_verdict, FileTooLargeError) else "failed",
+            document.file_size,
+        )
 
     # `sender` is already resolved/confirmed-not-the-owner by the caller.
     for v in link_verdicts:

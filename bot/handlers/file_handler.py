@@ -5,8 +5,8 @@ from telegram import Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from bot.detectors.file.file_risk import file_risk, has_antivirus_answer
-from bot.detectors.file.scanner import cached_result, download_and_hash, scan_file
+from bot.detectors.file.file_risk import file_risk, has_antivirus_answer, is_unscannable_disguise
+from bot.detectors.file.scanner import FileTooLargeError, cached_result, download_and_hash, scan_file, unscannable_file_result
 from bot.storage.scan_log import log_scan
 from bot.storage import subscription
 from bot.handlers.text_handler import get_user_lang
@@ -69,6 +69,15 @@ def content_finding_texts(result: dict, lang: str) -> list[str]:
 _MAX_LOCAL_REASONS = 3
 
 
+def scan_error_text(result: dict, lang: str) -> str | None:
+    """Why nothing could be checked, when the file's bytes were never read.
+    Shared with context_engine.py's fallback, like the renderers above."""
+    reason = result.get("scan_error")
+    if not reason:
+        return None
+    return t(lang, "reason_file_too_large" if reason == "too_large" else "reason_file_scan_failed")
+
+
 def _local_reasons(result: dict, lang: str) -> list[str]:
     warnings = []
     filename_warning = filename_warning_text(result, lang)
@@ -115,6 +124,16 @@ def _classify_file_result(result: dict, lang: str = DEFAULT_LANG) -> tuple[str, 
 
     # No antivirus answer. Direct user spec (2026-09-11), kept: never name
     # WHICH backend was unavailable, only the real limitation.
+    scan_error = scan_error_text(result, lang)
+    if scan_error:
+        # The bytes were never read, so "nothing suspicious in its structure"
+        # would be false - say what really happened instead.
+        head = [scan_error]
+        if is_unscannable_disguise(result):
+            # Worded as "cannot verify, plus a warning sign" - the court's
+            # third condition - rather than as a claim that it IS malware.
+            head.insert(0, t(lang, "reason_file_unscannable_disguised"))
+        return level, pct, head + local
     reasons.append(t(lang, "reason_file_name_only" if not result.get("checked") else "reason_file_never_seen"))
     if local:
         return level, pct, reasons + local
@@ -185,9 +204,22 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     animation_task = asyncio.create_task(animate_status(message, lang, status_suffix))
 
     try:
-        sha256 = await download_and_hash(context, document.file_id, document.file_name or "")
+        sha256 = await download_and_hash(context, document.file_id, document.file_name or "", document.file_size)
+    except FileTooLargeError:
+        # Permanent, not transient: telling the user to "try again in a
+        # moment" (below) was wrong for a file that will never fit. Report
+        # honestly that it could not be checked, with whatever the filename
+        # alone shows. Nothing was reserved yet and there is no hash, so
+        # there is nothing to refund or log.
+        # No size here: unscannable_file_result logs a size BUCKET, and an
+        # exact byte count narrows down which file it was.
+        await stop_status_animation(animation_task)
+        level, risk_percentage, reasons = _classify_file_result(
+            unscannable_file_result(document.file_name or "", "too_large", document.file_size), lang)
+        await _send_final_verdict(message, _format_file_verdict(level, risk_percentage, reasons, lang))
+        return
     except Exception:                          # noqa: BLE001
-        logger.exception("File download failed for %s", file_name)
+        logger.exception("File download failed")        # no file name in the log
         await stop_status_animation(animation_task)
         await message.edit_text(_with_disclaimer(t(lang, "file_scan_failed"), lang))
         return
@@ -238,6 +270,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     reply = _format_file_verdict(level, risk_percentage, reasons, lang)
     await asyncio.to_thread(log_scan, user_id, file_name, sha256, result.get("malicious", 0))
 
+    await _send_final_verdict(message, reply)
+
+
+async def _send_final_verdict(message, reply: str) -> None:
     try:
         await message.edit_text(reply, parse_mode="Markdown")
     except BadRequest:

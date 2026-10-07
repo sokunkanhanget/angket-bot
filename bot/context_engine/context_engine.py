@@ -34,7 +34,7 @@ import re
 import secrets
 
 from bot.config.config import GEMINI_MODEL, SCAM_PATTERN_THRESHOLD, BGE_M3_PATTERN_THRESHOLD
-from bot.detectors.file.file_risk import file_risk
+from bot.detectors.file.file_risk import file_risk, is_unscannable_disguise
 from bot.response import risk_scale
 from bot.detectors.text.online.gemini_retry import GeminiCircuitOpenError, generate_content_with_backup, get_clients
 from bot.response.translate import DEFAULT_LANG
@@ -629,7 +629,7 @@ def _fallback_file_reasons(file_verdict: dict | None, lang: str) -> tuple[list[d
     # text_handler.py, which would make this a real import cycle at load
     # time. The renderers are shared rather than duplicated so the file
     # reply and this fallback can't word the same warning differently.
-    from bot.handlers.file_handler import _local_reasons
+    from bot.handlers.file_handler import _local_reasons, scan_error_text
 
     level, pct = file_risk(file_verdict)
     reasons: list[dict] = []
@@ -640,7 +640,12 @@ def _fallback_file_reasons(file_verdict: dict | None, lang: str) -> tuple[list[d
         })
     for text in _local_reasons(file_verdict, lang):
         reasons.append({"text": text, "source": "file_evidence"})
-    if level == "uncertain":
+    scan_error = scan_error_text(file_verdict, lang)
+    if scan_error:
+        if is_unscannable_disguise(file_verdict):
+            reasons.append({"text": t(lang, "reason_file_unscannable_disguised"), "source": "file_evidence"})
+        reasons.append({"text": scan_error, "source": "file_evidence"})
+    elif level == "uncertain":
         reasons.append({"text": t(lang, "reason_file_unverified_attachment"), "source": "file_evidence"})
     return reasons, level, pct
 
@@ -753,12 +758,13 @@ class _EvidenceFlags:
     override branches each need - a plain attribute-holder rather than a
     dict so callers get typo-safe `.file_flagged` access."""
 
-    __slots__ = ("file_flagged", "file_concern", "file_pct", "worst_link_score",
+    __slots__ = ("file_flagged", "file_confirmed", "file_concern", "file_pct", "worst_link_score",
                  "confirmed_link_flagged", "pattern_similarity", "pattern_category", "pattern_flagged")
 
-    def __init__(self, file_flagged, file_concern, file_pct, worst_link_score, confirmed_link_flagged,
-                 pattern_similarity, pattern_category, pattern_flagged):
+    def __init__(self, file_flagged, file_confirmed, file_concern, file_pct, worst_link_score,
+                 confirmed_link_flagged, pattern_similarity, pattern_category, pattern_flagged):
         self.file_flagged = file_flagged
+        self.file_confirmed = file_confirmed
         self.file_concern = file_concern
         self.file_pct = file_pct
         self.worst_link_score = worst_link_score
@@ -779,6 +785,9 @@ def _classify_evidence(
     file_level, file_pct = file_risk(file_verdict) if file_verdict else (None, None)
     return _EvidenceFlags(
         file_flagged=file_level == "dangerous",
+        # Antivirus engines actually flagged it - distinct from "dangerous"
+        # reached through local findings alone (see _override_for_malicious_file).
+        file_confirmed=bool(file_verdict and (file_verdict.get("malicious", 0) or 0) > 0),
         # Not dangerous, but nothing vouches for it either: a suspicious
         # file, or one no antivirus engine could check.
         file_concern=file_level in ("suspicious", "uncertain"),
@@ -794,7 +803,8 @@ def _classify_evidence(
     )
 
 
-def _override_for_malicious_file(data: dict, evidence: "_EvidenceFlags", lang: str) -> None:
+def _override_for_malicious_file(data: dict, evidence: "_EvidenceFlags", lang: str,
+                                 file_verdict: dict | None = None) -> None:
     """Mutates `data` in place - a dangerous file finding always wins,
     regardless of what Gemini said. The number is the file's own risk
     (bot/detectors/file/file_risk.py), not a flat 100: a displayed 100%
@@ -807,10 +817,19 @@ def _override_for_malicious_file(data: dict, evidence: "_EvidenceFlags", lang: s
     data["verdict"] = "Scam"
     data["risk_percentage"] = max(data.get("risk_percentage") or 0, evidence.file_pct or 0)
     reasons = list(data.get("key_reasons") or [])
+    # The wording must match WHY the file is dangerous (2026-10-07). The
+    # fixed text claims VirusTotal confirmed it malicious, which is false
+    # for a file that reached "dangerous" through local findings alone - an
+    # archive holding invoice.pdf.exe, or an unscannable disguised file.
     reasons.append({
-        "text": t(lang, "reason_override_file"),
+        "text": t(lang, "reason_override_file" if evidence.file_confirmed else "reason_override_file_local"),
         "source": "file_evidence",
     })
+    if not evidence.file_confirmed and file_verdict:
+        # Without an antivirus verdict to point at, "strong warning signs of
+        # its own" is empty unless it says WHICH: too large to scan, a
+        # disguised name, an executable inside an archive. (2026-10-07)
+        reasons.extend(_fallback_file_reasons(file_verdict, lang)[0])
     data["key_reasons"] = reasons
 
 
@@ -912,7 +931,7 @@ def _reconcile_with_evidence(
     verdict = data.get("verdict")
 
     if evidence.file_flagged and verdict != "Scam":
-        _override_for_malicious_file(data, evidence, lang)
+        _override_for_malicious_file(data, evidence, lang, file_verdict)
     elif verdict == "Not a Scam" and (evidence.confirmed_link_flagged or evidence.pattern_flagged):
         _override_for_flagged_evidence(data, evidence, lang)
     elif verdict == "Not a Scam" and evidence.file_concern:

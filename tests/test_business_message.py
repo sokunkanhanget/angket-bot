@@ -595,11 +595,14 @@ async def test_a_failed_file_check_does_not_discard_an_already_successful_link_c
     # The owner must still be notified about the link, not left with nothing.
     status = context.bot.send_message.return_value
     status.edit_text.assert_awaited_once()
-    # analyze_unified must have received the real link result and None
-    # for the file (not have been skipped entirely).
+    # analyze_unified must have received the real link result AND an
+    # explicit "could not be scanned" marker for the file - NOT None, which
+    # means "no attachment" and made an unscanned file read as safe
+    # (2026-10-07, live report: a 21.2MB .xlsx.z rendered SAFE 0%).
     args = mock_unified.call_args.args
     assert args[2] == real_link_verdict
-    assert args[3] is None
+    assert args[3]["scan_error"] == "failed"
+    assert args[3]["checked"] is False and args[3]["found"] is False
 
 
 @pytest.mark.asyncio

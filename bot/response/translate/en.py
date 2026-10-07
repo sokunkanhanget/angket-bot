@@ -320,6 +320,10 @@ TEXT = {
     # --- Local file inspection (offline/content_check.py) + unverified state ---
     "reason_file_no_local_findings": "Nothing suspicious was found in its name or structure either — but that is not the same as an antivirus check, so it can't be confirmed safe.",
     "reason_file_unverified_attachment": "The attached file could not be verified by any antivirus engine, so this message can't be confirmed safe.",
+    "reason_file_too_large": "This file is too large for Angket to scan (over 20 MB), so it could not be checked at all.",
+    "reason_file_scan_failed": "This file could not be checked right now because of a temporary problem, so there is no result for it.",
+    "reason_file_unscannable_disguised": "Two warning signs together: Angket could not check this file at all, and its name is disguised. Treat it as unsafe until it has been verified.",
+    "reason_override_file_local": "Overridden: the attached file shows strong warning signs of its own, regardless of the message text.",
     "content_disguised_executable": "The file is named '.{claimed_ext}' but its contents are actually a {real_type} program.",
     "content_disguised_archive": "The file is named '.{claimed_ext}' but it is actually a {real_type} archive.",
     "content_rtlo_filename": "The file name uses a hidden right-to-left control character to fake its extension — a deliberate disguise.",

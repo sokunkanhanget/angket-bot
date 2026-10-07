@@ -7,7 +7,7 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 from bot.config.config import WEBSITE_URL
-from bot.detectors.file.scanner import download_and_hash, scan_file
+from bot.detectors.file.scanner import FileTooLargeError, download_and_hash, scan_file, unscannable_file_result
 from bot.detectors.text.offline.keyword import analyze_text
 from bot.context_engine.context_engine import analyze_unified, _message_is_only_links
 from bot.response.translate import DEFAULT_LANG
@@ -371,7 +371,7 @@ async def _scan_attached_file(context: ContextTypes.DEFAULT_TYPE, document) -> d
     top-level function rather than a closure over context/document (as it
     used to be, nested inside _run_full_check_and_reply) - no reuse reason
     to capture instead of pass explicitly, and it's used exactly once."""
-    sha256 = await download_and_hash(context, document.file_id, document.file_name or "")
+    sha256 = await download_and_hash(context, document.file_id, document.file_name or "", document.file_size)
     return await scan_file(sha256, document.file_name or "")
 
 
@@ -387,7 +387,17 @@ async def _gather_check_verdicts(text: str, hidden_links: list, document, contex
     link_verdicts = results[0] if not isinstance(results[0], Exception) else []
     file_verdict = None
     if document is not None:
-        file_verdict = results[1] if not isinstance(results[1], Exception) else None
+        file_verdict = results[1]
+        if isinstance(file_verdict, Exception):
+            # NOT None (2026-10-07): None means "no attachment", so an
+            # attachment that could not be scanned used to vanish from the
+            # verdict and the reply said SAFE. See unscannable_file_result.
+            logger.warning("Attached file could not be scanned: %s", type(file_verdict).__name__)
+            file_verdict = unscannable_file_result(
+                document.file_name or "",
+                "too_large" if isinstance(file_verdict, FileTooLargeError) else "failed",
+                document.file_size,
+            )
     return link_verdicts, file_verdict
 
 
